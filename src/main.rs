@@ -594,12 +594,6 @@ async fn main(_spawner: Spawner) {
                 wifi_controller.stop().ok();
                 break;
             }
-            if touch_int.is_low() {
-                println!("[PROVISION] Touch detected — skipping WiFi setup");
-                wifi_controller.stop().ok();
-                break;
-            }
-
             // Animate spinner and check AP services
             match embassy_futures::select::select(&mut ap_services, Timer::after(Duration::from_millis(100))).await {
                 embassy_futures::select::Either::First(creds) => {

@@ -1,0 +1,102 @@
+[2026-10-23T10:15:26Z INFO ] Serial port: '/dev/ttyACM0'
+[2026-10-23T10:15:26Z INFO ] Connecting...
+[2026-10-23T10:15:26Z INFO ] Using flash stub
+Chip type:         esp32s3 (revision v0.2)
+Crystal frequency: 40 MHz
+Flash size:        32MB
+Features:          WiFi, BLE, Embedded Flash
+MAC address:       b8:1f:3f:d8:29:08
+App/part. size:    723,824/16,384,000 bytes, 4.42%
+[2026-10-23T10:15:36Z INFO ] Flashing has completed!
+Commands:
+    CTRL+R    Reset chip
+    CTRL+C    Exit
+
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)
+Saved PC:0x40378f09
+SPIWP:0xee
+mode:DIO, clock div:2
+load:0x3fce2820,len:0x14d0
+load:0x403c8700,len:0xdcc
+load:0x403cb700,len:0x2f54
+entry 0x403c8900
+I (27) boot: ESP-IDF v6.1-beta1-497-g14f663f003e 2nd stage bootloader
+I (27) boot: Multicore bootloader
+I (28) boot: chip revision: v0.2
+I (28) boot: efuse block revision: v1.4
+I (31) boot.esp32s3: Boot SPI Speed : 40MHz
+I (35) boot.esp32s3: SPI Mode       : DIO
+I (39) boot.esp32s3: SPI Flash Size : 32MB
+I (43) boot: Enabling RNG early entropy source...
+I (47) boot: Partition Table:
+I (50) boot: ## Label            Usage          Type ST Offset   Length
+I (56) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (63) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (69) boot:  2 factory          factory app      00 00 00010000 00fa0000
+I (76) boot: End of partition table
+I (79) esp_image: segment 0: paddr=00010020 vaddr=3c000020 size=1b358h (111448) map
+I (115) esp_image: segment 1: paddr=0002b380 vaddr=3fc97840 size=04810h ( 18448) load
+I (120) esp_image: segment 2: paddr=0002fb98 vaddr=40378000 size=00480h (  1152) load
+I (121) esp_image: segment 3: paddr=00030020 vaddr=42020020 size=81760h (530272) map
+I (259) esp_image: segment 4: paddr=000b1788 vaddr=40378480 size=0f3c0h ( 62400) load
+I (285) boot: Loaded app from partition at offset 0x10000
+I (285) boot: Disabling RNG early entropy source...
+=== Waveshare Watch RS v0.4 (Embassy) ===
+[POWER] OK
+[DISPLAY] OK (TE VSync enabled)
+[FB] OK
+[TOUCH] OK
+[RTC] OK
+[IMU] OK
+[SD] Init...
+[SD] No card
+[AUDIO] Init codec...
+[AUDIO] Codec OK
+[AUDIO] Init I2S...
+[AUDIO] I2S OK (3200 bytes beep)
+[RADIO] Init radio stack (WiFi OFF, BLE OFF)
+[31m
+
+====================== PANIC ======================
+panicked at /home/sniffmint/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/esp-hal-1.0.0/src/exception_handler/mod.rs:30:9:
+
+
+Detected a write to the stack guard value on ProCpu
+Context { PC: 1074098408, PS: 396069, A0: 2181315623, A1: 1070440240, A2: 1070440360, A3: 0, A4: 180, A5: 1070440520, A6: 40, A7: 11, A8: 31, A9: 1070440096, A10: 1070205588, A11: 1070176372, A12: 6756, A13: 1070176372, A14: 96, A15: 1070176372, SAR: 32, EXCCAUSE: 0, EXCVADDR: 0, LBEG: 1074098408, LEND: 1074098419, LCOUNT: 0, THREADPTR: 0, SCOMPARE1: 256, BR: 0, ACCLO: 0, ACCHI: 0, M0: 0, M1: 0, M2: 0, M3: 0, F64R_LO_CPENABLE: 1, F64R_HI: 0, F64S: 396069, FCR: 0, FSR: 0, F0: 0, F1: 0, F2: 0, F3: 0, F4: 0, F5: 0, F6: 0, F7: 0, F8: 0, F9: 0, F10: 0, F11: 0, F12: 0, F13: 0, F14: 0, F15: 0 }
+[0m
+
+Backtrace:
+
+0x42035a95
+[38;5;11mcore::panicking::panic_fmt
+    at ??:??
+[39m0x4203b778
+[38;5;11mesp_hal::exception_handler::breakpoint_interrupt
+    at ??:??
+[39m0x40379558
+[38;5;11m__level_6_interrupt
+    at ??:??
+[39m0x40378d4c
+0x40040003
+[38;5;11mTRC_AMPDU_PER_DOWN_THRESHOLD
+    at ??:??
+[39m0x400570e5
+[38;5;11mmemset
+    at ??:??
+[39m0x4204388b
+[38;5;11m<embassy_sync::blocking_mutex::Mutex<esp_sync::RawMutex, core::cell::RefCell<esp_rtos::scheduler::SchedulerState>>>::lock::<core::ptr::non_null::NonNull<esp_rtos::task::Task>, <esp_rtos::scheduler::Scheduler>::with_shared<core::ptr::non_null::NonNull<esp_rtos::task::Task>, <esp_rtos::scheduler::Scheduler>::with<core::ptr::non_null::NonNull<esp_rtos::task::Task>, <esp_rtos::scheduler::Scheduler>::create_task::{closure#0}>::{closure#0}>::{closure#0}>
+    at ??:??
+[39m0x4203fd7b
+[38;5;11mesp_radio::wifi::os_adapter::common_task_create
+    at ??:??
+[39m0x42040943
+[38;5;11mesp_radio::wifi::os_adapter::task_create_pinned_to_core
+    at ??:??
+[39m0x4209014e
+[38;5;11mpp_create_task
+    at ??:??
+[39m
+
+

@@ -174,11 +174,12 @@ pub async fn run_dns_server(stack: Stack<'static>) {
 }
 
 /// Serve one HTTP connection.
+/// FIX: properly break out of read loop when headers are fully received.
 pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
     let mut rx_buf = [0u8; 1024];
     let mut tx_buf = [0u8; 1536];
     let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
-    socket.set_timeout(Some(Duration::from_secs(10)));
+    socket.set_timeout(Some(Duration::from_secs(8)));
 
     let endpoint = IpListenEndpoint { addr: None, port: 80 };
     if socket.accept(endpoint).await.is_err() {
@@ -189,29 +190,35 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
 
     let mut req = [0u8; 1024];
     let mut total = 0usize;
-    loop {
+
+    // Read until we have the full HTTP headers (and body for POST).
+    // CRITICAL: use a flag to break the OUTER loop, not just the inner for-loop.
+    'read: loop {
         match socket.read(&mut req[total..]).await {
-            Ok(0) => break,
+            Ok(0) => break 'read,
             Ok(n) => {
                 total += n;
+                // Check if we've received the end of headers
                 if total >= 4 {
+                    let mut header_end = None;
                     for i in 0..total.saturating_sub(3) {
-                        if &req[i..i + 4] == b"
-
-" {
-                            let header_end = i + 4;
-                            let content_length = extract_content_length(&req[..i]);
-                            if total >= header_end + content_length {
-                                break;
-                            }
+                        if &req[i..i + 4] == b"\r\n\r\n" {
+                            header_end = Some(i + 4);
+                            break;
+                        }
+                    }
+                    if let Some(hend) = header_end {
+                        let content_length = extract_content_length(&req[..hend.saturating_sub(4)]);
+                        if total >= hend + content_length {
+                            break 'read; // Got full request
                         }
                     }
                 }
                 if total >= req.len() {
-                    break;
+                    break 'read; // Buffer full
                 }
             }
-            Err(_) => break,
+            Err(_) => break 'read,
         }
     }
 
@@ -240,9 +247,18 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
                 ServeResult::Pending
             }
         }
+    } else if req_slice.starts_with(b"GET /favicon.ico") {
+        send_empty(&mut socket, "404 Not Found").await;
+        socket.close();
+        ServeResult::Pending
     } else if req_slice.starts_with(b"GET / ")
         || req_slice.starts_with(b"GET / HTTP/")
         || req_slice.starts_with(b"GET /index.html")
+        || req_slice.starts_with(b"GET /hotspot-detect")
+        || req_slice.starts_with(b"GET /generate_204")
+        || req_slice.starts_with(b"GET /connecttest")
+        || req_slice.starts_with(b"GET /ncsi")
+        || req_slice.starts_with(b"GET /redirect")
     {
         println!("[HTTP] Serving setup HTML form ({} bytes)", FORM_BODY.len());
         send_response(&mut socket, "200 OK", FORM_BODY).await;
@@ -258,12 +274,7 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
 
 async fn send_response(socket: &mut TcpSocket<'_>, status: &str, body: &[u8]) {
     let header = alloc::format!(
-        "HTTP/1.1 {}
-Content-Type: text/html; charset=utf-8
-Content-Length: {}
-Connection: close
-
-",
+        "HTTP/1.1 {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         status,
         body.len()
     );
@@ -273,13 +284,14 @@ Connection: close
 }
 
 async fn send_redirect(socket: &mut TcpSocket<'_>) {
-    let resp = b"HTTP/1.1 302 Found
-Location: http://192.168.4.1/
-Content-Length: 0
-Connection: close
-
-";
+    let resp = b"HTTP/1.1 302 Found\r\nLocation: http://192.168.4.1/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     let _ = write_all(socket, resp).await;
+    let _ = socket.flush().await;
+}
+
+async fn send_empty(socket: &mut TcpSocket<'_>, status: &str) {
+    let header = alloc::format!("HTTP/1.1 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
+    let _ = write_all(socket, header.as_bytes()).await;
     let _ = socket.flush().await;
 }
 
@@ -310,9 +322,7 @@ fn extract_content_length(headers: &[u8]) -> usize {
 
 fn extract_body(request: &[u8]) -> &[u8] {
     for i in 0..request.len().saturating_sub(3) {
-        if &request[i..i + 4] == b"
-
-" {
+        if &request[i..i + 4] == b"\r\n\r\n" {
             return &request[i + 4..];
         }
     }
