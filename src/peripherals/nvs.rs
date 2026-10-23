@@ -113,7 +113,9 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), ()> {
         .map_err(|_| ())?;
 
     // Write the whole sector back (FlashStorage requires word-aligned writes)
-    storage.write(CRED_FLASH_OFFSET, sector.as_ref()).map_err(|_| ())?;
+    storage
+        .write(CRED_FLASH_OFFSET, sector.as_ref())
+        .map_err(|_| ())?;
 
     Ok(())
 }

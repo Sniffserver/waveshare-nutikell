@@ -6,6 +6,7 @@ extern crate alloc;
 mod apps;
 mod board;
 mod drivers;
+mod outdoor;
 mod peripherals;
 mod ui;
 
@@ -516,12 +517,15 @@ async fn main(_spawner: Spawner) {
 
     // === NVS: load stored WiFi credentials ===
     // If no credentials are stored, enter AP provisioning mode.
-    use esp_radio::wifi::{AccessPointConfig, AuthMethod, ClientConfig, ModeConfig};
     use embassy_net::{Config as NetConfig, StackResources};
+    use esp_radio::wifi::{AccessPointConfig, AuthMethod, ClientConfig, ModeConfig};
     use static_cell::StaticCell;
 
     let nvs_creds: Option<StoredCredentials> = read_credentials();
-    let wifi_has_nvs_creds = nvs_creds.as_ref().map(|c| c.is_configured()).unwrap_or(false);
+    let wifi_has_nvs_creds = nvs_creds
+        .as_ref()
+        .map(|c| c.is_configured())
+        .unwrap_or(false);
 
     // Compile-time fallback credentials (for development without NVS provisioning)
     let fallback_ssid = option_env!("WIFI_SSID").unwrap_or("");
@@ -533,15 +537,21 @@ async fn main(_spawner: Spawner) {
         if let Some(ref creds) = nvs_creds {
             if creds.is_configured() {
                 println!("[WIFI] Using NVS credentials for: {}", creds.ssid_str());
-                (alloc::string::String::from(creds.ssid_str()),
-                 alloc::string::String::from(creds.pass_str()))
+                (
+                    alloc::string::String::from(creds.ssid_str()),
+                    alloc::string::String::from(creds.pass_str()),
+                )
             } else {
-                (alloc::string::String::from(fallback_ssid),
-                 alloc::string::String::from(fallback_pass))
+                (
+                    alloc::string::String::from(fallback_ssid),
+                    alloc::string::String::from(fallback_pass),
+                )
             }
         } else {
-            (alloc::string::String::from(fallback_ssid),
-             alloc::string::String::from(fallback_pass))
+            (
+                alloc::string::String::from(fallback_ssid),
+                alloc::string::String::from(fallback_pass),
+            )
         };
 
     // === WiFi provisioning AP mode (runs BEFORE main watchface loop) ===
@@ -563,10 +573,7 @@ async fn main(_spawner: Spawner) {
 
         // AP embassy-net stack with static IP 192.168.4.1/24
         let ap_net_config = NetConfig::ipv4_static(embassy_net::StaticConfigV4 {
-            address: embassy_net::Ipv4Cidr::new(
-                embassy_net::Ipv4Address::new(192, 168, 4, 1),
-                24,
-            ),
+            address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
             gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
             dns_servers: Default::default(),
         });
@@ -585,7 +592,8 @@ async fn main(_spawner: Spawner) {
         fb.flush(&mut display);
 
         // Run AP services (DHCP + DNS + HTTP) alongside UI rendering & touch detection
-        let mut ap_services = core::pin::pin!(crate::peripherals::captive::run_ap_services(ap_stack));
+        let mut ap_services =
+            core::pin::pin!(crate::peripherals::captive::run_ap_services(ap_stack));
 
         loop {
             // Check for touch tap or boot button to skip provisioning
@@ -595,9 +603,17 @@ async fn main(_spawner: Spawner) {
                 break;
             }
             // Animate spinner and check AP services
-            match embassy_futures::select::select(&mut ap_services, Timer::after(Duration::from_millis(100))).await {
+            match embassy_futures::select::select(
+                &mut ap_services,
+                Timer::after(Duration::from_millis(100)),
+            )
+            .await
+            {
                 embassy_futures::select::Either::First(creds) => {
-                    println!("[PROVISION] Credentials saved for: {}! Rebooting...", creds.ssid_str());
+                    println!(
+                        "[PROVISION] Credentials saved for: {}! Rebooting...",
+                        creds.ssid_str()
+                    );
                     setup_app.mark_done();
                     fb.clear_color(Rgb565::BLACK);
                     setup_app.render(&mut fb);
@@ -646,7 +662,6 @@ async fn main(_spawner: Spawner) {
     // a task from inside the main loop.
     _spawner.spawn(net_task(runner)).ok();
 
-
     println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
 
     // === State ===
@@ -665,6 +680,10 @@ async fn main(_spawner: Spawner) {
     let mut flappy_game = FlappyGame::new();
     let mut maze_game = MazeGame::new();
     let mut launcher = Launcher::new();
+    let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
+    let mut outdoor_state = crate::outdoor::OutdoorState::new();
+    let mut step_detector = crate::outdoor::StepDetector::new();
+    let mut next_outdoor_tick = Instant::now();
     let mut settings_app = SettingsApp::new();
     if let Some(ref creds) = nvs_creds {
         if creds.is_configured() {
@@ -808,6 +827,13 @@ async fn main(_spawner: Spawner) {
                 | AppState::Settings
                 | AppState::Mp3Player
                 | AppState::SmartHome => Duration::from_millis(100),
+                AppState::Outdoor => {
+                    if outdoor_app.screen == crate::apps::outdoor_app::OutdoorScreen::Level {
+                        Duration::from_millis(50)
+                    } else {
+                        Duration::from_millis(100)
+                    }
+                }
                 // Flappy previously ran at 8 ms (~125 Hz). The panel can't
                 // even display that (VSync is ~33 ms) so the extra ticks
                 // just burned CPU and DMA for no visible benefit.
@@ -844,6 +870,8 @@ async fn main(_spawner: Spawner) {
                 || app_state == AppState::Maze
                 || app_state == AppState::Tetris
                 || app_state == AppState::Flappy
+                || app_state == AppState::Outdoor
+                || outdoor_state.hike.status == crate::outdoor::HikeStatus::Running
                 || (app_state == AppState::Watchface && current_page == Page::Sensors));
         if need_imu && !imu_powered {
             let _ = imu.power_up();
@@ -856,6 +884,13 @@ async fn main(_spawner: Spawner) {
             if let Ok(a) = imu.read_accel() {
                 accel = (a.x, a.y, a.z);
                 watchface.update_accel(a.x, a.y, a.z);
+                step_detector.update(a.x, a.y, a.z, now.as_millis());
+                let att = crate::outdoor::estimate_attitude(a.x, a.y, a.z);
+                outdoor_state.steps = step_detector.steps;
+                outdoor_state.roll_deg = att.roll_deg;
+                outdoor_state.pitch_deg = att.pitch_deg;
+                outdoor_state.level_valid = att.valid;
+                outdoor_state.imu_motion = step_detector.motion_state();
             }
             if let Ok(g) = imu.read_gyro() {
                 gyro_data = (
@@ -867,6 +902,12 @@ async fn main(_spawner: Spawner) {
             if let Ok(t) = imu.read_temperature() {
                 imu_temp = (t * 10.0) as i16;
             }
+        }
+
+        // Outdoor periodic 1 Hz tick
+        if now >= next_outdoor_tick {
+            outdoor_state.tick_1s();
+            next_outdoor_tick = now + Duration::from_secs(1);
         }
 
         // RTC: 1 Hz update is enough for a clock display. Skip when screen is off OR in AOD
@@ -1522,6 +1563,7 @@ async fn main(_spawner: Spawner) {
                         AppState::Maze => maze_game.setup(),
                         AppState::Mp3Player => mp3_player.setup(),
                         AppState::SmartHome => smarthome_app.setup(),
+                        AppState::Outdoor => outdoor_app.setup(),
                         AppState::Settings => {
                             if let Some(ref creds) = read_credentials() {
                                 if creds.is_configured() {
@@ -1709,6 +1751,27 @@ async fn main(_spawner: Spawner) {
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(50);
+                }
+                if boot_button.is_low() {
+                    app_state = AppState::Launcher;
+                    Timer::after(Duration::from_millis(200)).await;
+                }
+            }
+
+            AppState::Outdoor => {
+                if tap_event {
+                    outdoor_app.handle_tap(last_touch_x, last_touch_y, &mut outdoor_state);
+                }
+                outdoor_app.render(&mut fb, &outdoor_state);
+                if now >= next_watchface_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    let flush_ms =
+                        if outdoor_app.screen == crate::apps::outdoor_app::OutdoorScreen::Level {
+                            50
+                        } else {
+                            100
+                        };
+                    next_watchface_flush = now + Duration::from_millis(flush_ms);
                 }
                 if boot_button.is_low() {
                     app_state = AppState::Launcher;

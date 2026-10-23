@@ -48,6 +48,7 @@ embedded-qr = "0.2"
 # NVS Flash Storage
 esp-storage = { version = "0.6.0", features = ["esp32s3"] }
 edge-dhcp = { version = "0.8.0", default-features = false }
+libm = "0.2"
 
 [profile.dev]
 opt-level = "s"

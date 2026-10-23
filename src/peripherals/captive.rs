@@ -162,12 +162,18 @@ pub async fn run_dns_server(stack: Stack<'static>) {
         resp[12..q_end].copy_from_slice(&buf[12..q_end]);
 
         let mut a_idx = q_end;
-        resp[a_idx..a_idx + 2].copy_from_slice(&[0xc0, 0x0c]); a_idx += 2; // Pointer to name
-        resp[a_idx..a_idx + 2].copy_from_slice(&[0x00, 0x01]); a_idx += 2; // Type A
-        resp[a_idx..a_idx + 2].copy_from_slice(&[0x00, 0x01]); a_idx += 2; // Class IN
-        resp[a_idx..a_idx + 4].copy_from_slice(&[0x00, 0x00, 0x00, 0x3c]); a_idx += 4; // TTL 60
-        resp[a_idx..a_idx + 2].copy_from_slice(&[0x00, 0x04]); a_idx += 2; // Data length 4
-        resp[a_idx..a_idx + 4].copy_from_slice(&[192, 168, 4, 1]); a_idx += 4; // IP
+        resp[a_idx..a_idx + 2].copy_from_slice(&[0xc0, 0x0c]);
+        a_idx += 2; // Pointer to name
+        resp[a_idx..a_idx + 2].copy_from_slice(&[0x00, 0x01]);
+        a_idx += 2; // Type A
+        resp[a_idx..a_idx + 2].copy_from_slice(&[0x00, 0x01]);
+        a_idx += 2; // Class IN
+        resp[a_idx..a_idx + 4].copy_from_slice(&[0x00, 0x00, 0x00, 0x3c]);
+        a_idx += 4; // TTL 60
+        resp[a_idx..a_idx + 2].copy_from_slice(&[0x00, 0x04]);
+        a_idx += 2; // Data length 4
+        resp[a_idx..a_idx + 4].copy_from_slice(&[192, 168, 4, 1]);
+        a_idx += 4; // IP
 
         let _ = sock.send_to(&resp[..a_idx], from).await;
     }
@@ -181,12 +187,18 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
     let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     socket.set_timeout(Some(Duration::from_secs(8)));
 
-    let endpoint = IpListenEndpoint { addr: None, port: 80 };
+    let endpoint = IpListenEndpoint {
+        addr: None,
+        port: 80,
+    };
     if socket.accept(endpoint).await.is_err() {
         return ServeResult::Idle;
     }
 
-    println!("[HTTP] Client connected from {:?}", socket.remote_endpoint());
+    println!(
+        "[HTTP] Client connected from {:?}",
+        socket.remote_endpoint()
+    );
 
     let mut req = [0u8; 1024];
     let mut total = 0usize;
@@ -227,7 +239,11 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
     }
 
     let req_slice = &req[..total];
-    let first_line = core::str::from_utf8(req_slice).unwrap_or("").lines().next().unwrap_or("");
+    let first_line = core::str::from_utf8(req_slice)
+        .unwrap_or("")
+        .lines()
+        .next()
+        .unwrap_or("");
     println!("[HTTP] Request: {}", first_line);
 
     if req_slice.starts_with(b"POST /save") {
@@ -290,7 +306,10 @@ async fn send_redirect(socket: &mut TcpSocket<'_>) {
 }
 
 async fn send_empty(socket: &mut TcpSocket<'_>, status: &str) {
-    let header = alloc::format!("HTTP/1.1 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
+    let header = alloc::format!(
+        "HTTP/1.1 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        status
+    );
     let _ = write_all(socket, header.as_bytes()).await;
     let _ = socket.flush().await;
 }

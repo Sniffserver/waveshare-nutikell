@@ -80,34 +80,95 @@ impl WifiSetupApp {
         let val_st = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
         let ok_st = MonoTextStyle::new(&FONT_9X18_BOLD, Rgb565::GREEN);
 
-        let _ = Text::with_alignment("WiFi Setup", EgPoint::new(W / 2, 28), title_st, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "WiFi Setup",
+            EgPoint::new(W / 2, 28),
+            title_st,
+            Alignment::Center,
+        )
+        .draw(d);
 
         if self.phase == SetupPhase::Done {
-            let _ = Text::with_alignment("Credentials saved!", EgPoint::new(W / 2, 240), ok_st, Alignment::Center).draw(d);
-            let _ = Text::with_alignment("Rebooting...", EgPoint::new(W / 2, 268), label_st, Alignment::Center).draw(d);
+            let _ = Text::with_alignment(
+                "Credentials saved!",
+                EgPoint::new(W / 2, 240),
+                ok_st,
+                Alignment::Center,
+            )
+            .draw(d);
+            let _ = Text::with_alignment(
+                "Rebooting...",
+                EgPoint::new(W / 2, 268),
+                label_st,
+                Alignment::Center,
+            )
+            .draw(d);
             return;
         }
 
         // Instructions
-        let _ = Text::with_alignment("Scan QR with phone camera", EgPoint::new(W / 2, 50), label_st, Alignment::Center).draw(d);
-        let _ = Text::with_alignment("or open browser:", EgPoint::new(W / 2, 62), label_st, Alignment::Center).draw(d);
-        let _ = Text::with_alignment("http://192.168.4.1", EgPoint::new(W / 2, 76), val_st, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "Scan QR with phone camera",
+            EgPoint::new(W / 2, 50),
+            label_st,
+            Alignment::Center,
+        )
+        .draw(d);
+        let _ = Text::with_alignment(
+            "or open browser:",
+            EgPoint::new(W / 2, 62),
+            label_st,
+            Alignment::Center,
+        )
+        .draw(d);
+        let _ = Text::with_alignment(
+            "http://192.168.4.1",
+            EgPoint::new(W / 2, 76),
+            val_st,
+            Alignment::Center,
+        )
+        .draw(d);
 
         // QR code centred on the screen — built at compile time into a const-size matrix
         draw_qr(d);
 
         // AP info
-        let _ = Text::with_alignment("Join WiFi first:", EgPoint::new(W / 2, 365), label_st, Alignment::Center).draw(d);
-        let _ = Text::with_alignment(AP_SSID, EgPoint::new(W / 2, 378), val_st, Alignment::Center).draw(d);
-        let _ = Text::with_alignment("(open network, no password)", EgPoint::new(W / 2, 391), label_st, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "Join WiFi first:",
+            EgPoint::new(W / 2, 365),
+            label_st,
+            Alignment::Center,
+        )
+        .draw(d);
+        let _ = Text::with_alignment(AP_SSID, EgPoint::new(W / 2, 378), val_st, Alignment::Center)
+            .draw(d);
+        let _ = Text::with_alignment(
+            "(open network, no password)",
+            EgPoint::new(W / 2, 391),
+            label_st,
+            Alignment::Center,
+        )
+        .draw(d);
 
         // Waiting spinner
         let spinner = ["Waiting .  ", "Waiting .. ", "Waiting ..."];
         let spin_idx = (self.tick / 6) as usize % 3;
-        let _ = Text::with_alignment(spinner[spin_idx], EgPoint::new(W / 2, 416), val_st, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            spinner[spin_idx],
+            EgPoint::new(W / 2, 416),
+            val_st,
+            Alignment::Center,
+        )
+        .draw(d);
 
         // Reset hint
-        let _ = Text::with_alignment("Tap screen or button to skip", EgPoint::new(W / 2, 444), label_st, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "Tap screen or button to skip",
+            EgPoint::new(W / 2, 444),
+            label_st,
+            Alignment::Center,
+        )
+        .draw(d);
     }
 }
 
@@ -147,12 +208,9 @@ fn draw_qr<D: DrawTarget<Color = Rgb565>>(d: &mut D) {
             if matrix.get(x as usize, y as usize) {
                 let px = data_origin_x + (x * MODULE_PX) as i32;
                 let py = data_origin_y + (y * MODULE_PX) as i32;
-                let _ = Rectangle::new(
-                    EgPoint::new(px, py),
-                    Size::new(MODULE_PX, MODULE_PX),
-                )
-                .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-                .draw(d);
+                let _ = Rectangle::new(EgPoint::new(px, py), Size::new(MODULE_PX, MODULE_PX))
+                    .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+                    .draw(d);
             }
         }
     }

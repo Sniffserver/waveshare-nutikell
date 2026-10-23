@@ -68,6 +68,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         text_color: Rgb565::new(20, 10, 31),
     },
     MenuItem {
+        name: "Outdoor / Hike",
+        state: AppState::Outdoor,
+        bg_color: Rgb565::new(0, 16, 6),
+        text_color: Rgb565::GREEN,
+    },
+    MenuItem {
         name: "Settings",
         state: AppState::Settings,
         bg_color: Rgb565::new(6, 12, 6),

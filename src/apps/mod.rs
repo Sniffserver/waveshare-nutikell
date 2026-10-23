@@ -9,6 +9,7 @@ pub mod flappy;
 pub mod game2048;
 pub mod maze;
 pub mod mp3player;
+pub mod outdoor_app;
 pub mod settings;
 pub mod smarthome;
 pub mod snake;
@@ -51,4 +52,5 @@ pub enum AppState {
     Mp3Player,
     SmartHome,
     Settings,
+    Outdoor,
 }

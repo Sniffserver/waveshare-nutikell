@@ -107,6 +107,16 @@ impl<I: I2c> Qmi8658Imu<I> {
         self.write_reg(REG_CTRL7, 0x03)
     }
 
+    /// Enable accelerometer only (power down gyroscope to save ~1.5mA).
+    pub fn enable_accel_only(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_CTRL7, 0x01)
+    }
+
+    /// Enable both accelerometer and gyroscope (for Level / 6-axis mode).
+    pub fn enable_6axis(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_CTRL7, 0x03)
+    }
+
     /// Read accelerometer data in g.
     pub fn read_accel(&mut self) -> Result<AccelData, I::Error> {
         let mut buf = [0u8; 6];
