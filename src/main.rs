@@ -344,14 +344,28 @@ async fn main(_spawner: Spawner) {
     let _ = rtc.init();
     println!("[RTC] OK");
 
+    // === I2C Bus Scan ===
+    {
+        let mut scan_dev = RefCellDevice::new(&i2c_ref);
+        crate::peripherals::imu::scan_i2c(&mut scan_dev);
+    }
+
     // === IMU ===
     let mut imu = Qmi8658Imu::new(RefCellDevice::new(&i2c_ref));
+    let _ = imu.probe_addresses();
     let chip_id = imu.read_chip_id().unwrap_or(0xFF);
     let init_ok = imu.init().unwrap_or(false);
     println!(
         "[IMU] WHO_AM_I = 0x{:02X} (expected 0x05), init_ok: {}",
         chip_id, init_ok
     );
+    imu.dump_config();
+    if let Ok(raw) = imu.read_accel_raw() {
+        println!(
+            "[IMU] Raw accel bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]
+        );
+    }
 
     // Sample resting acceleration to verify scale and |a| ~ 1.0g
     let _ = imu.power_up();
