@@ -651,7 +651,8 @@ async fn main(_spawner: Spawner) {
 
     // === State ===
     let mut watchface = WatchFace::new();
-    watchface.wifi_connected = false; // radio stays off until user taps the button
+    watchface.wifi_connected = false;
+    watchface.wifi_on = wifi_has_nvs_creds;
     let mut current_page = Page::Clock;
     // Live power-diagnostic snapshot, updated in the main loop and read
     // by the Power page renderer. Kept as plain POD so reading it is free.
@@ -665,6 +666,13 @@ async fn main(_spawner: Spawner) {
     let mut maze_game = MazeGame::new();
     let mut launcher = Launcher::new();
     let mut settings_app = SettingsApp::new();
+    if let Some(ref creds) = nvs_creds {
+        if creds.is_configured() {
+            settings_app.set_stored_ssid(creds.ssid_str());
+        }
+    } else if !fallback_ssid.is_empty() {
+        settings_app.set_stored_ssid(fallback_ssid);
+    }
     let mut mp3_player = Mp3Player::new();
     let mut smarthome_app = SmartHomeApp::new();
     if !mp3_files.is_empty() {
@@ -741,7 +749,7 @@ async fn main(_spawner: Spawner) {
     let mut next_watchface_flush = Instant::now();
     // Radio state: we track both what the user *wants* and what the radio
     // actually is. They drift apart briefly during connect/disconnect.
-    let mut wifi_on_request: bool = false; // user toggle
+    let mut wifi_on_request: bool = wifi_has_nvs_creds;
     let mut wifi_started: bool = false; // controller.start() called
     let mut wifi_connected: bool = false; // connect_async succeeded
     let mut ntp_synced: bool = false;
@@ -1191,6 +1199,12 @@ async fn main(_spawner: Spawner) {
                                     Ok(()) => {
                                         ntp_synced = true;
                                         println!("[NTP] synced");
+                                        if let Ok(dt) = rtc.get_time() {
+                                            watchface.update_time(dt.hours, dt.minutes, dt.seconds);
+                                            watchface.update_date(dt.day, dt.month, dt.year);
+                                            watchface.force_redraw();
+                                            page_dirty = true;
+                                        }
                                     }
                                     Err(()) => {
                                         println!("[NTP] sync failed");
@@ -1508,7 +1522,13 @@ async fn main(_spawner: Spawner) {
                         AppState::Maze => maze_game.setup(),
                         AppState::Mp3Player => mp3_player.setup(),
                         AppState::SmartHome => smarthome_app.setup(),
-                        AppState::Settings => {}
+                        AppState::Settings => {
+                            if let Some(ref creds) = read_credentials() {
+                                if creds.is_configured() {
+                                    settings_app.set_stored_ssid(creds.ssid_str());
+                                }
+                            }
+                        }
                         AppState::Watchface => {
                             watchface.force_redraw();
                             page_dirty = true;
@@ -1663,10 +1683,22 @@ async fn main(_spawner: Spawner) {
             }
 
             AppState::Settings => {
+                use crate::peripherals::wifi::WifiState;
+                settings_app.wifi_state = if wifi_connected {
+                    WifiState::Connected
+                } else if wifi_on_request {
+                    WifiState::Connecting
+                } else {
+                    WifiState::Disconnected
+                };
                 settings_app.update(dt_ms.max(1));
                 // For T9: detect touch down via GPIO38 for rapid multi-tap
                 if tap_event {
                     settings_app.handle_tap(last_touch_x, last_touch_y);
+                    if settings_app.wifi_state == WifiState::Connecting && !wifi_on_request {
+                        wifi_on_request = true;
+                        watchface.wifi_on = true;
+                    }
                 }
                 // Also read live touch position for keyboard area
                 if let Ok((Some(tp), _)) = touch.poll() {
