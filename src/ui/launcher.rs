@@ -80,6 +80,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         text_color: Rgb565::CYAN,
     },
     MenuItem {
+        name: "2FA Authenticator",
+        state: AppState::Authenticator,
+        bg_color: Rgb565::new(0, 10, 20),
+        text_color: Rgb565::CYAN,
+    },
+    MenuItem {
         name: "Settings",
         state: AppState::Settings,
         bg_color: Rgb565::new(6, 12, 6),

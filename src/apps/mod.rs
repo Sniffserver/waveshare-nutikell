@@ -15,7 +15,10 @@ pub mod smarthome;
 pub mod snake;
 pub mod tetris;
 pub mod wifi_setup;
+pub mod authenticator;
 pub mod work_tracker;
+
+pub use authenticator::{AuthenticatorApp, TotpAccount};
 
 pub use work_tracker::{TrackerState, WorkSession, WorkTracker};
 
@@ -57,4 +60,5 @@ pub enum AppState {
     Settings,
     Outdoor,
     WorkTracker,
+    Authenticator,
 }

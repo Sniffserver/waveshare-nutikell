@@ -46,6 +46,7 @@ use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
+use crate::apps::authenticator::AuthenticatorApp;
 use crate::apps::work_tracker::WorkTracker;
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::drivers::co5300::Co5300Display;
@@ -714,6 +715,7 @@ async fn main(_spawner: Spawner) {
     let mut launcher = Launcher::new();
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::new();
+    let mut authenticator_app = AuthenticatorApp::new();
     let mut outdoor_state = crate::outdoor::OutdoorState::new();
     let mut step_detector = crate::outdoor::StepDetector::default();
     let mut next_outdoor_tick = Instant::now();
@@ -765,6 +767,7 @@ async fn main(_spawner: Spawner) {
         watchface.update_battery(batt_pct, batt_mv, charging);
         outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
         work_tracker.update_battery(batt_pct, charging);
+        authenticator_app.update_battery(batt_pct, charging);
     }
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
@@ -772,6 +775,7 @@ async fn main(_spawner: Spawner) {
         outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
         outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
         work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
+        authenticator_app.update_time((dt.hours, dt.minutes, dt.seconds), (2000 + dt.year as u16, dt.month, dt.day));
     }
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
@@ -892,7 +896,8 @@ async fn main(_spawner: Spawner) {
                 | AppState::Settings
                 | AppState::Mp3Player
                 | AppState::SmartHome
-                | AppState::WorkTracker => Duration::from_millis(100),
+                | AppState::WorkTracker
+                | AppState::Authenticator => Duration::from_millis(100),
                 AppState::Outdoor => {
                     if outdoor_app.screen == crate::apps::outdoor_app::OutdoorScreen::Level {
                         Duration::from_millis(50)
@@ -1017,6 +1022,7 @@ async fn main(_spawner: Spawner) {
                 outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
                 outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
                 work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
+                authenticator_app.update_time((dt.hours, dt.minutes, dt.seconds), (2000 + dt.year as u16, dt.month, dt.day));
             }
             next_rtc = now + Duration::from_secs(1);
         }
@@ -1031,6 +1037,7 @@ async fn main(_spawner: Spawner) {
                 watchface.update_battery(batt_pct, batt_mv, charging);
                 outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
                 work_tracker.update_battery(batt_pct, charging);
+                authenticator_app.update_battery(batt_pct, charging);
             }
             next_battery = if screen_state == 0 {
                 now + Duration::from_secs(600)
@@ -1694,6 +1701,7 @@ async fn main(_spawner: Spawner) {
                         AppState::SmartHome => smarthome_app.setup(),
                         AppState::Outdoor => outdoor_app.setup(),
                         AppState::WorkTracker => work_tracker.setup(),
+                        AppState::Authenticator => authenticator_app.setup(),
                         AppState::Settings => {
                             if let Some(ref creds) = read_credentials() {
                                 if creds.is_configured() {
@@ -1927,6 +1935,37 @@ async fn main(_spawner: Spawner) {
                 };
                 let res = work_tracker.update(&input);
                 work_tracker.render(&mut fb);
+                if now >= next_watchface_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    next_watchface_flush = now + Duration::from_millis(100);
+                }
+                if let AppResult::Exit = res {
+                    app_state = AppState::Launcher;
+                }
+                if boot_button.is_low() {
+                    app_state = AppState::Launcher;
+                    Timer::after(Duration::from_millis(200)).await;
+                }
+            }
+
+            AppState::Authenticator => {
+                let input = AppInput {
+                    touch: if tap_event {
+                        Some(crate::peripherals::touch::TouchPoint {
+                            x: last_touch_x,
+                            y: last_touch_y,
+                            fingers: 1,
+                        })
+                    } else {
+                        None
+                    },
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
+                let res = authenticator_app.update(&input);
+                authenticator_app.render(&mut fb);
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(100);
