@@ -182,3 +182,83 @@ impl<I: I2c> Qmi8658Imu<I> {
 pub fn magnitude(sample: AccelData) -> f32 {
     libm::sqrtf(sample.x * sample.x + sample.y * sample.y + sample.z * sample.z)
 }
+
+// ── Debug helpers ────────────────────────────────────────────────────────────
+
+impl<I: I2c> Qmi8658Imu<I> {
+    /// Read 6 raw accelerometer bytes without any scaling.
+    /// Useful to verify register address, auto-increment, and data ready.
+    ///
+    /// Expected: bytes are non-zero when sensor is enabled via CTRL7.
+    /// If all bytes are 0x00 → check CTRL7 and REG_STATUS0.
+    /// If bytes are 0xFF   → bus floating or wrong address.
+    pub fn read_accel_raw(&mut self) -> Result<[u8; 6], I::Error> {
+        let mut raw = [0u8; 6];
+        self.read_regs(REG_AX_L, &mut raw)?;
+        Ok(raw)
+    }
+
+    /// Read WHO_AM_I from both 0x6A and 0x6B and log results.
+    /// Returns the address that responded with 0x05, or None.
+    pub fn probe_addresses(&mut self) -> Option<u8> {
+        for &addr in &[0x6A_u8, 0x6B_u8] {
+            let mut who = [0u8; 1];
+            match self.i2c.write_read(addr, &[0x00], &mut who) {
+                Ok(()) => {
+                    println!(
+                        "[QMI] addr={:#04x} WHO_AM_I={:#04x}{}",
+                        addr,
+                        who[0],
+                        if who[0] == 0x05 { " ✓" } else { " (unexpected)" }
+                    );
+                    if who[0] == 0x05 {
+                        return Some(addr);
+                    }
+                }
+                Err(_) => {
+                    println!("[QMI] addr={:#04x} → no response", addr);
+                }
+            }
+        }
+        None
+    }
+
+    /// Dump key configuration registers for debugging.
+    pub fn dump_config(&mut self) {
+        let regs = [
+            (REG_WHO_AM_I, "WHO_AM_I"),
+            (REG_CTRL1,    "CTRL1   "),
+            (REG_CTRL2,    "CTRL2   "),
+            (REG_CTRL3,    "CTRL3   "),
+            (REG_CTRL5,    "CTRL5   "),
+            (REG_CTRL7,    "CTRL7   "),
+            (REG_STATUS0,  "STATUS0 "),
+        ];
+        println!("[QMI] ── register dump ──────────────────");
+        for (reg, name) in regs {
+            match self.read_reg(reg) {
+                Ok(v)  => println!("[QMI]  {name} ({:#04x}) = {:#04x}  ({:08b}b)", reg, v, v),
+                Err(_) => println!("[QMI]  {name} ({:#04x}) = ERR", reg),
+            }
+        }
+        println!("[QMI] ────────────────────────────────────");
+    }
+}
+
+/// Scan the I²C bus for all responding devices (0x08–0x77).
+/// Call once at startup during debugging.
+pub fn scan_i2c<I: I2c>(i2c: &mut I) {
+    println!("[I2C] ── bus scan ────────────────────────");
+    let mut found = 0u8;
+    for addr in 0x08_u8..=0x77 {
+        let mut byte = [0u8; 1];
+        if i2c.write_read(addr, &[0x00], &mut byte).is_ok() {
+            println!("[I2C]  found {:#04x}  reg0={:#04x}", addr, byte[0]);
+            found += 1;
+        }
+    }
+    if found == 0 {
+        println!("[I2C]  no devices found — check pull-ups, VCC, GND, SDA/SCL");
+    }
+    println!("[I2C] ─────────────────────────────────────");
+}

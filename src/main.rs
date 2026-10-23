@@ -271,7 +271,7 @@ async fn main(_spawner: Spawner) {
     // === I2C Bus ===
     let i2c = I2c::new(
         peripherals.I2C0,
-        I2cConfig::default().with_frequency(Rate::from_khz(400)),
+        I2cConfig::default().with_frequency(Rate::from_khz(100)), // DEBUG: 100 kHz
     )
     .expect("I2C failed")
     .with_sda(peripherals.GPIO15)
