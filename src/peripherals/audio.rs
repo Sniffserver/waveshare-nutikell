@@ -11,7 +11,12 @@ pub struct Es8311<I> {
 }
 
 impl<I: I2c> Es8311<I> {
-    pub fn new(i2c: I) -> Self { Self { i2c, initialized: false } }
+    pub fn new(i2c: I) -> Self {
+        Self {
+            i2c,
+            initialized: false,
+        }
+    }
 
     fn write_reg(&mut self, reg: u8, val: u8) -> Result<(), I::Error> {
         self.i2c.write(ES8311_ADDR, &[reg, val])
@@ -40,7 +45,7 @@ impl<I: I2c> Es8311<I> {
         // Reg 0x02: pre_div and pre_multi
         let mut reg02 = self.read_reg(0x02).unwrap_or(0) & 0x07;
         reg02 |= (2 - 1) << 5; // pre_div = 2
-        reg02 |= 0 << 3;       // pre_multi = 0 (1x)
+        reg02 |= 0 << 3; // pre_multi = 0 (1x)
         self.write_reg(0x02, reg02)?;
 
         // Reg 0x03: fs_mode | adc_osr
@@ -94,7 +99,7 @@ impl<I: I2c> Es8311<I> {
     pub fn mute(&mut self) -> Result<(), I::Error> {
         self.write_reg(0x12, 0x00)?; // DAC power down
         self.write_reg(0x13, 0x00)?; // Disable HP drive
-        self.write_reg(0x32, 0x00)   // Volume 0
+        self.write_reg(0x32, 0x00) // Volume 0
     }
 
     /// Unmute: power up DAC + enable HP output
@@ -104,7 +109,7 @@ impl<I: I2c> Es8311<I> {
         self.write_reg(0x0E, 0x02)?; // Enable analog PGA + ADC modulator
         self.write_reg(0x12, 0x00)?; // DAC power up (0x00 = on per C ref)
         self.write_reg(0x13, 0x10)?; // Enable HP drive
-        self.write_reg(0x32, 0xD0)   // Volume ~80%
+        self.write_reg(0x32, 0xD0) // Volume ~80%
     }
 
     /// Full shutdown: power down ALL analog blocks (not just mute).
@@ -115,30 +120,40 @@ impl<I: I2c> Es8311<I> {
         self.write_reg(0x32, 0x00)?; // Volume 0
         self.write_reg(0x13, 0x00)?; // Disable HP drive
         self.write_reg(0x12, 0x20)?; // DAC power down (bit 5 = PDN_DAC)
-        // Power down analog PGA + ADC modulator
+                                     // Power down analog PGA + ADC modulator
         self.write_reg(0x0E, 0xFF)?; // PDN_PGA | PDN_MOD | all analog off
-        // Power down analog bias
+                                     // Power down analog bias
         self.write_reg(0x0D, 0xFC)?; // VMIDSEL=off, IBIAS_PGA off, PDN_ANA
         Ok(())
     }
 
-    pub fn is_initialized(&self) -> bool { self.initialized }
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
 }
 
 /// Fill a buffer with a square wave beep (stereo 16-bit LE).
 pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration_ms: u32) -> usize {
     let total_samples = (sample_rate * duration_ms / 1000) as usize;
-    let period = if freq_hz > 0 { sample_rate / freq_hz } else { 1 };
+    let period = if freq_hz > 0 {
+        sample_rate / freq_hz
+    } else {
+        1
+    };
     let half = period / 2;
     let amplitude: i16 = 10000;
     let mut pos = 0;
     for i in 0..total_samples {
-        if pos + 4 > buf.len() { break; }
+        if pos + 4 > buf.len() {
+            break;
+        }
         let phase = (i as u32) % period;
         let sample = if phase < half { amplitude } else { -amplitude };
         let bytes = sample.to_le_bytes();
-        buf[pos] = bytes[0]; buf[pos + 1] = bytes[1]; // L
-        buf[pos + 2] = bytes[0]; buf[pos + 3] = bytes[1]; // R
+        buf[pos] = bytes[0];
+        buf[pos + 1] = bytes[1]; // L
+        buf[pos + 2] = bytes[0];
+        buf[pos + 3] = bytes[1]; // R
         pos += 4;
     }
     pos

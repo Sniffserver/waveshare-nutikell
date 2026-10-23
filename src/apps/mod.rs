@@ -5,14 +5,14 @@ use embedded_graphics::prelude::DrawTarget;
 
 use crate::peripherals::touch::{SwipeDirection, TouchPoint};
 
-pub mod snake;
-pub mod game2048;
-pub mod tetris;
 pub mod flappy;
+pub mod game2048;
 pub mod maze;
-pub mod settings;
 pub mod mp3player;
+pub mod settings;
 pub mod smarthome;
+pub mod snake;
+pub mod tetris;
 
 /// Input state passed to apps each frame
 pub struct AppInput {
