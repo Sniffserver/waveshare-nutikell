@@ -346,8 +346,19 @@ async fn main(_spawner: Spawner) {
 
     // === IMU ===
     let mut imu = Qmi8658Imu::new(RefCellDevice::new(&i2c_ref));
-    let _ = imu.init();
-    println!("[IMU] OK");
+    let chip_id = imu.read_chip_id().unwrap_or(0xFF);
+    let init_ok = imu.init().unwrap_or(false);
+    println!("[IMU] WHO_AM_I = 0x{:02X} (expected 0x05), init_ok: {}", chip_id, init_ok);
+
+    // Sample resting acceleration to verify scale and |a| ~ 1.0g
+    let _ = imu.power_up();
+    for i in 1..=5 {
+        Timer::after(Duration::from_millis(25)).await;
+        if let Ok(a) = imu.read_accel() {
+            let mag = libm::sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
+            println!("[IMU] Rest sample #{}: ax={:+.3}g, ay={:+.3}g, az={:+.3}g | |a|={:.3}g", i, a.x, a.y, a.z, mag);
+        }
+    }
 
     // === SD Card (SPI3) ===
     println!("[SD] Init...");
