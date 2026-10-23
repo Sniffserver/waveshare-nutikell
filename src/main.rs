@@ -50,7 +50,7 @@ use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::audio::{fill_beep_buffer, Es8311};
-use crate::peripherals::captive::{serve_one, ServeResult};
+use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
@@ -63,7 +63,7 @@ use crate::ui::power_page;
 use crate::ui::watchface::WatchFace;
 
 // Network runner task (must be spawned for WiFi to work)
-#[embassy_executor::task]
+#[embassy_executor::task(pool_size = 2)]
 async fn net_task(
     mut runner: embassy_net::Runner<'static, esp_radio::wifi::WifiDevice<'static>>,
 ) -> ! {
@@ -574,12 +574,14 @@ async fn main(_spawner: Spawner) {
 
         // Provisioning UI
         let mut setup_app = WifiSetupApp::new();
-        let mut provision_render_timer = Instant::now();
 
         println!("[PROVISION] AP up. Open http://192.168.4.1 to configure WiFi.");
         fb.clear_color(Rgb565::BLACK);
         setup_app.render(&mut fb);
         fb.flush(&mut display);
+
+        // Run AP services (DHCP + DNS + HTTP) alongside UI rendering & touch detection
+        let mut ap_services = core::pin::pin!(crate::peripherals::captive::run_ap_services(ap_stack));
 
         loop {
             // Check for touch tap to skip provisioning
@@ -591,32 +593,24 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
-            // Animate the spinner every 100ms
-            if (Instant::now() - provision_render_timer).as_millis() >= 100 {
-                provision_render_timer = Instant::now();
-                setup_app.update(100);
-                if setup_app.phase == SetupPhase::Waiting {
-                    fb.clear_color(Rgb565::BLACK);
-                    setup_app.render(&mut fb);
-                    fb.flush(&mut display);
-                }
-            }
-
-            // Serve one HTTP connection (returns almost immediately if no client)
-            match serve_one(ap_stack).await {
-                ServeResult::CredentialsSaved(_creds) => {
-                    println!("[PROVISION] Credentials saved! Rebooting...");
+            // Animate spinner and check AP services
+            match embassy_futures::select::select(&mut ap_services, Timer::after(Duration::from_millis(100))).await {
+                embassy_futures::select::Either::First(creds) => {
+                    println!("[PROVISION] Credentials saved for: {}! Rebooting...", creds.ssid_str());
                     setup_app.mark_done();
                     fb.clear_color(Rgb565::BLACK);
                     setup_app.render(&mut fb);
                     fb.flush(&mut display);
-                    // Brief pause so user sees the success message
                     Timer::after(Duration::from_secs(2)).await;
                     esp_hal::system::software_reset();
                 }
-                ServeResult::Pending | ServeResult::Idle => {
-                    // No credentials yet — yield briefly and loop
-                    Timer::after(Duration::from_millis(10)).await;
+                embassy_futures::select::Either::Second(_) => {
+                    setup_app.update(100);
+                    if setup_app.phase == SetupPhase::Waiting {
+                        fb.clear_color(Rgb565::BLACK);
+                        setup_app.render(&mut fb);
+                        fb.flush(&mut display);
+                    }
                 }
             }
         }
