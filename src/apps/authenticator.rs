@@ -285,27 +285,31 @@ impl AuthenticatorApp {
 
     pub fn load_default_sample_accounts(&mut self) {
         self.accounts.clear();
-        // Sample standard accounts (RFC 6238 compatible)
+        // Standard RFC 6238 test vectors only (never embed private or personal secrets)
         self.accounts.push(TotpAccount::new(
-            "GitHub",
-            "sniffmint",
+            "RFC 6238",
+            "Vector 1 (20B)",
             "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", // RFC test vector secret: "12345678901234567890"
         ));
         self.accounts.push(TotpAccount::new(
-            "Google",
-            "user@gmail.com",
-            "JBSWY3DPEHPK3PXP", // "Hello!\xde\xad\xbe\xef"
+            "RFC 3548",
+            "Vector 2 (Demo)",
+            "JBSWY3DPEHPK3PXP", // Test secret: "Hello!\xde\xad\xbe\xef"
         ));
         self.accounts.push(TotpAccount::new(
-            "AWS",
-            "root-admin",
+            "Example Corp",
+            "demo@example.com",
             "KRSXG5CTMVRXEZLU",
         ));
-        self.accounts.push(TotpAccount::new(
-            "Proton",
-            "security-key",
-            "MZXW633PN5XW6MZX",
-        ));
+    }
+
+    /// Reset and securely wipe all in-memory accounts
+    pub fn clear_accounts(&mut self) {
+        for acc in &mut self.accounts {
+            acc.secret.fill(0);
+        }
+        self.accounts.clear();
+        self.selected_index = 0;
     }
 
     pub fn current_account(&self) -> Option<&TotpAccount> {

@@ -4,9 +4,30 @@
 extern crate alloc;
 
 pub fn log_memory(label: &'static str) {
-    let free = esp_alloc::HEAP.free();
-    let used = esp_alloc::HEAP.used();
-    println!("[MEM:{}] free={} used={}", label, free, used);
+    let stats = esp_alloc::HEAP.stats();
+    let mut internal_free = 0;
+    let mut internal_used = 0;
+    let mut psram_free = 0;
+    let mut psram_used = 0;
+
+    for r in stats.region_stats.iter().flatten() {
+        if r.capabilities.contains(esp_alloc::MemoryCapability::Internal) {
+            internal_free += r.free;
+            internal_used += r.used;
+        } else if r.capabilities.contains(esp_alloc::MemoryCapability::External) {
+            psram_free += r.free;
+            psram_used += r.used;
+        }
+    }
+
+    println!(
+        "[MEM:{}] internal: free={} used={} | psram: free={} used={}",
+        label, internal_free, internal_used, psram_free, psram_used
+    );
+
+    if internal_free < 16 * 1024 {
+        println!("[MEM:{}] WARNING: Low internal heap headroom (<16KB)!", label);
+    }
 }
 
 

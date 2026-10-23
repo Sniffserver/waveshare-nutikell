@@ -185,7 +185,29 @@ impl DeviceTracker {
         }
 
         if self.devices.len() >= MAX_DEVICES {
-            self.devices.remove(0);
+            // In-place recycling: find oldest entry and reuse the existing Box
+            // to eliminate heap fragmentation during continuous scanning.
+            let mut oldest_idx = 0;
+            let mut oldest_time = u64::MAX;
+            for (idx, dev) in self.devices.iter().enumerate() {
+                if dev.last_seen_ms < oldest_time {
+                    oldest_time = dev.last_seen_ms;
+                    oldest_idx = idx;
+                }
+            }
+            let dev = &mut self.devices[oldest_idx];
+            dev.address = address;
+            dev.name = info.name;
+            dev.company_id = info.company_id;
+            dev.company = info.company_id.and_then(company_name);
+            dev.is_space = space;
+            dev.kind = kind;
+            dev.rssi = rssi;
+            dev.last_seen_ms = now_ms;
+            dev.rssi_history.samples.clear();
+            dev.rssi_history.push(now_ms, rssi);
+            dev.ad_structures = ad_structures;
+            return;
         }
 
         let _ = self.devices.push(Box::new(TrackedDevice {

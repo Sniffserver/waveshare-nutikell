@@ -163,6 +163,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tracker_is_small_enough_for_task_stack() {
+        assert!(core::mem::size_of::<DeviceTracker>() <= 64);
+    }
+
+    #[test]
+    fn app_state_is_small_enough_for_task_stack() {
+        assert!(core::mem::size_of::<BleAnalyzerApp>() <= 128);
+    }
+
+    #[test]
     fn app_initializes_with_space_sector_beacons() {
         let app = BleAnalyzerApp::new();
         assert_eq!(app.tracker.devices.len(), 4);
