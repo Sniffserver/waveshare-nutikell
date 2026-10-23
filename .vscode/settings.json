@@ -1,0 +1,25 @@
+{
+  "rust-analyzer.check.command": "check",
+  "rust-analyzer.check.extraArgs": [
+    "--release"
+  ],
+  "rust-analyzer.cargo.extraEnv": {
+    "WIFI_SSID": "TEST_NETWORK",
+    "WIFI_PASS": "TEST_PASSWORD"
+  },
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.procMacro.enable": true,
+  "editor.formatOnSave": true,
+  "editor.rulers": [
+    100
+  ],
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "search.exclude": {
+    "**/target": true
+  },
+  "files.watcherExclude": {
+    "**/target/**": true
+  },
+  "terminal.integrated.cwd": "${workspaceFolder}"
+}
