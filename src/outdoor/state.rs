@@ -86,39 +86,50 @@ impl OutdoorState {
     }
 
     /// Process a newly received PositionPacket from BLE GATT write.
-    pub fn handle_position_write(&mut self, data: &[u8]) -> Result<(), PositionError> {
+    pub fn handle_position_write(
+        &mut self,
+        data: &[u8],
+        now_unix: i64,
+    ) -> Result<(), PositionError> {
         let packet = PositionPacket::decode(data)?;
         if self.last_sequence != 0 && packet.sequence <= self.last_sequence {
             return Err(PositionError::OutOfOrder);
         }
 
-        self.ble_connected = true;
-        self.gps_valid = packet.coords_valid();
-        self.last_sequence = packet.sequence;
-        self.fix_age_secs = 0;
-
         let new_lat = packet.latitude_deg();
         let new_lon = packet.longitude_deg();
+
+        // Distance accumulation during running hike
+        if self.hike.status == HikeStatus::Running && packet.coords_valid() {
+            let accuracy_ok = packet.accuracy_m().map(|acc| acc <= 50.0).unwrap_or(false);
+            if self.has_prev_coord {
+                let segment = haversine_distance_m(self.prev_lat, self.prev_lon, new_lat, new_lon);
+                // Reject unreasonable jumps (> 100m in one update) or inaccurate GPS fixes
+                if accuracy_ok && segment >= 1.5 && segment <= 100.0 {
+                    self.distance_m += segment;
+                    self.hike.distance_m += segment;
+                }
+            }
+            self.prev_lat = new_lat;
+            self.prev_lon = new_lon;
+            self.has_prev_coord = true;
+        }
+
+        self.ble_connected = true;
+        self.gps_valid = packet.coords_valid();
         self.latitude_deg = new_lat;
         self.longitude_deg = new_lon;
         self.altitude_m = packet.altitude_m();
         self.speed_mps = packet.speed_mps();
         self.course_deg = packet.course_deg();
         self.accuracy_m = packet.accuracy_m();
+        self.last_sequence = packet.sequence;
 
-        // If hike is running and coords are valid, accumulate distance
-        if self.hike.status == HikeStatus::Running && self.gps_valid {
-            if self.has_prev_coord {
-                let d = haversine_distance_m(self.prev_lat, self.prev_lon, new_lat, new_lon);
-                // Filter out small jitter (< 1.5m) if stationary or large teleport jumps
-                if d >= 1.5 && d < 200.0 {
-                    self.distance_m += d;
-                    self.hike.distance_m += d;
-                }
-            }
-            self.prev_lat = new_lat;
-            self.prev_lon = new_lon;
-            self.has_prev_coord = true;
+        if now_unix > 0 && packet.timestamp_unix > 0 {
+            self.fix_age_secs =
+                (now_unix.saturating_sub(packet.timestamp_unix)).clamp(0, u32::MAX as i64) as u32;
+        } else {
+            self.fix_age_secs = 0;
         }
 
         Ok(())
@@ -148,7 +159,7 @@ impl OutdoorState {
         self.has_prev_coord = false;
     }
 
-    /// Periodic update (e.g. called every 1 second).
+    /// Periodic update (called every 1 second).
     pub fn tick_1s(&mut self) {
         if self.ble_connected {
             self.fix_age_secs = self.fix_age_secs.saturating_add(1);

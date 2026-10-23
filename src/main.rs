@@ -348,7 +348,10 @@ async fn main(_spawner: Spawner) {
     let mut imu = Qmi8658Imu::new(RefCellDevice::new(&i2c_ref));
     let chip_id = imu.read_chip_id().unwrap_or(0xFF);
     let init_ok = imu.init().unwrap_or(false);
-    println!("[IMU] WHO_AM_I = 0x{:02X} (expected 0x05), init_ok: {}", chip_id, init_ok);
+    println!(
+        "[IMU] WHO_AM_I = 0x{:02X} (expected 0x05), init_ok: {}",
+        chip_id, init_ok
+    );
 
     // Sample resting acceleration to verify scale and |a| ~ 1.0g
     let _ = imu.power_up();
@@ -356,7 +359,10 @@ async fn main(_spawner: Spawner) {
         Timer::after(Duration::from_millis(25)).await;
         if let Ok(a) = imu.read_accel() {
             let mag = libm::sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
-            println!("[IMU] Rest sample #{}: ax={:+.3}g, ay={:+.3}g, az={:+.3}g | |a|={:.3}g", i, a.x, a.y, a.z, mag);
+            println!(
+                "[IMU] Rest sample #{}: ax={:+.3}g, ay={:+.3}g, az={:+.3}g | |a|={:.3}g",
+                i, a.x, a.y, a.z, mag
+            );
         }
     }
 
@@ -897,7 +903,7 @@ async fn main(_spawner: Spawner) {
                 watchface.update_accel(a.x, a.y, a.z);
                 step_detector.update(a.x, a.y, a.z, now.as_millis());
                 let att = crate::outdoor::estimate_attitude(a.x, a.y, a.z);
-                outdoor_state.steps = step_detector.steps;
+                outdoor_state.steps = step_detector.steps();
                 outdoor_state.roll_deg = att.roll_deg;
                 outdoor_state.pitch_deg = att.pitch_deg;
                 outdoor_state.level_valid = att.valid;
