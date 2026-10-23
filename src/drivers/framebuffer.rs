@@ -22,21 +22,14 @@ const PIXEL_COUNT: usize = WIDTH * HEIGHT;
 
 pub struct Framebuffer {
     buf: Vec<u16>,
-    back: Vec<u16>, // Double buffer: draw to back, flush front
 }
 
 impl Framebuffer {
-    /// Allocate framebuffer in PSRAM (via global allocator).
+    /// Allocate single framebuffer in PSRAM (via global allocator).
+    /// Saves ~402KB PSRAM versus unused double-buffering.
     pub fn new() -> Self {
         let buf = vec![0u16; PIXEL_COUNT];
-        let back = vec![0u16; PIXEL_COUNT];
-        Self { buf, back }
-    }
-
-    /// Swap front and back buffers. Call after rendering to back buffer.
-    /// The front buffer (buf) is what gets flushed to display.
-    pub fn swap(&mut self) {
-        core::mem::swap(&mut self.buf, &mut self.back);
+        Self { buf }
     }
 
     /// Clear the entire framebuffer with a color.
@@ -71,16 +64,7 @@ impl Framebuffer {
     /// Result: display always shows a complete frame, zero tearing.
     /// Fast VSync flush for games. No copy, just sync + send.
     pub fn swap_and_flush(&mut self, display: &mut Co5300Display, te: &esp_hal::gpio::Input<'_>) {
-        // Short TE sync. If TE isn't pulsing (display just woken up, or we're flushing
-        // outside vblank window), give up after a few hundred cycles instead of burning
-        // CPU. Tearing is invisible most of the time anyway because we flush <30fps.
-        for _ in 0..400 {
-            if te.is_high() {
-                break;
-            }
-        }
-        display.set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16);
-        display.bus_mut().write_pixels(&self.buf);
+        self.flush_vsync(display, te);
     }
 
     /// VSync flush for watchface / menus. Same as swap_and_flush but kept distinct for clarity.

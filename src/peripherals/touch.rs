@@ -92,20 +92,19 @@ impl<I: I2c> Ft3168Touch<I> {
         Ok(())
     }
 
-    /// Read current touch state. Returns None if no touch.
+    /// Read current touch state using a single 5-byte I2C burst read.
+    /// Reduces bus transactions from 5 separate reads to 1.
+    /// Returns None if no touch.
     pub fn read(&mut self) -> Result<Option<TouchPoint>, I::Error> {
-        let fingers = self.read_reg(REG_FINGER_NUM)?;
+        let mut buf = [0u8; 5];
+        self.i2c.write_read(FT3168_ADDR, &[REG_FINGER_NUM], &mut buf)?;
+        let fingers = buf[0];
         if fingers == 0 {
             return Ok(None);
         }
 
-        let x_h = self.read_reg(REG_X1_H)? as u16;
-        let x_l = self.read_reg(REG_X1_L)? as u16;
-        let y_h = self.read_reg(REG_Y1_H)? as u16;
-        let y_l = self.read_reg(REG_Y1_L)? as u16;
-
-        let x = ((x_h & 0x0F) << 8) | x_l;
-        let y = ((y_h & 0x0F) << 8) | y_l;
+        let x = (((buf[1] & 0x0F) as u16) << 8) | (buf[2] as u16);
+        let y = (((buf[3] & 0x0F) as u16) << 8) | (buf[4] as u16);
 
         Ok(Some(TouchPoint { x, y, fingers }))
     }
