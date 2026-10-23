@@ -52,7 +52,8 @@ use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
-use crate::peripherals::audio::{fill_beep_buffer, Es8311};
+use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
+use crate::ui::notification::{Notification, NotificationManager, Urgency};
 use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
@@ -509,6 +510,10 @@ async fn main(_spawner: Spawner) {
     let beep_len = fill_beep_buffer(unsafe { &mut BEEP_BUF }, 800, 16000, 50);
     println!("[AUDIO] I2S OK ({} bytes beep)", beep_len);
 
+    static mut CHIME_BUF: [u8; 4000] = [0u8; 4000];
+    let chime_len = fill_chime_buffer(unsafe { &mut CHIME_BUF }, 16000);
+    println!("[AUDIO] Chime OK ({} bytes chime)", chime_len);
+
     // === WiFi init (esp-radio) — RADIO STAYS OFF AT BOOT ===
     //
     // POWER BUDGET NOTE:
@@ -716,6 +721,9 @@ async fn main(_spawner: Spawner) {
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::new();
     let mut authenticator_app = AuthenticatorApp::new();
+    let mut notification_mgr = NotificationManager::new();
+    let mut demo_notif_scheduled = true;
+    let demo_notif_time = Instant::now() + Duration::from_secs(7);
     let mut outdoor_state = crate::outdoor::OutdoorState::new();
     let mut step_detector = crate::outdoor::StepDetector::default();
     let mut next_outdoor_tick = Instant::now();
@@ -1224,6 +1232,67 @@ async fn main(_spawner: Spawner) {
             }
         }
 
+        // Notification touch & swipe intercept
+        if notification_mgr.is_visible() {
+            if tap_event {
+                if notification_mgr.handle_touch(crate::peripherals::touch::TouchPoint {
+                    x: last_touch_x,
+                    y: last_touch_y,
+                    fingers: 1,
+                }) {
+                    tap_event = false;
+                    page_dirty = true;
+                }
+            } else if swipe_event == Some(SwipeDirection::Up) {
+                notification_mgr.dismiss();
+                swipe_event = None;
+                page_dirty = true;
+            }
+        }
+
+        // Advance notification animation and timers
+        notification_mgr.tick(dt_ms.max(1));
+        if notification_mgr.is_visible() {
+            page_dirty = true;
+        }
+
+        // Demo notification trigger 7s after boot
+        if demo_notif_scheduled && now >= demo_notif_time {
+            demo_notif_scheduled = false;
+            let (h, m, s) = (14, 30, 0);
+            notification_mgr.push(Notification::new(
+                1,
+                "Messages",
+                "Alice Smith",
+                "Hey! Are we meeting at 3pm?",
+                (h, m, s),
+                Urgency::Normal,
+            ));
+            last_interaction = now;
+            if screen_state < 3 {
+                if screen_state == 0 {
+                    display.display_on();
+                    Timer::after(Duration::from_millis(20)).await;
+                }
+                display.set_brightness(watchface.brightness);
+                screen_state = 3;
+                watchface.force_redraw();
+                page_dirty = true;
+            }
+        }
+
+        // Play notification chime over I2S if requested
+        if notification_mgr.take_pending_chime() {
+            let _ = audio_codec.unmute();
+            delay.delay_millis(2);
+            pa_en.set_high();
+            if let Ok(transfer) = i2s_tx.write_dma(unsafe { &CHIME_BUF }) {
+                let _ = transfer.wait();
+            }
+            pa_en.set_low();
+            let _ = audio_codec.mute();
+        }
+
         // === Screen sleep/wake state machine ===
         // Levels:
         //   3 = full bright + interactive (default)
@@ -1565,7 +1634,13 @@ async fn main(_spawner: Spawner) {
                     // Only flush if we actually drew something. The TE wait + 402 KB DMA
                     // is by far the heaviest periodic operation in the firmware, so we
                     // gate it strictly on dirtiness.
+                    if notification_mgr.is_visible() {
+                        need_flush = true;
+                    }
                     if need_flush {
+                        if notification_mgr.is_visible() {
+                            notification_mgr.render(&mut fb);
+                        }
                         fb.flush_vsync(&mut display, &te_pin);
                         next_watchface_flush = now;
                     }
@@ -1717,6 +1792,9 @@ async fn main(_spawner: Spawner) {
                     }
                 } else {
                     launcher.render(&mut fb);
+                    if notification_mgr.is_visible() {
+                        notification_mgr.render(&mut fb);
+                    }
                     fb.flush(&mut display);
                 }
                 if boot_button.is_low() {
@@ -1886,6 +1964,9 @@ async fn main(_spawner: Spawner) {
                     last_touch_y = tp.y;
                 }
                 settings_app.render(&mut fb);
+                if notification_mgr.is_visible() {
+                    notification_mgr.render(&mut fb);
+                }
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(50);
@@ -1901,6 +1982,9 @@ async fn main(_spawner: Spawner) {
                     outdoor_app.handle_tap(last_touch_x, last_touch_y, &mut outdoor_state);
                 }
                 outdoor_app.render(&mut fb, &outdoor_state);
+                if notification_mgr.is_visible() {
+                    notification_mgr.render(&mut fb);
+                }
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     let flush_ms =
@@ -1935,6 +2019,9 @@ async fn main(_spawner: Spawner) {
                 };
                 let res = work_tracker.update(&input);
                 work_tracker.render(&mut fb);
+                if notification_mgr.is_visible() {
+                    notification_mgr.render(&mut fb);
+                }
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(100);
@@ -1966,6 +2053,9 @@ async fn main(_spawner: Spawner) {
                 };
                 let res = authenticator_app.update(&input);
                 authenticator_app.render(&mut fb);
+                if notification_mgr.is_visible() {
+                    notification_mgr.render(&mut fb);
+                }
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(100);

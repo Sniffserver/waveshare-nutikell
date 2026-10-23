@@ -158,3 +158,50 @@ pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration
     }
     pos
 }
+
+/// Fill a buffer with a 2-tone melodic notification chime.
+/// Tone 1: 650 Hz (35ms), Tone 2: 980 Hz (35ms), stereo 16-bit LE @ 16kHz
+pub fn fill_chime_buffer(buf: &mut [u8], sample_rate: u32) -> usize {
+    let tone1_freq = 650;
+    let tone1_samples = (sample_rate * 35 / 1000) as usize;
+    let tone2_freq = 980;
+    let tone2_samples = (sample_rate * 35 / 1000) as usize;
+    let amplitude: i16 = 12000;
+    let mut pos = 0;
+
+    // Tone 1: 650 Hz
+    let period1 = sample_rate / tone1_freq;
+    let half1 = period1 / 2;
+    for i in 0..tone1_samples {
+        if pos + 4 > buf.len() {
+            break;
+        }
+        let phase = (i as u32) % period1;
+        let sample = if phase < half1 { amplitude } else { -amplitude };
+        let bytes = sample.to_le_bytes();
+        buf[pos] = bytes[0];
+        buf[pos + 1] = bytes[1];
+        buf[pos + 2] = bytes[0];
+        buf[pos + 3] = bytes[1];
+        pos += 4;
+    }
+
+    // Tone 2: 980 Hz
+    let period2 = sample_rate / tone2_freq;
+    let half2 = period2 / 2;
+    for i in 0..tone2_samples {
+        if pos + 4 > buf.len() {
+            break;
+        }
+        let phase = (i as u32) % period2;
+        let sample = if phase < half2 { amplitude } else { -amplitude };
+        let bytes = sample.to_le_bytes();
+        buf[pos] = bytes[0];
+        buf[pos + 1] = bytes[1];
+        buf[pos + 2] = bytes[0];
+        buf[pos + 3] = bytes[1];
+        pos += 4;
+    }
+
+    pos
+}

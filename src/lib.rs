@@ -59,3 +59,8 @@ pub mod peripherals {
         }
     }
 }
+
+pub mod ui {
+    pub mod notification;
+    pub use notification::{Notification, NotificationManager, Urgency};
+}
