@@ -401,7 +401,7 @@ async fn main(_spawner: Spawner) {
     use embedded_hal_bus::spi::ExclusiveDevice;
     let sd_spi_dev = ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
     let mut sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
-    let mut sd_ok = false;
+    let mut _sd_ok = false;
     let mut mp3_files: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
     match sd_card.num_bytes() {
         Ok(size) => {
@@ -434,7 +434,7 @@ async fn main(_spawner: Spawner) {
                             });
                             println!("[SD] {} files found", mp3_files.len());
                             let _ = volume_mgr.close_dir(mp3_dir);
-                            sd_ok = true;
+                            _sd_ok = true;
                         } else {
                             // Try lowercase
                             if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "mp3") {
@@ -452,7 +452,7 @@ async fn main(_spawner: Spawner) {
                                 });
                                 println!("[SD] {} files found", mp3_files.len());
                                 let _ = volume_mgr.close_dir(mp3_dir);
-                                sd_ok = true;
+                                _sd_ok = true;
                             } else {
                                 println!("[SD] No /mp3/ or /MP3/ folder");
                             }
@@ -860,7 +860,7 @@ async fn main(_spawner: Spawner) {
             hike_running,
             hike_paused,
         );
-        let policy = crate::outdoor::PowerPolicy::for_mode(power_mode);
+        let _policy = crate::outdoor::PowerPolicy::for_mode(power_mode);
 
         let tick = if touch_held || button_held {
             // Something is currently being held: wake fast enough to track motion / detect

@@ -249,6 +249,7 @@ impl TotpAccount {
 // Flash storage sector 1 (0xA000, 4KB, immediately following WiFi NVS sector at 0x9000)
 #[allow(dead_code)]
 const TOTP_FLASH_OFFSET: u32 = 0xA000;
+#[allow(dead_code)]
 const TOTP_MAGIC: [u8; 4] = *b"2FAT";
 
 // =========================================================================

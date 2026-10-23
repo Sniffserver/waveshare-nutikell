@@ -342,7 +342,7 @@ impl App for MediaController {
             .draw(d);
 
         let white = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
-        let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
+        let _dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
         let bold_white = MonoTextStyle::new(&FONT_9X18_BOLD, Rgb565::WHITE);
         let accent = self.source.accent_color();
 
