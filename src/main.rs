@@ -582,6 +582,15 @@ async fn main(_spawner: Spawner) {
         fb.flush(&mut display);
 
         loop {
+            // Check for touch tap to skip provisioning
+            if touch_int.is_low() {
+                if let Ok(Some(_)) = touch.read() {
+                    println!("[PROVISION] Touch detected — skipping WiFi setup");
+                    wifi_controller.stop().ok();
+                    break;
+                }
+            }
+
             // Animate the spinner every 100ms
             if (Instant::now() - provision_render_timer).as_millis() >= 100 {
                 provision_render_timer = Instant::now();
