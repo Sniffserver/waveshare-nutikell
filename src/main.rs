@@ -44,12 +44,15 @@ use crate::apps::settings::SettingsApp;
 use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
+use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::audio::{fill_beep_buffer, Es8311};
+use crate::peripherals::captive::{serve_one, ServeResult};
 use crate::peripherals::imu::Qmi8658Imu;
+use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
@@ -507,19 +510,114 @@ async fn main(_spawner: Spawner) {
     .expect("BLE init failed");
     println!("[BLE] Connector ready (advertising OFF)");
 
-    // Pre-fill STA credentials so "toggle WiFi" just flips a bit later.
-    // Falls back to empty strings if WIFI_SSID / WIFI_PASS are not set at
-    // compile time — WiFi simply won't connect but the watch boots fine.
-    use esp_radio::wifi::{AuthMethod, ClientConfig, ModeConfig};
-    let wifi_ssid = option_env!("WIFI_SSID").unwrap_or("");
-    let wifi_pass = option_env!("WIFI_PASS").unwrap_or("");
-    let wifi_has_creds = !wifi_ssid.is_empty();
+    // === NVS: load stored WiFi credentials ===
+    // If no credentials are stored, enter AP provisioning mode.
+    use esp_radio::wifi::{AccessPointConfig, AuthMethod, ClientConfig, ModeConfig};
+    use embassy_net::{Config as NetConfig, StackResources};
+    use static_cell::StaticCell;
+
+    let nvs_creds: Option<StoredCredentials> = read_credentials();
+    let wifi_has_nvs_creds = nvs_creds.as_ref().map(|c| c.is_configured()).unwrap_or(false);
+
+    // Compile-time fallback credentials (for development without NVS provisioning)
+    let fallback_ssid = option_env!("WIFI_SSID").unwrap_or("");
+    let fallback_pass = option_env!("WIFI_PASS").unwrap_or("");
+    let wifi_has_creds = wifi_has_nvs_creds || !fallback_ssid.is_empty();
+
+    // Resolve which credentials to use
+    let (wifi_ssid, wifi_pass): (alloc::string::String, alloc::string::String) =
+        if let Some(ref creds) = nvs_creds {
+            if creds.is_configured() {
+                println!("[WIFI] Using NVS credentials for: {}", creds.ssid_str());
+                (alloc::string::String::from(creds.ssid_str()),
+                 alloc::string::String::from(creds.pass_str()))
+            } else {
+                (alloc::string::String::from(fallback_ssid),
+                 alloc::string::String::from(fallback_pass))
+            }
+        } else {
+            (alloc::string::String::from(fallback_ssid),
+             alloc::string::String::from(fallback_pass))
+        };
+
+    // === WiFi provisioning AP mode (runs BEFORE main watchface loop) ===
+    //
+    // If no credentials are configured anywhere (neither NVS nor compile-time
+    // env vars), the watch becomes an open AP named "Watch-Setup" and shows a
+    // QR code on the display.  The phone connects, opens the captive portal,
+    // submits credentials, and the watch saves them to NVS then reboots.
     if !wifi_has_creds {
-        println!("[WIFI] No SSID configured — WiFi disabled");
+        println!("[PROVISION] No WiFi creds — starting AP provisioning");
+
+        // Reconfigure WiFi controller as Access Point
+        let ap_config = AccessPointConfig::default()
+            .with_ssid(alloc::string::String::from(AP_SSID))
+            .with_auth_method(AuthMethod::None);
+        let ap_mode = ModeConfig::AccessPoint(ap_config);
+        wifi_controller.set_config(&ap_mode).ok();
+        wifi_controller.start().ok();
+
+        // AP embassy-net stack with static IP 192.168.4.1/24
+        let ap_net_config = NetConfig::ipv4_static(embassy_net::StaticConfigV4 {
+            address: embassy_net::Ipv4Cidr::new(
+                embassy_net::Ipv4Address::new(192, 168, 4, 1),
+                24,
+            ),
+            gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
+            dns_servers: Default::default(),
+        });
+        static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+        let ap_resources = AP_RESOURCES.init(StackResources::new());
+        let (ap_stack, ap_runner) =
+            embassy_net::new(wifi_interfaces.ap, ap_net_config, ap_resources, 54321u64);
+        _spawner.spawn(net_task(ap_runner)).ok();
+
+        // Provisioning UI
+        let mut setup_app = WifiSetupApp::new();
+        let mut provision_render_timer = Instant::now();
+
+        println!("[PROVISION] AP up. Open http://192.168.4.1 to configure WiFi.");
+        fb.clear_color(Rgb565::BLACK);
+        setup_app.render(&mut fb);
+        fb.flush(&mut display);
+
+        loop {
+            // Animate the spinner every 100ms
+            if (Instant::now() - provision_render_timer).as_millis() >= 100 {
+                provision_render_timer = Instant::now();
+                setup_app.update(100);
+                if setup_app.phase == SetupPhase::Waiting {
+                    fb.clear_color(Rgb565::BLACK);
+                    setup_app.render(&mut fb);
+                    fb.flush(&mut display);
+                }
+            }
+
+            // Serve one HTTP connection (returns almost immediately if no client)
+            match serve_one(ap_stack).await {
+                ServeResult::CredentialsSaved(_creds) => {
+                    println!("[PROVISION] Credentials saved! Rebooting...");
+                    setup_app.mark_done();
+                    fb.clear_color(Rgb565::BLACK);
+                    setup_app.render(&mut fb);
+                    fb.flush(&mut display);
+                    // Brief pause so user sees the success message
+                    Timer::after(Duration::from_secs(2)).await;
+                    esp_hal::system::software_reset();
+                }
+                ServeResult::Pending | ServeResult::Idle => {
+                    // No credentials yet — yield briefly and loop
+                    Timer::after(Duration::from_millis(10)).await;
+                }
+            }
+        }
     }
+
+    // === Normal STA mode setup ===
+    // Credentials are available (NVS or compile-time). Pre-fill STA config.
     let client_config = ClientConfig::default()
-        .with_ssid(alloc::string::String::from(wifi_ssid))
-        .with_password(alloc::string::String::from(wifi_pass))
+        .with_ssid(wifi_ssid)
+        .with_password(wifi_pass.clone())
         .with_auth_method(if wifi_pass.is_empty() {
             AuthMethod::None
         } else {
@@ -533,9 +631,6 @@ async fn main(_spawner: Spawner) {
     // fully idle until the user taps the WiFi button.
 
     // === Network Stack scaffolding (idle until radio starts) ===
-    use embassy_net::{Config as NetConfig, StackResources};
-    use static_cell::StaticCell;
-
     let net_config = NetConfig::dhcpv4(Default::default());
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     let resources = RESOURCES.init(StackResources::new());

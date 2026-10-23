@@ -13,6 +13,7 @@ pub mod settings;
 pub mod smarthome;
 pub mod snake;
 pub mod tetris;
+pub mod wifi_setup;
 
 /// Input state passed to apps each frame
 pub struct AppInput {

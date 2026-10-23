@@ -1,8 +1,10 @@
 pub mod audio;
 pub mod ble;
+pub mod captive;
 pub mod cpu_clock;
 pub mod http;
 pub mod imu;
+pub mod nvs;
 pub mod power;
 pub mod power_stats;
 pub mod rtc;

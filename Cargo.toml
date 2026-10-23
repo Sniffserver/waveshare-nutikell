@@ -28,6 +28,7 @@ embedded-graphics-core = "0.4"
 # HAL traits
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
+embedded-storage = "0.3"
 
 # WiFi / Networking
 esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "ble", "coex", "unstable", "log-04"] }
@@ -41,6 +42,11 @@ embedded-io-async = "0.6"
 
 # MP3 decoding
 nanomp3 = "0.1"
+
+# QR Code (no_std, no alloc — generates QR matrix directly)
+embedded-qr = "0.2"
+# NVS Flash Storage
+esp-storage = { version = "0.6.0", features = ["esp32s3"] }
 
 [profile.dev]
 opt-level = "s"
