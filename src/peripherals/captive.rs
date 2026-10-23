@@ -48,8 +48,8 @@ pub enum ServeResult {
 /// Serve one HTTP connection. Runs until the connection closes.
 /// Call in a loop while in provisioning mode.
 pub async fn serve_one(stack: Stack<'_>) -> ServeResult {
-    let mut rx_buf = [0u8; 2048];
-    let mut tx_buf = [0u8; 2048];
+    let mut rx_buf = [0u8; 512];
+    let mut tx_buf = [0u8; 512];
     let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     socket.set_timeout(Some(Duration::from_secs(10)));
 
@@ -62,7 +62,7 @@ pub async fn serve_one(stack: Stack<'_>) -> ServeResult {
     }
 
     // Read the full request (up to 1800 bytes)
-    let mut req = [0u8; 1800];
+    let mut req = [0u8; 512];
     let mut total = 0usize;
     loop {
         match socket.read(&mut req[total..]).await {

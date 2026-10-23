@@ -100,7 +100,7 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), ()> {
 
     // Build the 4096-byte sector buffer (rest stays 0xFF to preserve flash health)
     // We only need 102 bytes but FlashStorage::write erases the whole sector.
-    let mut sector = [0xFFu8; 4096];
+    let mut sector = alloc::boxed::Box::new([0xFFu8; 4096]);
     sector[0..4].copy_from_slice(&MAGIC);
     sector[4] = creds.ssid_len as u8;
     sector[5..5 + creds.ssid_len].copy_from_slice(&creds.ssid[..creds.ssid_len]);
@@ -113,7 +113,7 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), ()> {
         .map_err(|_| ())?;
 
     // Write the whole sector back (FlashStorage requires word-aligned writes)
-    storage.write(CRED_FLASH_OFFSET, &sector).map_err(|_| ())?;
+    storage.write(CRED_FLASH_OFFSET, sector.as_ref()).map_err(|_| ())?;
 
     Ok(())
 }

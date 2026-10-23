@@ -248,7 +248,7 @@ async fn main(_spawner: Spawner) {
     // The BLE+WiFi coex radio stack needs ~100KB+ of internal SRAM for
     // btdm_controller_init tasks and buffers. 64KB was too small and
     // caused a StoreProhibited panic (null-pointer from failed alloc).
-    esp_alloc::heap_allocator!(size: 200 * 1024);
+    esp_alloc::heap_allocator!(size: 160 * 1024);
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
