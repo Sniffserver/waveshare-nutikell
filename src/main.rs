@@ -810,9 +810,17 @@ async fn main(_spawner: Spawner) {
     // BLE state
     let mut ble_on: bool = false;
     let mut ble_toggle_request: bool = false;
-    // Power-down the IMU at boot — only enable when a consumer (gyro toggle, game, sensors page) needs it.
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ImuPowerMode {
+        Off,
+        AccelOnly,
+        Full6Axis,
+    }
+
+    // Power-down the IMU at boot — only enable when a consumer needs it.
     let _ = imu.power_down();
-    let mut imu_powered = false;
+    let mut imu_mode = ImuPowerMode::Off;
     // Tracks the previous-iteration state of the FT3168 INT line.
     // We need this to keep polling touch.poll() ONCE more after the finger lifts,
     // otherwise we miss the swipe-end event and pages stay stuck mid-drag.
@@ -824,18 +832,28 @@ async fn main(_spawner: Spawner) {
         let touch_held = touch_int.is_low();
         let button_held = boot_button.is_low();
 
+        let hike_running = outdoor_state.hike.status == crate::outdoor::HikeStatus::Running;
+
         let tick = if touch_held || button_held {
             // Something is currently being held: wake fast enough to track motion / detect
             // long-press, but no faster than necessary.
             Duration::from_millis(16) // ~60 Hz
         } else if screen_state == 0 {
-            // Screen completely off: only wake every 30 s for housekeeping (battery refresh).
-            // GPIO falling edges still wake us instantly.
-            Duration::from_secs(30)
+            // Screen completely off: if hike is running, sample accel at 20 Hz (50 ms)
+            // for step detection. Otherwise only wake every 30 s for housekeeping.
+            if hike_running {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_secs(30)
+            }
         } else if screen_state == 1 {
-            // AOD mode: wake every 10 s to check if a new minute has started.
-            // We don't need exactly 60 s precision because the user only sees minutes change.
-            Duration::from_secs(10)
+            // AOD mode: if hike is running, sample accel at 20 Hz (50 ms).
+            // Otherwise wake every 10 s to check if minute changed.
+            if hike_running {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_secs(10)
+            }
         } else {
             match app_state {
                 AppState::Watchface => match current_page {
@@ -892,30 +910,59 @@ async fn main(_spawner: Spawner) {
         let dt_ms = (now - last_frame).as_millis() as u32;
         last_frame = now;
 
-        // === Sensors (gated by need + screen state) ===
-        // IMU only when an interactive consumer needs it (gyro enabled, IMU-driven game, sensors page).
-        // When screen is off OR no consumer needs it, we power-down the IMU completely
-        // (CTRL7 = 0). The QMI8658's gyro alone draws ~1.5 mA so this is a meaningful win.
-        let need_imu = screen_state >= 2
+        // === Sensors (power-optimized by consumer needs) ===
+        // Full 6-axis (accel + gyro, ~2.5 mA) only when a dynamic 3D angle or gyro consumer is active.
+        let need_gyro = screen_state >= 2
             && (watchface.gyro_enabled
                 || app_state == AppState::Maze
                 || app_state == AppState::Tetris
                 || app_state == AppState::Flappy
-                || app_state == AppState::Outdoor
-                || outdoor_state.hike.status == crate::outdoor::HikeStatus::Running
+                || (app_state == AppState::Outdoor
+                    && outdoor_app.screen == crate::apps::outdoor_app::OutdoorScreen::Level)
                 || (app_state == AppState::Watchface && current_page == Page::Sensors));
-        if need_imu && !imu_powered {
-            let _ = imu.power_up();
-            imu_powered = true;
-        } else if !need_imu && imu_powered {
-            let _ = imu.power_down();
-            imu_powered = false;
+
+        // Accel only (~150 µA) is sufficient for step detection, hike tracking, and watchface tilt.
+        let need_accel = need_gyro
+            || hike_running
+            || (screen_state >= 2 && (app_state == AppState::Outdoor || app_state == AppState::Watchface));
+
+        let target_imu_mode = if need_gyro {
+            ImuPowerMode::Full6Axis
+        } else if need_accel {
+            ImuPowerMode::AccelOnly
+        } else {
+            ImuPowerMode::Off
+        };
+
+        if target_imu_mode != imu_mode {
+            match target_imu_mode {
+                ImuPowerMode::Full6Axis => {
+                    let _ = imu.enable_6axis();
+                }
+                ImuPowerMode::AccelOnly => {
+                    let _ = imu.enable_accel_only();
+                }
+                ImuPowerMode::Off => {
+                    let _ = imu.power_down();
+                }
+            }
+            imu_mode = target_imu_mode;
         }
-        if need_imu {
+
+        if need_accel {
             if let Ok(a) = imu.read_accel() {
                 accel = (a.x, a.y, a.z);
-                watchface.update_accel(a.x, a.y, a.z);
-                step_detector.update(crate::outdoor::AccelSample { x_g: a.x, y_g: a.y, z_g: a.z }, now.as_millis());
+                if screen_state >= 2 {
+                    watchface.update_accel(a.x, a.y, a.z);
+                }
+                step_detector.update(
+                    crate::outdoor::AccelSample {
+                        x_g: a.x,
+                        y_g: a.y,
+                        z_g: a.z,
+                    },
+                    now.as_millis(),
+                );
                 let att = crate::outdoor::estimate_attitude(a.x, a.y, a.z);
                 outdoor_state.steps = step_detector.steps();
                 outdoor_state.roll_deg = att.roll_deg;
@@ -923,6 +970,9 @@ async fn main(_spawner: Spawner) {
                 outdoor_state.level_valid = att.valid;
                 outdoor_state.imu_motion = step_detector.motion_state();
             }
+        }
+
+        if need_gyro {
             if let Ok(g) = imu.read_gyro() {
                 gyro_data = (
                     (g.x * 10.0) as i16,
@@ -1033,7 +1083,7 @@ async fn main(_spawner: Spawner) {
                                             update_power_stats(
                                                 &mut power_stats,
                                                 screen_state,
-                                                imu_powered,
+                                                imu_mode != ImuPowerMode::Off,
                                                 wifi_connected,
                                                 wifi_on_request,
                                                 watchface.brightness,
@@ -1393,7 +1443,7 @@ async fn main(_spawner: Spawner) {
                                 update_power_stats(
                                     &mut power_stats,
                                     screen_state,
-                                    imu_powered,
+                                    imu_mode != ImuPowerMode::Off,
                                     wifi_connected,
                                     wifi_on_request,
                                     watchface.brightness,
@@ -1442,7 +1492,7 @@ async fn main(_spawner: Spawner) {
                                 update_power_stats(
                                     &mut power_stats,
                                     screen_state,
-                                    imu_powered,
+                                    imu_mode != ImuPowerMode::Off,
                                     wifi_connected,
                                     wifi_on_request,
                                     watchface.brightness,

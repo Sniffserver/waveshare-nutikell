@@ -5,6 +5,7 @@ use embedded_hal::i2c::I2c;
 
 const FT3168_ADDR: u8 = 0x38;
 
+#[allow(dead_code)]
 // Registers
 const REG_FINGER_NUM: u8 = 0x02;
 const REG_X1_H: u8 = 0x03;
