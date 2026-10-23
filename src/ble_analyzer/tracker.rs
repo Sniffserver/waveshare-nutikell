@@ -1,12 +1,13 @@
 //! Discovered device state tracker with RSSI history and space-sector detection.
 
+use alloc::boxed::Box;
 use heapless::{String, Vec};
 
 use super::ad::{parse_16bit_services, parse_advertising_data, parse_device_name, parse_manufacturer_data, parse_tx_power};
 use super::companies::is_space_sector;
 use super::gatt::GattProfile;
 
-pub const MAX_TRACKED_DEVICES: usize = 16;
+pub const MAX_TRACKED_DEVICES: usize = 8;
 pub const RSSI_HISTORY_LEN: usize = 16;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,7 +22,7 @@ pub struct TrackedDevice {
     pub last_seen_secs: u32,
     pub tx_power: Option<i8>,
     pub advertised_services: Vec<u16, 6>,
-    pub gatt_profile: Option<GattProfile>,
+    pub gatt_profile: Option<Box<GattProfile>>,
 }
 
 impl TrackedDevice {

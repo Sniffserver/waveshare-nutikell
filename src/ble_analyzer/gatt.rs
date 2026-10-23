@@ -6,9 +6,9 @@
 
 use heapless::Vec;
 
-pub const MAX_SERVICES_PER_DEVICE: usize = 8;
-pub const MAX_CHARS_PER_SERVICE: usize = 6;
-pub const MAX_VALUE_LEN: usize = 32;
+pub const MAX_SERVICES_PER_DEVICE: usize = 4;
+pub const MAX_CHARS_PER_SERVICE: usize = 4;
+pub const MAX_VALUE_LEN: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GattError {
