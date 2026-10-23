@@ -263,3 +263,10 @@ pub fn scan_i2c<I: I2c>(i2c: &mut I) {
     }
     println!("[I2C] ─────────────────────────────────────");
 }
+
+impl<I> Qmi8658Imu<I> {
+    /// Release the underlying I2C bus device.
+    pub fn release(self) -> I {
+        self.i2c
+    }
+}

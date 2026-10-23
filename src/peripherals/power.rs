@@ -150,3 +150,34 @@ impl<I: I2c> Axp2101Power<I> {
         self.write_reg(REG_ADC_ENABLE, 0b00001101)
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatteryState {
+    pub connected: bool,
+    pub voltage_mv: u16,
+    pub percent: u8,
+    pub charging: bool,
+}
+
+impl<I> Axp2101Power<I> {
+    /// Release the underlying I2C bus device.
+    pub fn release(self) -> I {
+        self.i2c
+    }
+}
+
+impl<I: I2c> Axp2101Power<I> {
+    /// Read full battery telemetry in a single snapshot.
+    pub fn read_battery(&mut self) -> Result<BatteryState, I::Error> {
+        let voltage_mv = self.get_battery_voltage().unwrap_or(0);
+        let percent = self.get_battery_percent().unwrap_or(0);
+        let charging = self.is_charging().unwrap_or(false);
+        let connected = voltage_mv > 2000;
+        Ok(BatteryState {
+            connected,
+            voltage_mv,
+            percent,
+            charging,
+        })
+    }
+}

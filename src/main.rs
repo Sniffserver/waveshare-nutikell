@@ -713,7 +713,7 @@ async fn main(_spawner: Spawner) {
     let mut launcher = Launcher::new();
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut outdoor_state = crate::outdoor::OutdoorState::new();
-    let mut step_detector = crate::outdoor::StepDetector::new();
+    let mut step_detector = crate::outdoor::StepDetector::default();
     let mut next_outdoor_tick = Instant::now();
     let mut settings_app = SettingsApp::new();
     if let Some(ref creds) = nvs_creds {
@@ -915,7 +915,7 @@ async fn main(_spawner: Spawner) {
             if let Ok(a) = imu.read_accel() {
                 accel = (a.x, a.y, a.z);
                 watchface.update_accel(a.x, a.y, a.z);
-                step_detector.update(a.x, a.y, a.z, now.as_millis());
+                step_detector.update(crate::outdoor::AccelSample { x_g: a.x, y_g: a.y, z_g: a.z }, now.as_millis());
                 let att = crate::outdoor::estimate_attitude(a.x, a.y, a.z);
                 outdoor_state.steps = step_detector.steps();
                 outdoor_state.roll_deg = att.roll_deg;

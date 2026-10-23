@@ -160,6 +160,15 @@ impl OutdoorState {
     }
 
     /// Periodic update (called every 1 second).
+    
+    pub fn is_hike_running(&self) -> bool {
+        self.hike.status == HikeStatus::Running
+    }
+
+    pub fn is_hike_paused(&self) -> bool {
+        self.hike.status == HikeStatus::Paused
+    }
+
     pub fn tick_1s(&mut self) {
         if self.ble_connected {
             self.fix_age_secs = self.fix_age_secs.saturating_add(1);
