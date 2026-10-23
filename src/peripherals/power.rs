@@ -157,6 +157,18 @@ pub struct BatteryState {
     pub voltage_mv: u16,
     pub percent: u8,
     pub charging: bool,
+    pub vbus_present: bool,
+}
+
+pub const fn battery_level_bucket(percent: u8) -> u8 {
+    match percent {
+        0..=5 => 0,
+        6..=20 => 1,
+        21..=45 => 2,
+        46..=70 => 3,
+        71..=90 => 4,
+        _ => 5,
+    }
 }
 
 impl<I> Axp2101Power<I> {
@@ -172,12 +184,14 @@ impl<I: I2c> Axp2101Power<I> {
         let voltage_mv = self.get_battery_voltage().unwrap_or(0);
         let percent = self.get_battery_percent().unwrap_or(0);
         let charging = self.is_charging().unwrap_or(false);
+        let vbus_present = self.is_vbus_in().unwrap_or(false);
         let connected = voltage_mv > 2000;
         Ok(BatteryState {
             connected,
             voltage_mv,
             percent,
             charging,
+            vbus_present,
         })
     }
 }

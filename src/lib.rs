@@ -6,4 +6,5 @@ pub mod outdoor {
     pub mod steps;
     pub mod packet;
     pub mod solar;
+    pub mod state;
 }

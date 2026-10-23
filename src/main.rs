@@ -756,11 +756,12 @@ async fn main(_spawner: Spawner) {
     let mut snap_target: Vec<u16> = vec![0u16; pixel_count];
 
     // Initial render
-    if let Ok(pct) = power.get_battery_percent() {
-        batt_pct = pct;
-        batt_mv = power.get_battery_voltage().unwrap_or(0);
-        charging = power.is_charging().unwrap_or(false);
+    if let Ok(bat) = power.read_battery() {
+        batt_pct = bat.percent;
+        batt_mv = bat.voltage_mv;
+        charging = bat.charging;
         watchface.update_battery(batt_pct, batt_mv, charging);
+        outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
     }
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
@@ -1008,11 +1009,12 @@ async fn main(_spawner: Spawner) {
         // Battery: every 60 s normally, every 5 min when the screen is off
         // (we still check occasionally to track charge state and update on next wake).
         if now >= next_battery {
-            if let Ok(pct) = power.get_battery_percent() {
-                batt_pct = pct;
-                batt_mv = power.get_battery_voltage().unwrap_or(0);
-                charging = power.is_charging().unwrap_or(false);
+            if let Ok(bat) = power.read_battery() {
+                batt_pct = bat.percent;
+                batt_mv = bat.voltage_mv;
+                charging = bat.charging;
                 watchface.update_battery(batt_pct, batt_mv, charging);
+                outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
             }
             next_battery = if screen_state == 0 {
                 now + Duration::from_secs(600)

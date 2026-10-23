@@ -48,6 +48,10 @@ pub struct OutdoorState {
     pub last_sequence: u32,
     pub time_hms: (u8, u8, u8),
     pub date_ymd: (u16, u8, u8),
+    pub battery_percent: u8,
+    pub battery_voltage_mv: u16,
+    pub is_charging: bool,
+    pub vbus_present: bool,
     prev_lat: f32,
     prev_lon: f32,
     has_prev_coord: bool,
@@ -83,6 +87,10 @@ impl OutdoorState {
             last_sequence: 0,
             time_hms: (12, 0, 0),
             date_ymd: (2026, 10, 23),
+            battery_percent: 100,
+            battery_voltage_mv: 4200,
+            is_charging: false,
+            vbus_present: false,
             prev_lat: 0.0,
             prev_lon: 0.0,
             has_prev_coord: false,
@@ -173,6 +181,19 @@ impl OutdoorState {
         self.hike.status == HikeStatus::Paused
     }
 
+    pub fn update_battery(
+        &mut self,
+        percent: u8,
+        voltage_mv: u16,
+        charging: bool,
+        vbus_present: bool,
+    ) {
+        self.battery_percent = percent;
+        self.battery_voltage_mv = voltage_mv;
+        self.is_charging = charging;
+        self.vbus_present = vbus_present;
+    }
+
     pub fn tick_1s(&mut self) {
         if self.ble_connected {
             self.fix_age_secs = self.fix_age_secs.saturating_add(1);
@@ -226,4 +247,84 @@ pub fn haversine_distance_m(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
 /// Convenience entry point matching GATT write callback
 pub fn on_position_write(state: &mut OutdoorState, data: &[u8], now_unix: i64) {
     let _ = state.handle_position_write(data, now_unix);
+}
+
+
+// ── Unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_telemetry_update() {
+        let mut state = OutdoorState::new();
+        assert_eq!(state.battery_percent, 100);
+        assert!(!state.is_charging);
+        assert!(!state.vbus_present);
+
+        state.update_battery(78, 3950, true, true);
+        assert_eq!(state.battery_percent, 78);
+        assert_eq!(state.battery_voltage_mv, 3950);
+        assert!(state.is_charging);
+        assert!(state.vbus_present);
+    }
+
+    #[test]
+    fn hike_lifecycle_and_stride_fallback() {
+        let mut state = OutdoorState::new();
+        assert_eq!(state.hike.status, HikeStatus::Stopped);
+
+        state.steps = 1000;
+        state.start_hike();
+        assert_eq!(state.hike.status, HikeStatus::Running);
+        assert_eq!(state.hike.steps_start, 1000);
+
+        // Take 400 steps without GPS
+        state.steps = 1400;
+        state.tick_1s();
+        assert_eq!(state.hike.steps_session, 400);
+        // Stride distance fallback = 400 * 0.75m = 300m
+        assert_eq!(state.hike.distance_m, 300.0);
+        assert_eq!(state.hike.elapsed_secs, 1);
+        assert_eq!(state.hike.avg_speed_mps, 300.0);
+
+        state.pause_hike();
+        assert_eq!(state.hike.status, HikeStatus::Paused);
+        state.pause_hike(); // toggle back to running
+        assert_eq!(state.hike.status, HikeStatus::Running);
+
+        state.stop_hike();
+        assert_eq!(state.hike.status, HikeStatus::Stopped);
+    }
+
+    #[test]
+    fn haversine_tallinn_to_helsinki() {
+        // Tallinn: 59.4370 N, 24.7535 E
+        // Helsinki: 60.1699 N, 24.9384 E
+        let d = haversine_distance_m(59.4370, 24.7535, 60.1699, 24.9384);
+        // Approx 82.5 km (between 80 km and 85 km)
+        assert!(d > 80_000.0 && d < 85_000.0, "Expected ~82.5 km, got {} m", d);
+    }
+
+    #[test]
+    fn tick_1s_ble_and_gps_timeout() {
+        let mut state = OutdoorState::new();
+        state.ble_connected = true;
+        state.gps_valid = true;
+        state.fix_age_secs = 0;
+
+        for _ in 0..12 {
+            state.tick_1s();
+        }
+        // At 12s, GPS fix is marked stale (>10s)
+        assert!(!state.gps_valid);
+        assert!(state.ble_connected);
+
+        for _ in 0..20 {
+            state.tick_1s();
+        }
+        // At 32s, BLE is disconnected (>30s)
+        assert!(!state.ble_connected);
+    }
 }

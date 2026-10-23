@@ -77,6 +77,7 @@ pub struct BatteryState {
     pub voltage_mv: u16,
     pub percent: u8,
     pub charging: bool,
+    pub vbus_present: bool,
 }
 
 pub struct Axp2101Power<I> {
@@ -114,16 +115,24 @@ impl<I: embedded_hal::i2c::I2c> Axp2101Power<I> {
         Ok(chg >= 1 && chg <= 3)
     }
 
+    pub fn is_vbus_in(&mut self) -> Result<bool, I::Error> {
+        let mut st = [0u8; 1];
+        self.i2c.write_read(AXP2101_ADDR, &[REG_AXP_STATUS1], &mut st)?;
+        Ok((st[0] & 0x20) != 0)
+    }
+
     pub fn read_battery(&mut self) -> Result<BatteryState, I::Error> {
         let voltage_mv = self.get_battery_voltage().unwrap_or(0);
         let percent = self.get_battery_percent().unwrap_or(0);
         let charging = self.is_charging().unwrap_or(false);
+        let vbus_present = self.is_vbus_in().unwrap_or(false);
         let connected = voltage_mv > 2000;
         Ok(BatteryState {
             connected,
             voltage_mv,
             percent,
             charging,
+            vbus_present,
         })
     }
 }
@@ -548,6 +557,8 @@ mod tests {
             I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_BAT_PERCENT], vec![88]),
             // Charging status: bits [7:5] = 0b010 (charging)
             I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_CHG_STATUS], vec![0b01000000]),
+            // VBUS status: bit 5 = 1 (VBUS connected)
+            I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_STATUS1], vec![0x20]),
         ];
         let i2c = I2cMock::new(&expectations);
         let mut pmic = Axp2101Power::new(i2c);
@@ -556,6 +567,7 @@ mod tests {
         assert_eq!(bat.voltage_mv, 4148);
         assert_eq!(bat.percent, 88);
         assert!(bat.charging);
+        assert!(bat.vbus_present);
         assert!(bat.connected);
         pmic.release().done();
     }

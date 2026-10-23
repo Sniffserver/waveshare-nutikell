@@ -130,18 +130,57 @@ impl OutdoorApp {
         }
     }
 
-    fn render_home<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D, state: &OutdoorState) {
-        let title_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN);
-        let label_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
-        let value_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+        fn draw_status_header<D: DrawTarget<Color = Rgb565>>(
+        d: &mut D,
+        state: &OutdoorState,
+        title: &str,
+        title_color: Rgb565,
+    ) {
+        // Digital Clock (Left: x=20)
+        let time_str = format!("{:02}:{:02}", state.time_hms.0, state.time_hms.1);
+        let _ = Text::new(
+            &time_str,
+            EgPoint::new(20, 28),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+        )
+        .draw(d);
 
+        // Screen Title (Center: x=205)
         let _ = Text::with_alignment(
-            "OUTDOOR",
+            title,
             EgPoint::new(205, 28),
-            title_style,
+            MonoTextStyle::new(&FONT_10X20, title_color),
             Alignment::Center,
         )
         .draw(d);
+
+        // Battery Indicator (Right: x=390, right-aligned)
+        let pct = state.battery_percent;
+        let (bat_color, bat_str) = if state.is_charging {
+            (Rgb565::GREEN, format!("⚡{}%", pct))
+        } else if state.vbus_present {
+            (Rgb565::YELLOW, format!("⚡{}%", pct))
+        } else if pct > 50 {
+            (Rgb565::GREEN, format!("{}%", pct))
+        } else if pct > 20 {
+            (Rgb565::YELLOW, format!("{}%", pct))
+        } else {
+            (Rgb565::RED, format!("{}%", pct))
+        };
+        let _ = Text::with_alignment(
+            &bat_str,
+            EgPoint::new(390, 28),
+            MonoTextStyle::new(&FONT_10X20, bat_color),
+            Alignment::Right,
+        )
+        .draw(d);
+    }
+
+    fn render_home<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D, state: &OutdoorState) {
+        let label_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
+        let value_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+
+        Self::draw_status_header(d, state, "OUTDOOR", Rgb565::CYAN);
 
         // Status pills: GPS & BLE
         // GPS Pill
@@ -254,6 +293,16 @@ impl OutdoorApp {
         } else {
             let _ = Text::new("COURSE: -- STATIONARY", EgPoint::new(32, 274), label_style).draw(d);
         }
+        if state.battery_voltage_mv > 0 {
+            let volt_str = format!("{:.2}V", state.battery_voltage_mv as f32 / 1000.0);
+            let _ = Text::with_alignment(
+                &volt_str,
+                EgPoint::new(375, 274),
+                MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY),
+                Alignment::Right,
+            )
+            .draw(d);
+        }
 
         // Action Buttons Row 1: LEVEL and SUN
         // LEVEL button
@@ -345,13 +394,7 @@ impl OutdoorApp {
         } else {
             Rgb565::GREEN
         };
-        let _ = Text::with_alignment(
-            &timer_str,
-            EgPoint::new(205, 28),
-            MonoTextStyle::new(&FONT_10X20, status_color),
-            Alignment::Center,
-        )
-        .draw(d);
+        Self::draw_status_header(d, state, &timer_str, status_color);
 
         // Huge Distance Card
         let _ = RoundedRectangle::with_equal_corners(
@@ -493,13 +536,7 @@ impl OutdoorApp {
         let label_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
         let value_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 
-        let _ = Text::with_alignment(
-            "ARTIFICIAL HORIZON",
-            EgPoint::new(205, 28),
-            MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN),
-            Alignment::Center,
-        )
-        .draw(d);
+        Self::draw_status_header(d, state, "HORIZON", Rgb565::CYAN);
 
         // Horizon widget frame
         let box_w = 370;
@@ -623,13 +660,7 @@ impl OutdoorApp {
     fn render_sun<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D, state: &OutdoorState) {
         let label_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
 
-        let _ = Text::with_alignment(
-            "SOLAR POSITION",
-            EgPoint::new(205, 28),
-            MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW),
-            Alignment::Center,
-        )
-        .draw(d);
+        Self::draw_status_header(d, state, "SUN POSITION", Rgb565::YELLOW);
 
         // Solar Card
         let _ = RoundedRectangle::with_equal_corners(
