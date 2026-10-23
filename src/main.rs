@@ -333,6 +333,10 @@ async fn main(_spawner: Spawner) {
     let mut touch = Ft3168Touch::new(RefCellDevice::new(&i2c_ref));
     let _ = touch.init();
     println!("[TOUCH] OK");
+    let mut boot_button = Input::new(
+        peripherals.GPIO0,
+        InputConfig::default().with_pull(Pull::Up),
+    );
 
     // === RTC ===
     let mut rtc = Pcf85063aRtc::new(RefCellDevice::new(&i2c_ref));
@@ -584,15 +588,16 @@ async fn main(_spawner: Spawner) {
         let mut ap_services = core::pin::pin!(crate::peripherals::captive::run_ap_services(ap_stack));
 
         loop {
-            // Check for touch tap to skip provisioning (bottom area)
+            // Check for touch tap or boot button to skip provisioning
+            if boot_button.is_low() {
+                println!("[PROVISION] Button pressed — skipping WiFi setup");
+                wifi_controller.stop().ok();
+                break;
+            }
             if touch_int.is_low() {
-                if let Ok(Some(pt)) = touch.read() {
-                    if pt.y >= 360 {
-                        println!("[PROVISION] Skip tapped (y={}) — exiting to watchface", pt.y);
-                        wifi_controller.stop().ok();
-                        break;
-                    }
-                }
+                println!("[PROVISION] Touch detected — skipping WiFi setup");
+                wifi_controller.stop().ok();
+                break;
             }
 
             // Animate spinner and check AP services
@@ -647,10 +652,7 @@ async fn main(_spawner: Spawner) {
     // a task from inside the main loop.
     _spawner.spawn(net_task(runner)).ok();
 
-    let mut boot_button = Input::new(
-        peripherals.GPIO0,
-        InputConfig::default().with_pull(Pull::Up),
-    );
+
     println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
 
     // === State ===

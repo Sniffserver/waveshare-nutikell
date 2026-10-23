@@ -14,29 +14,11 @@ use esp_println::println;
 
 use crate::peripherals::nvs::{write_credentials, StoredCredentials};
 
-const HTML_FORM: &[u8] = b"HTTP/1.1 200 OK
-Content-Type: text/html
-Connection: close
+const FORM_BODY: &[u8] = b"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Watch WiFi Setup</title><style>body{font-family:sans-serif;background:#111;color:#eee;padding:20px;max-width:380px;margin:auto}h2{color:#4af;margin-top:0}label{display:block;margin-top:14px;font-size:14px;color:#aaa}input{width:100%;padding:10px;margin-top:5px;background:#222;color:#fff;border:1px solid #4af;border-radius:6px;box-sizing:border-box;font-size:16px}button{margin-top:24px;width:100%;padding:14px;background:#4af;color:#000;border:none;border-radius:6px;font-size:16px;font-weight:bold;cursor:pointer}</style></head><body><h2>&#9201; Watch WiFi Setup</h2><form method='POST' action='/save'><label>WiFi Network (SSID)<input name='ssid' type='text' maxlength='32' required placeholder='MyNetwork'></label><label>Password<input name='pass' type='password' maxlength='63' placeholder='(leave blank for open)'></label><button type='submit'>Save &amp; Connect</button></form></body></html>";
 
-<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{font-family:sans-serif;background:#111;color:#eee;padding:20px;max-width:400px;margin:auto}h2{color:#4af}label{display:block;margin-top:12px}input{width:100%;padding:8px;margin-top:4px;background:#222;color:#fff;border:1px solid #4af;border-radius:4px}button{margin-top:20px;width:100%;padding:12px;background:#4af;color:#000;border:none;border-radius:6px;font-size:16px;cursor:pointer}</style></head><body><h2>&#9201; Watch WiFi Setup</h2><form method='POST' action='/save'><label>WiFi Network (SSID)<input name='ssid' type='text' maxlength='32' required placeholder='MyNetwork'></label><label>Password<input name='pass' type='password' maxlength='63' placeholder='(leave blank for open)'></label><button type='submit'>Save &amp; Connect</button></form></body></html>";
+const OK_BODY: &[u8] = b"<!DOCTYPE html><html><body style='font-family:sans-serif;background:#111;color:#eee;padding:30px;text-align:center'><h2 style='color:#4af'>&#10003; Saved!</h2><p>Watch is connecting to your WiFi.<br>You can close this page.</p></body></html>";
 
-const HTML_OK: &[u8] = b"HTTP/1.1 200 OK
-Content-Type: text/html
-Connection: close
-
-<!DOCTYPE html><html><body style='font-family:sans-serif;background:#111;color:#eee;padding:30px;text-align:center'><h2 style='color:#4af'>&#10003; Saved!</h2><p>Watch is connecting to your WiFi.<br>You can close this page.</p></body></html>";
-
-const HTML_REDIRECT: &[u8] = b"HTTP/1.1 302 Found
-Location: http://192.168.4.1/
-Connection: close
-
-";
-
-const HTML_ERR: &[u8] = b"HTTP/1.1 400 Bad Request
-Content-Type: text/html
-Connection: close
-
-<!DOCTYPE html><html><body style='background:#111;color:#f44;padding:30px'><h2>Error: bad form data</h2></body></html>";
+const ERR_BODY: &[u8] = b"<!DOCTYPE html><html><body style='background:#111;color:#f44;padding:30px'><h2>Error: bad form data</h2></body></html>";
 
 pub enum ServeResult {
     Pending,
@@ -158,8 +140,6 @@ pub async fn run_dns_server(stack: Stack<'static>) {
             continue;
         }
 
-        println!("[DNS] Query from {:?}, redirecting to 192.168.4.1", from);
-
         let mut resp = [0u8; 512];
         resp[0..2].copy_from_slice(&buf[0..2]); // ID
         resp[2..4].copy_from_slice(&[0x81, 0x80]); // Standard query response, No error
@@ -196,7 +176,7 @@ pub async fn run_dns_server(stack: Stack<'static>) {
 /// Serve one HTTP connection.
 pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
     let mut rx_buf = [0u8; 1024];
-    let mut tx_buf = [0u8; 1024];
+    let mut tx_buf = [0u8; 1536];
     let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     socket.set_timeout(Some(Duration::from_secs(10)));
 
@@ -248,29 +228,59 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
         match parse_form_creds(body) {
             Some(creds) => {
                 println!("[HTTP] Saving credentials for SSID: {}", creds.ssid_str());
-                let _ = write_all(&mut socket, HTML_OK).await;
+                send_response(&mut socket, "200 OK", OK_BODY).await;
                 socket.close();
                 let _ = write_credentials(&creds);
                 ServeResult::CredentialsSaved(creds)
             }
             None => {
                 println!("[HTTP] Error: invalid form data");
-                let _ = write_all(&mut socket, HTML_ERR).await;
+                send_response(&mut socket, "400 Bad Request", ERR_BODY).await;
                 socket.close();
                 ServeResult::Pending
             }
         }
-    } else if req_slice.starts_with(b"GET /") {
-        println!("[HTTP] Serving setup HTML form");
-        let _ = write_all(&mut socket, HTML_FORM).await;
+    } else if req_slice.starts_with(b"GET / ")
+        || req_slice.starts_with(b"GET / HTTP/")
+        || req_slice.starts_with(b"GET /index.html")
+    {
+        println!("[HTTP] Serving setup HTML form ({} bytes)", FORM_BODY.len());
+        send_response(&mut socket, "200 OK", FORM_BODY).await;
         socket.close();
         ServeResult::Pending
     } else {
-        println!("[HTTP] Captive probe redirect -> 192.168.4.1");
-        let _ = write_all(&mut socket, HTML_REDIRECT).await;
+        println!("[HTTP] Captive redirect for {}", first_line);
+        send_redirect(&mut socket).await;
         socket.close();
         ServeResult::Pending
     }
+}
+
+async fn send_response(socket: &mut TcpSocket<'_>, status: &str, body: &[u8]) {
+    let header = alloc::format!(
+        "HTTP/1.1 {}
+Content-Type: text/html; charset=utf-8
+Content-Length: {}
+Connection: close
+
+",
+        status,
+        body.len()
+    );
+    let _ = write_all(socket, header.as_bytes()).await;
+    let _ = write_all(socket, body).await;
+    let _ = socket.flush().await;
+}
+
+async fn send_redirect(socket: &mut TcpSocket<'_>) {
+    let resp = b"HTTP/1.1 302 Found
+Location: http://192.168.4.1/
+Content-Length: 0
+Connection: close
+
+";
+    let _ = write_all(socket, resp).await;
+    let _ = socket.flush().await;
 }
 
 async fn write_all(socket: &mut TcpSocket<'_>, buf: &[u8]) -> Result<(), ()> {
