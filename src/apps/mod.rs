@@ -15,6 +15,9 @@ pub mod smarthome;
 pub mod snake;
 pub mod tetris;
 pub mod wifi_setup;
+pub mod work_tracker;
+
+pub use work_tracker::{TrackerState, WorkSession, WorkTracker};
 
 /// Input state passed to apps each frame
 pub struct AppInput {
@@ -53,4 +56,5 @@ pub enum AppState {
     SmartHome,
     Settings,
     Outdoor,
+    WorkTracker,
 }

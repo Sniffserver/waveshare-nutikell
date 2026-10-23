@@ -74,6 +74,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         text_color: Rgb565::GREEN,
     },
     MenuItem {
+        name: "Work Tracker",
+        state: AppState::WorkTracker,
+        bg_color: Rgb565::new(3, 8, 16),
+        text_color: Rgb565::CYAN,
+    },
+    MenuItem {
         name: "Settings",
         state: AppState::Settings,
         bg_color: Rgb565::new(6, 12, 6),
