@@ -1,0 +1,31 @@
+=== Waveshare Watch RS v0.4 (Embassy) ===
+[POWER] OK
+[DISPLAY] OK (TE VSync enabled)
+[FB] OK
+[TOUCH] OK
+[RTC] OK
+[IMU] OK
+[SD] Init...
+[SD] No card
+[AUDIO] Init codec...
+[AUDIO] Codec OK
+[AUDIO] Init I2S...
+[AUDIO] I2S OK (3200 bytes beep)
+[RADIO] Init radio stack (WiFi OFF, BLE OFF)
+[BLE] Connector ready (advertising OFF)
+=== All systems GO! (Embassy async, WiFi OFF) ===
+CPU freq: 240MHz (live)
+[WIFI] User toggled → ON
+[WIFI] Connected (PS=MaxModem)
+[WIFI] Waiting for DHCP IPv4...
+[WIFI] DHCP IPv4: 192.168.32.85/24
+[NTP] starting sync
+[NTP] sending request
+[NTP] request sent
+[NTP] response: 48 bytes from UdpMetadata { endpoint: Endpoint { addr: Ipv4(216.239.35.0), port: 123 }, local_address: Some(Ipv4(192.168.32.85)), meta: PacketMeta }
+[NTP] Time: 05:48:28 23/10/2026
+[NTP] synced
+[WIFI] User toggled → OFF
+[WIFI] Disconnected
+[WIFI] User toggled → ON
+[WIFI] Connected (PS=MaxModem)
