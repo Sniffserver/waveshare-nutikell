@@ -222,9 +222,23 @@ impl Default for StepDetector {
 mod tests {
     use super::*;
 
+    const WALKING_ENVELOPE: &[f32] = &[
+        1.00, 1.02, 1.05, 1.10, 1.18, 1.28, 1.38, 1.38, 1.38, 1.30, 1.20, 1.10, 1.03, 1.00, 1.00,
+    ];
+
     fn sample(magnitude: f32) -> AccelSample {
-        // Place the whole vector on the Z axis for simplicity.
         AccelSample { x_g: 0.0, y_g: 0.0, z_g: magnitude }
+    }
+
+    fn inject_step(d: &mut StepDetector, now: &mut u64) -> bool {
+        let mut detected = false;
+        for &m in WALKING_ENVELOPE {
+            if d.update(sample(m), *now) {
+                detected = true;
+            }
+            *now += 32;
+        }
+        detected
     }
 
     #[test]
@@ -249,40 +263,38 @@ mod tests {
     fn detects_single_peak() {
         let mut d = StepDetector::default();
         let mut now = 0u64;
-        // Gravity warmup — let the tracker converge.
         for _ in 0..50 {
             d.update(sample(1.0), now);
             now += 32;
         }
-        // One walking-amplitude peak.
-        for &mag in &[1.00, 1.02, 1.08, 1.18, 1.28, 1.20, 1.10, 1.02, 1.00] {
-            d.update(sample(mag), now);
-            now += 32;
-        }
+        let det = inject_step(&mut d, &mut now);
+        assert!(det, "falling edge of confirmed peak should trigger step");
         assert_eq!(d.steps(), 1);
     }
 
     #[test]
     fn rejects_peaks_too_close_together() {
         let mut d = StepDetector::default();
-        // Warmup.
         let mut now = 0u64;
         for _ in 0..50 {
             d.update(sample(1.0), now);
             now += 32;
         }
-        // Two peaks separated by only ~32 ms (well below 280 ms).
-        let peak = [1.00_f32, 1.10, 1.25, 1.35, 1.20, 1.05, 1.00];
-        for &mag in &peak {
-            d.update(sample(mag), now);
-            now += 32;
+        // First step
+        assert!(inject_step(&mut d, &mut now));
+        assert_eq!(d.steps(), 1);
+
+        // Immediate rapid chatter/vibration (< min_step_interval_ms = 280ms)
+        let fast_chatter = [1.00, 1.38, 1.38, 1.00];
+        let mut rapid_detected = false;
+        for &m in &fast_chatter {
+            if d.update(sample(m), now) {
+                rapid_detected = true;
+            }
+            now += 15;
         }
-        // Second peak immediately after (< min_step_interval).
-        for &mag in &peak {
-            d.update(sample(mag), now);
-            now += 32;
-        }
-        assert_eq!(d.steps(), 1, "second too-close peak should be rejected");
+        assert!(!rapid_detected, "chatter within refractory interval should be rejected");
+        assert_eq!(d.steps(), 1);
     }
 
     #[test]
@@ -293,11 +305,12 @@ mod tests {
             d.update(sample(1.0), now);
             now += 32;
         }
-        let peak = [1.00_f32, 1.10, 1.25, 1.35, 1.20, 1.05, 1.00];
-        for &mag in &peak { d.update(sample(mag), now); now += 32; }
-        // Wait > 280 ms between peaks.
+        assert!(inject_step(&mut d, &mut now));
+        assert_eq!(d.steps(), 1);
+
+        // Wait refractory period (> 280 ms)
         now += 400;
-        for &mag in &peak { d.update(sample(mag), now); now += 32; }
+        assert!(inject_step(&mut d, &mut now));
         assert_eq!(d.steps(), 2);
     }
 
@@ -306,8 +319,7 @@ mod tests {
         let mut d = StepDetector::default();
         let mut now = 0u64;
         for _ in 0..50 { d.update(sample(1.0), now); now += 32; }
-        let peak = [1.00_f32, 1.10, 1.25, 1.35, 1.20, 1.05, 1.00];
-        for &mag in &peak { d.update(sample(mag), now); now += 32; }
+        assert!(inject_step(&mut d, &mut now));
         assert!(d.steps() > 0);
 
         d.reset();

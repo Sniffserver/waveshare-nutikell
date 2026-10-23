@@ -134,3 +134,103 @@ impl PositionPacket {
         }
     }
 }
+
+
+// ── Unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_packet() -> PositionPacket {
+        PositionPacket {
+            version: 1,
+            flags: FLAG_COORDS_VALID | FLAG_ALTITUDE_VALID | FLAG_SPEED_VALID | FLAG_COURSE_VALID | FLAG_ACCURACY_VALID,
+            sequence: 42,
+            timestamp_unix: 1718000000,
+            latitude_e7: 594372000,  // 59.4372 N (Tallinn)
+            longitude_e7: 247535000, // 24.7535 E
+            altitude_cm: 4500,       // 45.0 m
+            speed_cms: 140,          // 1.4 m/s
+            course_cdeg: 18000,      // 180.0 deg (South)
+            accuracy_cm: 250,        // 2.5 m
+        }
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let pkt = sample_packet();
+        let bytes = pkt.encode();
+        assert_eq!(bytes.len(), POSITION_PACKET_LEN);
+
+        let decoded = PositionPacket::decode(&bytes).expect("packet should decode");
+        assert_eq!(decoded, pkt);
+        assert!(decoded.coords_valid());
+        assert!(decoded.altitude_valid());
+        assert!(decoded.speed_valid());
+        assert!(decoded.course_valid());
+        assert!(decoded.accuracy_valid());
+
+        assert!((decoded.latitude_deg() - 59.4372).abs() < 1e-4);
+        assert!((decoded.longitude_deg() - 24.7535).abs() < 1e-4);
+        assert_eq!(decoded.altitude_m(), 45.0);
+        assert_eq!(decoded.speed_mps(), 1.4);
+        assert_eq!(decoded.course_deg(), Some(180.0));
+        assert_eq!(decoded.accuracy_m(), Some(2.5));
+    }
+
+    #[test]
+    fn rejects_invalid_length() {
+        let short = [0u8; 33];
+        assert_eq!(PositionPacket::decode(&short), Err(PositionError::InvalidLength));
+        let long = [0u8; 35];
+        assert_eq!(PositionPacket::decode(&long), Err(PositionError::InvalidLength));
+    }
+
+    #[test]
+    fn rejects_unsupported_version() {
+        let mut bytes = sample_packet().encode();
+        bytes[0] = 2; // version 2
+        assert_eq!(PositionPacket::decode(&bytes), Err(PositionError::UnsupportedVersion));
+    }
+
+    #[test]
+    fn rejects_invalid_latitude() {
+        let mut pkt = sample_packet();
+        pkt.latitude_e7 = 910_000_000; // 91 degrees N
+        let bytes = pkt.encode();
+        assert_eq!(PositionPacket::decode(&bytes), Err(PositionError::InvalidLatitude));
+    }
+
+    #[test]
+    fn rejects_invalid_longitude() {
+        let mut pkt = sample_packet();
+        pkt.longitude_e7 = -1810_000_000; // -181 degrees W
+        let bytes = pkt.encode();
+        assert_eq!(PositionPacket::decode(&bytes), Err(PositionError::InvalidLongitude));
+    }
+
+    #[test]
+    fn rejects_invalid_course() {
+        let mut pkt = sample_packet();
+        pkt.course_cdeg = 36000; // >= 360 degrees
+        let bytes = pkt.encode();
+        assert_eq!(PositionPacket::decode(&bytes), Err(PositionError::InvalidCourse));
+    }
+
+    #[test]
+    fn rejects_invalid_accuracy_zero() {
+        let mut pkt = sample_packet();
+        pkt.accuracy_cm = 0; // Flag is set, but accuracy is 0 cm
+        let bytes = pkt.encode();
+        assert_eq!(PositionPacket::decode(&bytes), Err(PositionError::InvalidAccuracy));
+    }
+
+    #[test]
+    fn optional_fields_return_none_when_flag_unset() {
+        let mut pkt = sample_packet();
+        pkt.flags &= !(FLAG_COURSE_VALID | FLAG_ACCURACY_VALID);
+        assert_eq!(pkt.course_deg(), None);
+        assert_eq!(pkt.accuracy_m(), None);
+    }
+}

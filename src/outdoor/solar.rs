@@ -177,3 +177,80 @@ pub fn calculate_solar(
         sunset_utc_min,
     }
 }
+
+
+// ── Unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tallinn_summer_solstice_noon() {
+        // Tallinn approx: 59.437 N, 24.753 E
+        // Summer Solstice: June 21, 10:20 UTC (solar noon in Tallinn ~10:21 UTC)
+        let pos = calculate_solar(2026, 6, 21, 10, 21, 0, 59.437, 24.753);
+
+        // At solar noon, azimuth should be nearly due South (approx 180 deg)
+        assert!((pos.azimuth_deg - 180.0).abs() < 5.0, "Azimuth expected ~180, got {}", pos.azimuth_deg);
+        assert_eq!(pos.cardinal_str(), "S");
+
+        // Solar elevation in Tallinn at summer solstice noon is approx:
+        // 90 - 59.437 + 23.44 = ~54 degrees
+        assert!((pos.elevation_deg - 54.0).abs() < 2.0, "Elevation expected ~54, got {}", pos.elevation_deg);
+
+        // Sunrise and sunset should be present
+        assert!(pos.sunrise_utc_min.is_some());
+        assert!(pos.sunset_utc_min.is_some());
+        let rise = pos.sunrise_utc_min.unwrap();
+        let sset = pos.sunset_utc_min.unwrap();
+        // Summer solstice in Tallinn: very long day (>18 hours)
+        assert!(sset > rise);
+        let day_len_min = sset - rise;
+        assert!(day_len_min > 18 * 60, "Expected >18h day, got {} min", day_len_min);
+    }
+
+    #[test]
+    fn tallinn_winter_solstice_noon() {
+        // Winter Solstice: Dec 21, 10:20 UTC
+        let pos = calculate_solar(2026, 12, 21, 10, 20, 0, 59.437, 24.753);
+
+        // Solar elevation in Tallinn at winter solstice noon is approx:
+        // 90 - 59.437 - 23.44 = ~7.1 degrees
+        assert!((pos.elevation_deg - 7.1).abs() < 2.0, "Elevation expected ~7.1, got {}", pos.elevation_deg);
+        assert!((pos.azimuth_deg - 180.0).abs() < 5.0, "Azimuth expected ~180, got {}", pos.azimuth_deg);
+    }
+
+    #[test]
+    fn cardinal_directions() {
+        let mut pos = SolarPosition::default();
+
+        pos.azimuth_deg = 0.0;
+        assert_eq!(pos.cardinal_str(), "N");
+        pos.azimuth_deg = 45.0;
+        assert_eq!(pos.cardinal_str(), "NE");
+        pos.azimuth_deg = 90.0;
+        assert_eq!(pos.cardinal_str(), "E");
+        pos.azimuth_deg = 135.0;
+        assert_eq!(pos.cardinal_str(), "SE");
+        pos.azimuth_deg = 180.0;
+        assert_eq!(pos.cardinal_str(), "S");
+        pos.azimuth_deg = 225.0;
+        assert_eq!(pos.cardinal_str(), "SW");
+        pos.azimuth_deg = 270.0;
+        assert_eq!(pos.cardinal_str(), "W");
+        pos.azimuth_deg = 315.0;
+        assert_eq!(pos.cardinal_str(), "NW");
+        pos.azimuth_deg = 355.0;
+        assert_eq!(pos.cardinal_str(), "N");
+    }
+
+    #[test]
+    fn polar_night_returns_none() {
+        // North Pole (85 N) in winter (Dec 21)
+        let pos = calculate_solar(2026, 12, 21, 12, 0, 0, 85.0, 0.0);
+        assert_eq!(pos.sunrise_utc_min, None);
+        assert_eq!(pos.sunset_utc_min, None);
+        assert!(pos.elevation_deg < -10.0);
+    }
+}
