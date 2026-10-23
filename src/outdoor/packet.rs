@@ -18,7 +18,7 @@ pub enum PositionError {
     InvalidAccuracy,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PositionPacket {
     pub version: u8,
     pub flags: u8,
