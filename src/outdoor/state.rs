@@ -4,6 +4,27 @@ use crate::outdoor::packet::{PositionError, PositionPacket};
 use crate::outdoor::steps::MotionState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TelemetryState {
+    Fresh,
+    Stale,
+    Invalid,
+}
+
+impl Default for TelemetryState {
+    fn default() -> Self {
+        TelemetryState::Invalid
+    }
+}
+
+pub fn telemetry_state(fix_age_secs: u32) -> TelemetryState {
+    match fix_age_secs {
+        0..=10 => TelemetryState::Fresh,
+        11..=30 => TelemetryState::Stale,
+        _ => TelemetryState::Invalid,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HikeStatus {
     Stopped,
     Running,
@@ -48,6 +69,7 @@ pub struct OutdoorState {
     pub last_sequence: u32,
     pub time_hms: (u8, u8, u8),
     pub date_ymd: (u16, u8, u8),
+    pub telemetry: TelemetryState,
     pub battery_percent: u8,
     pub battery_voltage_mv: u16,
     pub is_charging: bool,
@@ -87,6 +109,7 @@ impl OutdoorState {
             last_sequence: 0,
             time_hms: (12, 0, 0),
             date_ymd: (2026, 10, 23),
+            telemetry: TelemetryState::Invalid,
             battery_percent: 100,
             battery_voltage_mv: 4200,
             is_charging: false,
@@ -143,6 +166,7 @@ impl OutdoorState {
         } else {
             self.fix_age_secs = 0;
         }
+        self.telemetry = telemetry_state(self.fix_age_secs);
 
         Ok(())
     }
@@ -195,15 +219,9 @@ impl OutdoorState {
     }
 
     pub fn tick_1s(&mut self) {
-        if self.ble_connected {
-            self.fix_age_secs = self.fix_age_secs.saturating_add(1);
-            if self.fix_age_secs > 10 {
-                self.gps_valid = false;
-            }
-            if self.fix_age_secs > 30 {
-                self.ble_connected = false;
-            }
-        }
+        self.fix_age_secs = self.fix_age_secs.saturating_add(1);
+        self.telemetry = telemetry_state(self.fix_age_secs);
+        self.gps_valid = self.telemetry == TelemetryState::Fresh;
 
         if self.hike.status == HikeStatus::Running {
             self.hike.elapsed_secs = self.hike.elapsed_secs.saturating_add(1);
@@ -308,23 +326,44 @@ mod tests {
     }
 
     #[test]
-    fn tick_1s_ble_and_gps_timeout() {
+    fn telemetry_state_transitions() {
+        assert_eq!(telemetry_state(0), TelemetryState::Fresh);
+        assert_eq!(telemetry_state(10), TelemetryState::Fresh);
+        assert_eq!(telemetry_state(11), TelemetryState::Stale);
+        assert_eq!(telemetry_state(30), TelemetryState::Stale);
+        assert_eq!(telemetry_state(31), TelemetryState::Invalid);
+        assert_eq!(telemetry_state(120), TelemetryState::Invalid);
+    }
+
+    #[test]
+    fn tick_1s_telemetry_aging_preserves_ble_link() {
         let mut state = OutdoorState::new();
         state.ble_connected = true;
         state.gps_valid = true;
         state.fix_age_secs = 0;
+        state.telemetry = TelemetryState::Fresh;
 
-        for _ in 0..12 {
+        for _ in 0..10 {
             state.tick_1s();
         }
-        // At 12s, GPS fix is marked stale (>10s)
-        assert!(!state.gps_valid);
+        assert_eq!(state.telemetry, TelemetryState::Fresh);
+        assert!(state.gps_valid);
         assert!(state.ble_connected);
 
+        // Advance to 15s: Stale telemetry
+        for _ in 0..5 {
+            state.tick_1s();
+        }
+        assert_eq!(state.telemetry, TelemetryState::Stale);
+        assert!(!state.gps_valid);
+        assert!(state.ble_connected, "stale telemetry must NOT drop BLE link");
+
+        // Advance to 35s: Invalid telemetry
         for _ in 0..20 {
             state.tick_1s();
         }
-        // At 32s, BLE is disconnected (>30s)
-        assert!(!state.ble_connected);
+        assert_eq!(state.telemetry, TelemetryState::Invalid);
+        assert!(!state.gps_valid);
+        assert!(state.ble_connected, "invalid GPS fix must NOT disconnect BLE");
     }
 }

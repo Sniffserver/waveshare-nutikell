@@ -9,7 +9,7 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{Circle, Line, PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::text::{Alignment, Text};
 
-use crate::outdoor::state::{HikeStatus, OutdoorState};
+use crate::outdoor::state::{HikeStatus, OutdoorState, TelemetryState};
 use crate::outdoor::steps::MotionState;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -184,13 +184,21 @@ impl OutdoorApp {
 
         // Status pills: GPS & BLE
         // GPS Pill
-        let (gps_text, gps_color) = if state.gps_valid {
-            let acc = state.accuracy_m.unwrap_or(5.0);
-            (format!("GPS ±{:.0}m", acc), Rgb565::GREEN)
-        } else if state.ble_connected {
-            (format!("GPS NO FIX"), Rgb565::YELLOW)
-        } else {
-            (format!("GPS NO BLE"), Rgb565::CSS_GRAY)
+        let (gps_text, gps_color) = match state.telemetry {
+            TelemetryState::Fresh => {
+                let acc = state.accuracy_m.unwrap_or(5.0);
+                (format!("GPS ±{:.0}m", acc), Rgb565::GREEN)
+            }
+            TelemetryState::Stale => {
+                (format!("GPS STALE ({}s)", state.fix_age_secs), Rgb565::YELLOW)
+            }
+            TelemetryState::Invalid => {
+                if state.ble_connected {
+                    (format!("GPS NO FIX"), Rgb565::RED)
+                } else {
+                    (format!("GPS NO BLE"), Rgb565::CSS_GRAY)
+                }
+            }
         };
         let _ = RoundedRectangle::with_equal_corners(
             Rectangle::new(EgPoint::new(20, 42), Size::new(175, 32)),

@@ -16,7 +16,7 @@ pub use packet::{
     FLAG_COURSE_VALID, FLAG_SPEED_VALID, POSITION_PACKET_LEN,
 };
 pub use power_policy::{can_enter_light_sleep, PowerMode, PowerPolicy};
-pub use state::{haversine_distance_m, HikeSession, HikeStatus, OutdoorState};
+pub use state::{haversine_distance_m, HikeSession, HikeStatus, OutdoorState, telemetry_state, TelemetryState};
 pub use steps::{AccelSample, MotionState, StepConfig, StepDetector};
 pub use ui::{
     AppState, DirtyRegions, OutdoorDisplay, Screen, TouchPoint, UiEvent, BLACK, GREEN, MUTED,
