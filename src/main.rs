@@ -810,9 +810,11 @@ async fn main(_spawner: Spawner) {
     let mut last_wifi_toggle = Instant::now();
     // Request pending from a UI tap on the WiFi button.
     let mut wifi_toggle_request: bool = false;
-    // BLE state
+    // BLE state & supervisor
     let mut ble_on: bool = false;
     let mut ble_toggle_request: bool = false;
+    let mut ble_status = crate::outdoor::BleStatus::new();
+    let mut ble_backoff_until = Instant::now();
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum ImuPowerMode {
@@ -836,6 +838,13 @@ async fn main(_spawner: Spawner) {
         let button_held = boot_button.is_low();
 
         let hike_running = outdoor_state.hike.status == crate::outdoor::HikeStatus::Running;
+        let hike_paused = outdoor_state.hike.status == crate::outdoor::HikeStatus::Paused;
+        let power_mode = crate::outdoor::power_policy::determine_power_mode(
+            screen_state,
+            hike_running,
+            hike_paused,
+        );
+        let policy = crate::outdoor::PowerPolicy::for_mode(power_mode);
 
         let tick = if touch_held || button_held {
             // Something is currently being held: wake fast enough to track motion / detect
@@ -886,13 +895,16 @@ async fn main(_spawner: Spawner) {
                         Duration::from_millis(100)
                     }
                 }
-                // Flappy previously ran at 8 ms (~125 Hz). The panel can't
-                // even display that (VSync is ~33 ms) so the extra ticks
-                // just burned CPU and DMA for no visible benefit.
-                AppState::Flappy => Duration::from_millis(33),
-                AppState::Snake | AppState::Game2048 | AppState::Tetris | AppState::Maze => {
-                    Duration::from_millis(33)
+                AppState::Outdoor => {
+                    let fps = policy.display_fps.max(8);
+                    Duration::from_millis(1000 / fps as u64)
                 }
+                // Games capped at 30 Hz (33 ms)
+                AppState::Flappy
+                | AppState::Snake
+                | AppState::Game2048
+                | AppState::Tetris
+                | AppState::Maze => Duration::from_millis(33)
             }
         };
 
@@ -1380,19 +1392,22 @@ async fn main(_spawner: Spawner) {
             last_wifi_idle_check = now;
         }
 
-        // === BLE state machine ===
+        // === BLE state machine with auto-reconnect and link-loss backoff ===
         if ble_toggle_request {
             ble_toggle_request = false;
             ble_on = !ble_on;
             if ble_on {
+                ble_status.enable_advertising();
                 match crate::peripherals::ble::start_advertising(&mut ble_connector) {
                     Ok(()) => println!("[BLE] Advertising started"),
                     Err(_) => {
                         println!("[BLE] Failed to start advertising");
                         ble_on = false;
+                        ble_status.disable();
                     }
                 }
             } else {
+                ble_status.disable();
                 let _ = crate::peripherals::ble::stop_advertising(&mut ble_connector);
                 println!("[BLE] Advertising stopped");
             }
@@ -1400,6 +1415,27 @@ async fn main(_spawner: Spawner) {
             power_stats.ble_on = ble_on;
             watchface.force_redraw();
             page_dirty = true;
+        }
+
+        // Auto-reconnect supervisor: if in Backoff and timer elapsed, resume advertising
+        if ble_on && ble_status.state == crate::outdoor::BleState::Backoff && now >= ble_backoff_until {
+            ble_status.on_backoff_expired();
+            let _ = crate::peripherals::ble::start_advertising(&mut ble_connector);
+            println!("[BLE] Backoff expired, resumed advertising (attempt {})", ble_status.reconnect_attempt);
+        }
+
+        // Link loss recovery: if BLE was connected but timed out (fix_age > 30s)
+        if ble_on && ble_status.is_connected() && !outdoor_state.ble_connected {
+            let backoff_secs = ble_status.on_disconnected();
+            ble_backoff_until = now + Duration::from_secs(backoff_secs);
+            let _ = crate::peripherals::ble::stop_advertising(&mut ble_connector);
+            println!("[BLE] Link loss detected! Backing off for {}s...", backoff_secs);
+        }
+
+        // Companion link established
+        if ble_on && outdoor_state.ble_connected && !ble_status.is_connected() {
+            ble_status.on_connected();
+            println!("[BLE] Companion link established!");
         }
 
         // === AOD render path ===

@@ -7,4 +7,6 @@ pub mod outdoor {
     pub mod packet;
     pub mod solar;
     pub mod state;
+    pub mod power_policy;
+    pub mod ble;
 }
