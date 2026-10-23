@@ -54,6 +54,7 @@ impl Notification {
             "calendar" | "reminder" | "alarm" => Rgb565::YELLOW,
             "security" | "urgent" | "call" | "emergency" => Rgb565::RED,
             "slack" | "github" | "telegram" | "email" => Rgb565::CYAN,
+            "soundcloud" | "music" | "spotify" => Rgb565::new(31, 21, 0), // Vibrant Orange
             _ => Rgb565::new(10, 20, 31), // Ice blue
         };
 

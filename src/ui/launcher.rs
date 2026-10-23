@@ -56,10 +56,10 @@ const MENU_ITEMS: &[MenuItem] = &[
         text_color: Rgb565::WHITE,
     },
     MenuItem {
-        name: "MP3 Player",
+        name: "SoundCloud & Music",
         state: AppState::Mp3Player,
-        bg_color: Rgb565::new(0, 8, 15),
-        text_color: Rgb565::CYAN,
+        bg_color: Rgb565::new(16, 6, 0),
+        text_color: Rgb565::new(31, 21, 0),
     },
     MenuItem {
         name: "Smart Home",

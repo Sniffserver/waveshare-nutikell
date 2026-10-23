@@ -41,6 +41,7 @@ use crate::apps::flappy::FlappyGame;
 use crate::apps::game2048::Game2048;
 use crate::apps::maze::MazeGame;
 use crate::apps::mp3player::Mp3Player;
+use crate::apps::media_controller::{MediaAction, MediaCommand, MediaController};
 use crate::apps::settings::SettingsApp;
 use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::snake::SnakeGame;
@@ -735,12 +736,8 @@ async fn main(_spawner: Spawner) {
     } else if !fallback_ssid.is_empty() {
         settings_app.set_stored_ssid(fallback_ssid);
     }
-    let mut mp3_player = Mp3Player::new();
+    let mut media_controller = MediaController::new();
     let mut smarthome_app = SmartHomeApp::new();
-    if !mp3_files.is_empty() {
-        mp3_player.set_track_count(mp3_files.len());
-        mp3_player.set_track_name(&mp3_files[0]);
-    }
     let mut last_touch_y: u16 = 0;
     let mut last_touch_x: u16 = 0;
     let mut accel = (0.0f32, 0.0f32, 0.0f32);
@@ -1772,7 +1769,7 @@ async fn main(_spawner: Spawner) {
                         AppState::Tetris => tetris_game.setup(),
                         AppState::Flappy => flappy_game.setup(),
                         AppState::Maze => maze_game.setup(),
-                        AppState::Mp3Player => mp3_player.setup(),
+                        AppState::Mp3Player => media_controller.setup(),
                         AppState::SmartHome => smarthome_app.setup(),
                         AppState::Outdoor => outdoor_app.setup(),
                         AppState::WorkTracker => work_tracker.setup(),
@@ -1922,17 +1919,52 @@ async fn main(_spawner: Spawner) {
 
             AppState::Mp3Player => {
                 let input = AppInput {
-                    touch: None,
+                    touch: if tap_event {
+                        Some(crate::peripherals::touch::TouchPoint {
+                            x: last_touch_x,
+                            y: last_touch_y,
+                            fingers: 1,
+                        })
+                    } else {
+                        None
+                    },
                     swipe: swipe_event,
                     tap: tap_event,
                     accel,
                     dt_ms: dt_ms.max(1),
                 };
-                mp3_player.update(&input);
-                mp3_player.render(&mut fb);
+                media_controller.set_ble_connected(ble_on);
+                media_controller.update(&input);
+
+                match media_controller.take_pending_action() {
+                    MediaAction::AddToPlaylist(source, title) => {
+                        println!("[BLE MEDIA] Saved track to {} playlist: {}", source.name(), title);
+                        let (h, m, s) = rtc.get_time().map(|dt| (dt.hours, dt.minutes, dt.seconds)).unwrap_or((12, 0, 0));
+                        let mut body_str = alloc::string::String::from("Added '");
+                        body_str.push_str(&title);
+                        body_str.push_str("' to Favorites");
+                        notification_mgr.push(crate::ui::notification::Notification::new(
+                            now.as_millis() as u32,
+                            source.name(),
+                            "Saved to Playlist",
+                            &body_str,
+                            (h, m, s),
+                            crate::ui::notification::Urgency::Normal,
+                        ));
+                    }
+                    MediaAction::SendCommand(cmd) => {
+                        println!("[BLE MEDIA] Sent command: {:?}", cmd);
+                    }
+                    MediaAction::None => {}
+                }
+
+                media_controller.render(&mut fb);
+                if notification_mgr.is_visible() {
+                    notification_mgr.render(&mut fb);
+                }
                 if now >= next_watchface_flush {
                     fb.flush_vsync(&mut display, &te_pin);
-                    next_watchface_flush = now + Duration::from_millis(200);
+                    next_watchface_flush = now + Duration::from_millis(80);
                 }
                 if boot_button.is_low() {
                     app_state = AppState::Launcher;

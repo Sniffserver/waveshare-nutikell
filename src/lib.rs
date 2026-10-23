@@ -16,7 +16,9 @@ pub mod outdoor {
 pub mod apps {
     pub mod authenticator;
     pub mod work_tracker;
+    pub mod media_controller;
     pub use authenticator::{AuthenticatorApp, TotpAccount};
+    pub use media_controller::{MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState};
     pub use work_tracker::{TrackerState, WorkSession, WorkTracker};
 
     pub use crate::peripherals::touch::{SwipeDirection, TouchPoint};
