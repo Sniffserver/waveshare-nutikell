@@ -1,11 +1,4 @@
-//! BLE Analyzer & Read-Only GATT Explorer module.
-//!
-//! Provides:
-//! - Raw Advertising Data (AD) parser (`ad.rs`)
-//! - Aerospace & Space sector Bluetooth SIG Company ID lookup (`companies.rs`)
-//! - Read-only GATT service & characteristic model (`gatt.rs`)
-//! - Discovered device tracker with multi-sample RSSI history (`tracker.rs`)
-//! - AMOLED UI with live RSSI sparklines and expanded GATT inspector (`ui.rs`)
+//! BLE Analyzer & Read-Only GATT Explorer module for TrouBLE / Embassy.
 
 pub mod ad;
 pub mod companies;
@@ -13,101 +6,104 @@ pub mod gatt;
 pub mod tracker;
 pub mod ui;
 
-pub use ad::{parse_advertising_data, AdStructure};
-pub use companies::{format_company, is_space_sector, lookup_company};
-pub use gatt::{DiscoveredCharacteristic, DiscoveredService, GattProfile, ReadOnlyGuard};
-pub use tracker::{DeviceTracker, TrackedDevice};
-pub use ui::{BleAnalyzerUi, ScannerView};
+pub use ad::{explain_ad_type, extract_ad_info, parse_advertising_data, AdStructure, AdvertisementInfo};
+pub use companies::{company_name, format_company, is_space_sector, lookup_company};
+pub use gatt::{
+    explore_read_only, GattCharacteristicInfo, GattError, GattExplorerResult, GattPolicy,
+    GattProperty, GattServiceInfo, ReadOnlyGattConnection,
+};
+pub use tracker::{
+    classify_device, BdAddr, DeviceKind, DeviceTracker, RssiHistory, RssiSample, TrackedDevice,
+};
+pub use ui::{
+    draw_device_detail, draw_device_list, draw_gatt_services, AnalyzerDisplay, BleAnalyzerUi,
+    BleScreen, BleUiState,
+};
 
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::DrawTarget;
+use heapless::Vec;
 
 use crate::apps::{App, AppInput, AppResult};
+
+pub struct ScanAdvertisement {
+    pub address: BdAddr,
+    pub rssi: i8,
+    pub data: Vec<u8, 64>,
+}
+
+pub trait BleScanner {
+    type Error;
+    async fn next_advertisement(&mut self) -> Result<ScanAdvertisement, Self::Error>;
+}
 
 pub struct BleAnalyzerApp {
     pub tracker: DeviceTracker,
     pub ui: BleAnalyzerUi,
     sim_timer_ms: u32,
     sim_step: u32,
+    sim_now_ms: u64,
 }
 
 impl BleAnalyzerApp {
     pub fn new() -> Self {
         let mut app = Self {
-            tracker: DeviceTracker::new(),
+            tracker: DeviceTracker::default(),
             ui: BleAnalyzerUi::new(),
             sim_timer_ms: 0,
             sim_step: 0,
+            sim_now_ms: 10_000,
         };
         app.seed_initial_beacons();
         app
     }
 
-    /// Seeds realistic initial beacons (including space-sector avionics)
     fn seed_initial_beacons(&mut self) {
         // 1. Honeywell Aerospace Avionics Beacon (Space Sector)
-        let hw_mac = [0x00, 0x18, 0x82, 0x33, 0x44, 0x55];
-        let hw_ad = [
-            0x02, 0x01, 0x06, // Flags
-            0x0A, 0x09, b'H', b'o', b'n', b'e', b'y', b'w', b'e', b'l', b'l', // Complete Name
+        let hw_mac = BdAddr([0x00, 0x18, 0x82, 0x33, 0x44, 0x55]);
+        let hw_raw = [
+            0x02, 0x01, 0x06,
+            0x0A, 0x09, b'H', b'o', b'n', b'e', b'y', b'w', b'e', b'l', b'l',
             0x04, 0xFF, 0x82, 0x01, 0x42, // Company ID 0x0182 (Honeywell Aerospace)
-            0x03, 0x03, 0x0A, 0x18, // Service 0x180A (Device Info)
+            0x03, 0x03, 0x0A, 0x18,
         ];
-        self.tracker.ingest_advertisement(hw_mac, -58, &hw_ad, 10);
-        if let Some(dev) = self.tracker.get_mut(0) {
-            dev.push_rssi(-60);
-            dev.push_rssi(-57);
-            dev.push_rssi(-55);
-            dev.push_rssi(-58);
-        }
+        let hw_ad = parse_advertising_data(&hw_raw).unwrap_or_default();
+        self.tracker.update(hw_mac, -58, 10_000, hw_ad);
 
         // 2. SpaceX / Starlink Terminal Sensor (Space Sector)
-        let sx_mac = [0x50, 0x41, 0x43, 0x45, 0x58, 0x01];
-        let sx_ad = [
+        let sx_mac = BdAddr([0x50, 0x41, 0x43, 0x45, 0x58, 0x01]);
+        let sx_raw = [
             0x02, 0x01, 0x06,
             0x09, 0x09, b'S', b't', b'a', b'r', b'l', b'i', b'n', b'k',
             0x04, 0xFF, 0x8E, 0x0A, 0x01, // Company ID 0x0A8E (SpaceX / Starlink)
-            0x03, 0x03, 0x1A, 0x18, // Service 0x181A (Environmental)
+            0x03, 0x03, 0x1A, 0x18,
         ];
-        self.tracker.ingest_advertisement(sx_mac, -72, &sx_ad, 12);
-        if let Some(dev) = self.tracker.get_mut(1) {
-            dev.push_rssi(-74);
-            dev.push_rssi(-70);
-            dev.push_rssi(-69);
-            dev.push_rssi(-72);
-        }
+        let sx_ad = parse_advertising_data(&sx_raw).unwrap_or_default();
+        self.tracker.update(sx_mac, -72, 10_500, sx_ad);
 
         // 3. Apple iPhone Companion
-        let ap_mac = [0xF4, 0xD4, 0x88, 0xAA, 0xBB, 0xCC];
-        let ap_ad = [
+        let ap_mac = BdAddr([0xF4, 0xD4, 0x88, 0xAA, 0xBB, 0xCC]);
+        let ap_raw = [
             0x02, 0x01, 0x1A,
             0x07, 0x09, b'i', b'P', b'h', b'o', b'n', b'e',
             0x04, 0xFF, 0x4C, 0x00, 0x10, // Company ID 0x004C (Apple Inc.)
-            0x03, 0x03, 0x0F, 0x18, // Service 0x180F (Battery)
+            0x03, 0x03, 0x0F, 0x18,
         ];
-        self.tracker.ingest_advertisement(ap_mac, -64, &ap_ad, 14);
-        if let Some(dev) = self.tracker.get_mut(2) {
-            dev.push_rssi(-66);
-            dev.push_rssi(-63);
-            dev.push_rssi(-65);
-            dev.push_rssi(-64);
-        }
+        let ap_ad = parse_advertising_data(&ap_raw).unwrap_or_default();
+        self.tracker.update(ap_mac, -64, 11_000, ap_ad);
 
         // 4. Garmin GPS Flight Deck (Space / Aviation)
-        let gm_mac = [0x00, 0xE4, 0x12, 0x34, 0x56, 0x78];
-        let gm_ad = [
+        let gm_mac = BdAddr([0x00, 0xE4, 0x12, 0x34, 0x56, 0x78]);
+        let gm_raw = [
             0x02, 0x01, 0x06,
             0x0B, 0x09, b'G', b'a', b'r', b'm', b'i', b'n', b' ', b'G', b'P', b'S',
             0x04, 0xFF, 0xE4, 0x00, 0x01, // Company ID 0x00E4 (Garmin)
-            0x03, 0x03, 0x19, 0x18, // Service 0x1819 (Location & Navigation)
+            0x03, 0x03, 0x19, 0x18,
         ];
-        self.tracker.ingest_advertisement(gm_mac, -81, &gm_ad, 15);
-        if let Some(dev) = self.tracker.get_mut(3) {
-            dev.push_rssi(-83);
-            dev.push_rssi(-80);
-            dev.push_rssi(-82);
-            dev.push_rssi(-81);
-        }
+        let gm_ad = parse_advertising_data(&gm_raw).unwrap_or_default();
+        self.tracker.update(gm_mac, -81, 11_500, gm_ad);
+
+        self.tracker.sort_by_rssi();
     }
 }
 
@@ -123,35 +119,33 @@ impl App for BleAnalyzerApp {
     }
 
     fn setup(&mut self) {
-        self.ui.view = ScannerView::List;
+        self.ui.state.screen = BleScreen::Devices;
     }
 
     fn update(&mut self, input: &AppInput) -> AppResult {
-        self.ui.tick(input.dt_ms);
-
-        // Advance simulation RSSI jitter to keep graph dynamic
         self.sim_timer_ms = self.sim_timer_ms.saturating_add(input.dt_ms);
+        self.sim_now_ms = self.sim_now_ms.saturating_add(input.dt_ms as u64);
+
         if self.sim_timer_ms >= 800 {
             self.sim_timer_ms = 0;
             self.sim_step = (self.sim_step + 1) % 10;
 
-            // Subtle live signal fluctuation for dynamic AMOLED graph
             let offsets: [i8; 10] = [1, -2, 2, -1, 3, -3, 0, 1, -1, 2];
             let delta = offsets[self.sim_step as usize];
 
             for d in &mut self.tracker.devices {
-                let new_rssi = (d.last_rssi + delta).clamp(-95, -45);
-                d.push_rssi(new_rssi);
-                d.packet_count = d.packet_count.saturating_add(1);
+                let new_rssi = (d.rssi + delta).clamp(-95, -45);
+                d.rssi = new_rssi;
+                d.rssi_history.push(self.sim_now_ms, new_rssi);
             }
+            self.tracker.prune(self.sim_now_ms);
+            self.tracker.sort_by_rssi();
         }
 
-        // Handle Touch
         if let Some(pt) = input.touch {
             self.ui.handle_touch(pt, &self.tracker);
         }
 
-        // Handle Swipe
         if let Some(swipe) = input.swipe {
             self.ui.handle_swipe(swipe, &self.tracker);
         }
@@ -171,7 +165,7 @@ mod tests {
     #[test]
     fn app_initializes_with_space_sector_beacons() {
         let app = BleAnalyzerApp::new();
-        assert_eq!(app.tracker.len(), 4);
-        assert_eq!(app.tracker.space_sector_count, 3); // Honeywell, SpaceX, Garmin
+        assert_eq!(app.tracker.devices.len(), 4);
+        assert_eq!(app.tracker.space_sector_count(), 3);
     }
 }

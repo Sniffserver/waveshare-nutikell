@@ -724,7 +724,7 @@ async fn main(_spawner: Spawner) {
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::new();
     let mut authenticator_app = AuthenticatorApp::new();
-    let mut ble_analyzer_app = BleAnalyzerApp::new();
+    let mut ble_analyzer_app = alloc::boxed::Box::new(BleAnalyzerApp::new());
     let mut notification_mgr = NotificationManager::new();
     let mut demo_notif_scheduled = true;
     let demo_notif_time = Instant::now() + Duration::from_secs(7);
