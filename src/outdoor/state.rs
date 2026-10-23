@@ -205,3 +205,8 @@ pub fn haversine_distance_m(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
     let c = 2.0 * libm::atan2f(libm::sqrtf(a_clamped), libm::sqrtf(1.0 - a_clamped));
     r * c
 }
+
+/// Convenience entry point matching GATT write callback
+pub fn on_position_write(state: &mut OutdoorState, data: &[u8], now_unix: i64) {
+    let _ = state.handle_position_write(data, now_unix);
+}

@@ -16,6 +16,7 @@ const REG_CTRL7: u8 = 0x08; // Enable sensors
 const REG_AX_L: u8 = 0x35; // Accel X low byte
 const REG_GX_L: u8 = 0x3B; // Gyro X low byte
 const REG_TEMP_L: u8 = 0x33; // Temperature low byte
+const REG_STATUS0: u8 = 0x2E; // Status 0 register
 
 const QMI8658_WHO_AM_I: u8 = 0x05; // Expected chip ID
 
@@ -112,6 +113,28 @@ impl<I: I2c> Qmi8658Imu<I> {
         self.write_reg(REG_CTRL7, 0x01)
     }
 
+    /// Check if accelerometer data is ready in STATUS0.
+    pub fn accel_ready(&mut self) -> Result<bool, I::Error> {
+        let status = self.read_reg(REG_STATUS0)?;
+        Ok(status & 0x01 != 0)
+    }
+
+    /// Initialize accelerometer only (low-power navigation mode).
+    pub fn init_accel_only(&mut self) -> Result<bool, I::Error> {
+        let id = self.read_reg(REG_WHO_AM_I)?;
+        if id != QMI8658_WHO_AM_I {
+            return Ok(false);
+        }
+        self.write_reg(REG_CTRL7, 0x00)?;
+        self.write_reg(REG_CTRL1, 0x60)?;
+        self.write_reg(REG_CTRL2, 0x25)?;
+        self.accel_scale = 8.0 / 32768.0;
+        self.write_reg(REG_CTRL3, 0x00)?;
+        self.write_reg(REG_CTRL5, 0x11)?;
+        self.write_reg(REG_CTRL7, 0x01)?;
+        Ok(true)
+    }
+
     /// Enable both accelerometer and gyroscope (for Level / 6-axis mode).
     pub fn enable_6axis(&mut self) -> Result<(), I::Error> {
         self.write_reg(REG_CTRL7, 0x03)
@@ -153,4 +176,9 @@ impl<I: I2c> Qmi8658Imu<I> {
     pub fn read_chip_id(&mut self) -> Result<u8, I::Error> {
         self.read_reg(REG_WHO_AM_I)
     }
+}
+
+/// Calculate magnitude of a 3-axis acceleration vector in g.
+pub fn magnitude(sample: AccelData) -> f32 {
+    libm::sqrtf(sample.x * sample.x + sample.y * sample.y + sample.z * sample.z)
 }
