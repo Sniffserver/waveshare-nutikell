@@ -1,11 +1,9 @@
 // Minimal captive-portal services (DHCP + DNS + HTTP) for WiFi provisioning
-//
-// The watch runs in AP mode with SSID "Watch-Setup" and an open password.
-// It provides:
-//   1. DHCP server on UDP port 67 (assigns 192.168.4.2 to connecting phones).
-//   2. Captive DNS server on UDP port 53 (redirects all domain lookups to 192.168.4.1).
-//   3. HTTP server on TCP port 80 (serves WiFi setup form, accepts POST /save, persists to NVS).
 
+use edge_dhcp::{
+    server::{Action, ServerOptions},
+    Ipv4Addr, Options, Packet,
+};
 use embassy_net::{
     tcp::TcpSocket,
     udp::{PacketMetadata, UdpSocket},
@@ -66,94 +64,83 @@ pub async fn run_ap_services(stack: Stack<'static>) -> StoredCredentials {
     }
 }
 
-/// Minimal DHCP server assigning 192.168.4.2 to the client
+/// RFC 2131 compliant DHCP server powered by edge-dhcp
 pub async fn run_dhcp_server(stack: Stack<'static>) {
-    let mut rx_meta = [PacketMetadata::EMPTY; 2];
-    let mut rx_buf = [0u8; 512];
-    let mut tx_meta = [PacketMetadata::EMPTY; 2];
-    let mut tx_buf = [0u8; 512];
+    let mut rx_meta = [PacketMetadata::EMPTY; 4];
+    let mut rx_buf = [0u8; 1024];
+    let mut tx_meta = [PacketMetadata::EMPTY; 4];
+    let mut tx_buf = [0u8; 1024];
     let mut sock = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
     if sock.bind(67).is_err() {
         println!("[DHCP] Failed to bind port 67");
         return;
     }
-    println!("[DHCP] Server ready on port 67");
+    println!("[DHCP] Server listening on port 67");
+
+    let ip = Ipv4Addr::new(192, 168, 4, 1);
+    let mut gw = [ip];
+    let dns = [ip];
+    let mut server_options = ServerOptions::new(ip, Some(&mut gw));
+    server_options.dns = &dns;
+    server_options.captive_url = Some("http://192.168.4.1");
+
+    let client_ip = Ipv4Addr::new(192, 168, 4, 2);
+
+    let mut in_buf = [0u8; 1024];
+    let mut out_buf = [0u8; 1024];
 
     loop {
-        let mut buf = [0u8; 512];
-        let (n, _from) = match sock.recv_from(&mut buf).await {
+        let mut opt_buf = Options::buf();
+        let (n, _from) = match sock.recv_from(&mut in_buf).await {
             Ok(res) => res,
             Err(_) => continue,
         };
-        if n < 240 || buf[0] != 1 || buf[236..240] != [99, 130, 83, 99] {
-            continue;
-        }
 
-        // Parse options for message type
-        let mut msg_type: Option<u8> = None;
-        let mut idx = 240;
-        while idx < n {
-            let opt = buf[idx];
-            if opt == 255 { break; }
-            if opt == 0 { idx += 1; continue; }
-            if idx + 1 >= n { break; }
-            let len = buf[idx + 1] as usize;
-            if idx + 2 + len > n { break; }
-            if opt == 53 && len == 1 {
-                msg_type = Some(buf[idx + 2]);
+        let packet = match Packet::decode(&in_buf[..n]) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("[DHCP] Decode error: {:?}", e);
+                continue;
             }
-            idx += 2 + len;
-        }
-
-        let resp_type = match msg_type {
-            Some(1) => 2, // DISCOVER -> OFFER
-            Some(3) => 5, // REQUEST -> ACK
-            _ => continue,
         };
 
-        let mut reply = [0u8; 300];
-        reply[0] = 2; // BOOTREPLY
-        reply[1] = buf[1];
-        reply[2] = buf[2];
-        reply[3] = 0;
-        reply[4..8].copy_from_slice(&buf[4..8]); // xid
-        reply[8..10].copy_from_slice(&[0, 0]);
-        reply[10..12].copy_from_slice(&buf[10..12]);
-        reply[12..16].copy_from_slice(&[0, 0, 0, 0]);
-        reply[16..20].copy_from_slice(&[192, 168, 4, 2]); // Client IP
-        reply[20..24].copy_from_slice(&[192, 168, 4, 1]); // Server IP
-        reply[24..28].copy_from_slice(&[0, 0, 0, 0]);
-        reply[28..44].copy_from_slice(&buf[28..44]); // Client MAC
-        reply[236..240].copy_from_slice(&[99, 130, 83, 99]); // Cookie
+        let action = match server_options.process(&packet) {
+            Some(a) => a,
+            None => continue,
+        };
 
-        let mut opt_idx = 240;
-        // Option 53: Message Type
-        reply[opt_idx..opt_idx+3].copy_from_slice(&[53, 1, resp_type]); opt_idx += 3;
-        // Option 54: Server ID
-        reply[opt_idx..opt_idx+6].copy_from_slice(&[54, 4, 192, 168, 4, 1]); opt_idx += 6;
-        // Option 51: Lease Time (7200s)
-        reply[opt_idx..opt_idx+6].copy_from_slice(&[51, 4, 0x00, 0x00, 0x1C, 0x20]); opt_idx += 6;
-        // Option 1: Subnet Mask (255.255.255.0)
-        reply[opt_idx..opt_idx+6].copy_from_slice(&[1, 4, 255, 255, 255, 0]); opt_idx += 6;
-        // Option 3: Router (192.168.4.1)
-        reply[opt_idx..opt_idx+6].copy_from_slice(&[3, 4, 192, 168, 4, 1]); opt_idx += 6;
-        // Option 6: DNS (192.168.4.1)
-        reply[opt_idx..opt_idx+6].copy_from_slice(&[6, 4, 192, 168, 4, 1]); opt_idx += 6;
-        // Option 255: End
-        reply[opt_idx] = 255; opt_idx += 1;
+        let reply = match action {
+            Action::Discover(_req_ip, _mac) => {
+                println!("[DHCP] Discover -> sending Offer 192.168.4.2");
+                server_options.offer(&packet, client_ip, &mut opt_buf)
+            }
+            Action::Request(req_ip, _mac) => {
+                println!("[DHCP] Request ({:?}) -> sending Ack", req_ip);
+                server_options.ack_nak(&packet, Some(client_ip), &mut opt_buf)
+            }
+            Action::Release(_, _) | Action::Decline(_, _) => continue,
+        };
 
-        println!("[DHCP] Handshake -> offering 192.168.4.2");
-        let dest = IpEndpoint::new(IpAddress::v4(255, 255, 255, 255), 68);
-        let _ = sock.send_to(&reply[..opt_idx], dest).await;
+        match reply.encode(&mut out_buf) {
+            Ok(bytes) => {
+                let dest = IpEndpoint::new(IpAddress::v4(255, 255, 255, 255), 68);
+                if let Err(e) = sock.send_to(bytes, dest).await {
+                    println!("[DHCP] Send error: {:?}", e);
+                } else {
+                    println!("[DHCP] Response sent ({} bytes)", bytes.len());
+                }
+            }
+            Err(e) => println!("[DHCP] Encode error: {:?}", e),
+        }
     }
 }
 
 /// Captive DNS server redirecting all domain queries to 192.168.4.1
 pub async fn run_dns_server(stack: Stack<'static>) {
-    let mut rx_meta = [PacketMetadata::EMPTY; 2];
-    let mut rx_buf = [0u8; 256];
-    let mut tx_meta = [PacketMetadata::EMPTY; 2];
-    let mut tx_buf = [0u8; 256];
+    let mut rx_meta = [PacketMetadata::EMPTY; 4];
+    let mut rx_buf = [0u8; 512];
+    let mut tx_meta = [PacketMetadata::EMPTY; 4];
+    let mut tx_buf = [0u8; 512];
     let mut sock = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
     if sock.bind(53).is_err() {
         println!("[DNS] Failed to bind port 53");
@@ -162,7 +149,7 @@ pub async fn run_dns_server(stack: Stack<'static>) {
     println!("[DNS] Captive DNS ready on port 53");
 
     loop {
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 512];
         let (n, from) = match sock.recv_from(&mut buf).await {
             Ok(res) => res,
             Err(_) => continue,
@@ -171,7 +158,9 @@ pub async fn run_dns_server(stack: Stack<'static>) {
             continue;
         }
 
-        let mut resp = [0u8; 256];
+        println!("[DNS] Query from {:?}, redirecting to 192.168.4.1", from);
+
+        let mut resp = [0u8; 512];
         resp[0..2].copy_from_slice(&buf[0..2]); // ID
         resp[2..4].copy_from_slice(&[0x81, 0x80]); // Standard query response, No error
         resp[4..6].copy_from_slice(&[0x00, 0x01]); // 1 Question
@@ -206,8 +195,8 @@ pub async fn run_dns_server(stack: Stack<'static>) {
 
 /// Serve one HTTP connection.
 pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
-    let mut rx_buf = [0u8; 512];
-    let mut tx_buf = [0u8; 512];
+    let mut rx_buf = [0u8; 1024];
+    let mut tx_buf = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     socket.set_timeout(Some(Duration::from_secs(10)));
 
@@ -216,7 +205,9 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
         return ServeResult::Idle;
     }
 
-    let mut req = [0u8; 512];
+    println!("[HTTP] Client connected from {:?}", socket.remote_endpoint());
+
+    let mut req = [0u8; 1024];
     let mut total = 0usize;
     loop {
         match socket.read(&mut req[total..]).await {
@@ -249,28 +240,33 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
     }
 
     let req_slice = &req[..total];
+    let first_line = core::str::from_utf8(req_slice).unwrap_or("").lines().next().unwrap_or("");
+    println!("[HTTP] Request: {}", first_line);
 
     if req_slice.starts_with(b"POST /save") {
         let body = extract_body(req_slice);
         match parse_form_creds(body) {
             Some(creds) => {
+                println!("[HTTP] Saving credentials for SSID: {}", creds.ssid_str());
                 let _ = write_all(&mut socket, HTML_OK).await;
                 socket.close();
                 let _ = write_credentials(&creds);
                 ServeResult::CredentialsSaved(creds)
             }
             None => {
+                println!("[HTTP] Error: invalid form data");
                 let _ = write_all(&mut socket, HTML_ERR).await;
                 socket.close();
                 ServeResult::Pending
             }
         }
     } else if req_slice.starts_with(b"GET /") {
+        println!("[HTTP] Serving setup HTML form");
         let _ = write_all(&mut socket, HTML_FORM).await;
         socket.close();
         ServeResult::Pending
     } else {
-        // Captive probe redirect
+        println!("[HTTP] Captive probe redirect -> 192.168.4.1");
         let _ = write_all(&mut socket, HTML_REDIRECT).await;
         socket.close();
         ServeResult::Pending

@@ -107,7 +107,7 @@ impl WifiSetupApp {
         let _ = Text::with_alignment(spinner[spin_idx], EgPoint::new(W / 2, 416), val_st, Alignment::Center).draw(d);
 
         // Reset hint
-        let _ = Text::with_alignment("Tap screen to skip", EgPoint::new(W / 2, 444), label_st, Alignment::Center).draw(d);
+        let _ = Text::with_alignment("Tap here to skip", EgPoint::new(W / 2, 444), label_st, Alignment::Center).draw(d);
     }
 }
 

@@ -47,6 +47,7 @@ nanomp3 = "0.1"
 embedded-qr = "0.2"
 # NVS Flash Storage
 esp-storage = { version = "0.6.0", features = ["esp32s3"] }
+edge-dhcp = { version = "0.8.0", default-features = false }
 
 [profile.dev]
 opt-level = "s"

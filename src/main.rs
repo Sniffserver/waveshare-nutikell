@@ -584,12 +584,14 @@ async fn main(_spawner: Spawner) {
         let mut ap_services = core::pin::pin!(crate::peripherals::captive::run_ap_services(ap_stack));
 
         loop {
-            // Check for touch tap to skip provisioning
+            // Check for touch tap to skip provisioning (bottom area)
             if touch_int.is_low() {
-                if let Ok(Some(_)) = touch.read() {
-                    println!("[PROVISION] Touch detected — skipping WiFi setup");
-                    wifi_controller.stop().ok();
-                    break;
+                if let Ok(Some(pt)) = touch.read() {
+                    if pt.y >= 360 {
+                        println!("[PROVISION] Skip tapped (y={}) — exiting to watchface", pt.y);
+                        wifi_controller.stop().ok();
+                        break;
+                    }
                 }
             }
 
