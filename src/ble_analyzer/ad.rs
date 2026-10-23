@@ -2,10 +2,10 @@
 
 use heapless::{String, Vec};
 
-pub const MAX_AD_STRUCTURES: usize = 16;
+pub const MAX_AD_STRUCTURES: usize = 4;
 pub const MAX_AD_PAYLOAD: usize = 31;
 pub const MAX_NAME_LEN: usize = 32;
-pub const MAX_UUIDS: usize = 16;
+pub const MAX_UUIDS: usize = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdStructure {

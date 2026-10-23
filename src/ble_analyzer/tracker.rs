@@ -4,10 +4,11 @@ use super::{
     ad::{AdStructure, AdvertisementInfo},
     companies::{company_name, is_space_sector},
 };
+use alloc::boxed::Box;
 use heapless::{String, Vec};
 
-pub const MAX_DEVICES: usize = 16;
-pub const MAX_RSSI_SAMPLES: usize = 32;
+pub const MAX_DEVICES: usize = 6;
+pub const MAX_RSSI_SAMPLES: usize = 10;
 pub const MAX_DEVICE_NAME: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +101,7 @@ pub struct TrackedDevice {
     pub rssi: i8,
     pub last_seen_ms: u64,
     pub rssi_history: RssiHistory,
-    pub ad_structures: Vec<AdStructure, 16>,
+    pub ad_structures: Vec<AdStructure, { super::ad::MAX_AD_STRUCTURES }>,
 }
 
 pub fn classify_device(info: &AdvertisementInfo) -> DeviceKind {
@@ -153,7 +154,7 @@ pub fn classify_device(info: &AdvertisementInfo) -> DeviceKind {
 
 #[derive(Default, Clone)]
 pub struct DeviceTracker {
-    pub devices: Vec<TrackedDevice, MAX_DEVICES>,
+    pub devices: Vec<Box<TrackedDevice>, MAX_DEVICES>,
 }
 
 impl DeviceTracker {
@@ -162,7 +163,7 @@ impl DeviceTracker {
         address: BdAddr,
         rssi: i8,
         now_ms: u64,
-        ad_structures: Vec<AdStructure, 16>,
+        ad_structures: Vec<AdStructure, { super::ad::MAX_AD_STRUCTURES }>,
     ) {
         let info = super::ad::extract_ad_info(&ad_structures);
         let kind = classify_device(&info);
@@ -187,7 +188,7 @@ impl DeviceTracker {
             self.devices.remove(0);
         }
 
-        let _ = self.devices.push(TrackedDevice {
+        let _ = self.devices.push(Box::new(TrackedDevice {
             address,
             name: info.name,
             company_id: info.company_id,
@@ -202,7 +203,7 @@ impl DeviceTracker {
                 history
             },
             ad_structures,
-        });
+        }));
     }
 
     pub fn prune(&mut self, now_ms: u64) {
