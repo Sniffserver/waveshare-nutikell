@@ -622,7 +622,6 @@ impl OutdoorApp {
 
     fn render_sun<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D, state: &OutdoorState) {
         let label_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
-        let value_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 
         let _ = Text::with_alignment(
             "SOLAR POSITION",
@@ -640,25 +639,77 @@ impl OutdoorApp {
         .into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 4, 3)))
         .draw(d);
 
+        let (lat, lon) = if state.gps_valid {
+            (state.latitude_deg, state.longitude_deg)
+        } else {
+            // Default reference: Tallinn, Estonia (59.437° N, 24.753° E)
+            (59.437, 24.753)
+        };
+
+        let (year, month, day) = state.date_ymd;
+        let (hour, minute, second) = state.time_hms;
+
+        let solar = crate::outdoor::solar::calculate_solar(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            lat,
+            lon,
+        );
+
         let _ = Text::new(
             "Azimuth (Solar Heading):",
             EgPoint::new(35, 85),
             label_style,
         )
         .draw(d);
+        let az_str = format!("{:.1}° ({})", solar.azimuth_deg, solar.cardinal_str());
         let _ = Text::new(
-            "147° (SE)",
+            &az_str,
             EgPoint::new(35, 115),
             MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW),
         )
         .draw(d);
 
         let _ = Text::new("Elevation (Angle):", EgPoint::new(35, 150), label_style).draw(d);
-        let _ = Text::new("+21° above horizon", EgPoint::new(35, 180), value_style).draw(d);
+        let el_str = if solar.elevation_deg >= 0.0 {
+            format!("+{:.1}° above horizon", solar.elevation_deg)
+        } else {
+            format!("{:.1}° below horizon", solar.elevation_deg)
+        };
+        let el_color = if solar.elevation_deg >= 0.0 {
+            Rgb565::WHITE
+        } else {
+            Rgb565::CSS_GRAY
+        };
+        let _ = Text::new(&el_str, EgPoint::new(35, 180), MonoTextStyle::new(&FONT_10X20, el_color)).draw(d);
 
         let _ = Text::new("Sunrise / Sunset:", EgPoint::new(35, 215), label_style).draw(d);
+        // Estimate local solar timezone offset from longitude (15 deg per hour)
+        let tz_offset_hours = if lon >= 0.0 {
+            ((lon + 7.5) / 15.0) as i32
+        } else {
+            ((lon - 7.5) / 15.0) as i32
+        };
+        let sun_str = match (solar.sunrise_utc_min, solar.sunset_utc_min) {
+            (Some(r), Some(s)) => {
+                let r_local = ((r as i32 + tz_offset_hours * 60).rem_euclid(1440)) as u16;
+                let s_local = ((s as i32 + tz_offset_hours * 60).rem_euclid(1440)) as u16;
+                format!(
+                    "Rise {:02}:{:02}  |  Set {:02}:{:02}",
+                    r_local / 60,
+                    r_local % 60,
+                    s_local / 60,
+                    s_local % 60
+                )
+            }
+            _ => "Polar Day / Night".into(),
+        };
         let _ = Text::new(
-            "Rise 07:42  |  Set 17:58",
+            &sun_str,
             EgPoint::new(35, 245),
             MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN),
         )
@@ -666,11 +717,11 @@ impl OutdoorApp {
 
         let fix_str = if state.gps_valid {
             format!(
-                "GPS Age: {}s (Lat {:.3}, Lon {:.3})",
-                state.fix_age_secs, state.latitude_deg, state.longitude_deg
+                "GPS: Lat {:.3}°, Lon {:.3}° (age {}s)",
+                state.latitude_deg, state.longitude_deg, state.fix_age_secs
             )
         } else {
-            "GPS: Waiting for fix...".into()
+            format!("Ref: Lat {:.3}°, Lon {:.3}° (Default)", lat, lon)
         };
         let _ = Text::new(&fix_str, EgPoint::new(35, 295), label_style).draw(d);
 

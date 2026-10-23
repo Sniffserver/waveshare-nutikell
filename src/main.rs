@@ -765,6 +765,8 @@ async fn main(_spawner: Spawner) {
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
+        outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
+        outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
     }
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
@@ -997,6 +999,8 @@ async fn main(_spawner: Spawner) {
             if let Ok(dt) = rtc.get_time() {
                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                 watchface.update_date(dt.day, dt.month, dt.year);
+                outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
+                outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
             }
             next_rtc = now + Duration::from_secs(1);
         }
@@ -1324,6 +1328,8 @@ async fn main(_spawner: Spawner) {
                                         if let Ok(dt) = rtc.get_time() {
                                             watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                                             watchface.update_date(dt.day, dt.month, dt.year);
+                                            outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
+                                            outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
                                             watchface.force_redraw();
                                             page_dirty = true;
                                         }

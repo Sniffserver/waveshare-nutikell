@@ -46,6 +46,8 @@ pub struct OutdoorState {
     pub imu_motion: MotionState,
     pub hike: HikeSession,
     pub last_sequence: u32,
+    pub time_hms: (u8, u8, u8),
+    pub date_ymd: (u16, u8, u8),
     prev_lat: f32,
     prev_lon: f32,
     has_prev_coord: bool,
@@ -79,6 +81,8 @@ impl OutdoorState {
                 avg_speed_mps: 0.0,
             },
             last_sequence: 0,
+            time_hms: (12, 0, 0),
+            date_ymd: (2026, 10, 23),
             prev_lat: 0.0,
             prev_lon: 0.0,
             has_prev_coord: false,
@@ -183,6 +187,10 @@ impl OutdoorState {
         if self.hike.status == HikeStatus::Running {
             self.hike.elapsed_secs = self.hike.elapsed_secs.saturating_add(1);
             self.hike.steps_session = self.steps.saturating_sub(self.hike.steps_start);
+            // Stride fallback: if GPS distance is 0 but steps > 0, calculate distance from steps (approx 0.75m/stride)
+            if self.hike.distance_m <= 0.0 && self.hike.steps_session > 0 {
+                self.hike.distance_m = self.hike.steps_session as f32 * 0.75;
+            }
             if self.hike.elapsed_secs > 0 {
                 self.hike.avg_speed_mps = self.hike.distance_m / (self.hike.elapsed_secs as f32);
             }

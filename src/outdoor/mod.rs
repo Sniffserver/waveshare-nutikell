@@ -1,3 +1,4 @@
+pub mod solar;
 pub mod attitude;
 pub mod battery;
 pub mod ble;
@@ -21,3 +22,5 @@ pub use ui::{
     AppState, DirtyRegions, OutdoorDisplay, Screen, TouchPoint, UiEvent, BLACK, GREEN, MUTED,
     ORANGE, PANEL, RED, WHITE,
 };
+
+pub use solar::{calculate_solar, SolarPosition};
