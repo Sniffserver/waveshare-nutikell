@@ -3,6 +3,13 @@
 
 extern crate alloc;
 
+pub fn log_memory(label: &'static str) {
+    let free = esp_alloc::HEAP.free();
+    let used = esp_alloc::HEAP.used();
+    println!("[MEM:{}] free={} used={}", label, free, used);
+}
+
+
 mod apps;
 mod ble_analyzer;
 mod board;
@@ -264,6 +271,7 @@ async fn main(_spawner: Spawner) {
 
     // PSRAM
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
+    log_memory("init");
 
     // Embassy timer
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -324,6 +332,7 @@ async fn main(_spawner: Spawner) {
     fb.clear_color(Rgb565::BLACK);
     fb.flush(&mut display);
     println!("[FB] OK");
+    log_memory("after-display");
 
     // === Touch ===
     let mut touch_rst = Output::new(peripherals.GPIO9, Level::High, OutputConfig::default());
@@ -555,6 +564,7 @@ async fn main(_spawner: Spawner) {
     )
     .expect("BLE init failed");
     println!("[BLE] Connector ready (advertising OFF)");
+    log_memory("after-radio");
 
     // === NVS: load stored WiFi credentials ===
     // If no credentials are stored, enter AP provisioning mode.
@@ -724,7 +734,15 @@ async fn main(_spawner: Spawner) {
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::new();
     let mut authenticator_app = AuthenticatorApp::new();
+    log_memory("before-analyzer");
+    println!(
+        "[BLE] DeviceTracker size={} bytes, TrackedDevice size={} bytes, BleAnalyzerApp size={} bytes",
+        core::mem::size_of::<crate::ble_analyzer::tracker::DeviceTracker>(),
+        core::mem::size_of::<crate::ble_analyzer::tracker::TrackedDevice>(),
+        core::mem::size_of::<crate::ble_analyzer::BleAnalyzerApp>(),
+    );
     let mut ble_analyzer_app = alloc::boxed::Box::new(BleAnalyzerApp::new());
+    log_memory("after-analyzer");
     let mut notification_mgr = NotificationManager::new();
     let mut demo_notif_scheduled = true;
     let demo_notif_time = Instant::now() + Duration::from_secs(7);
@@ -1420,6 +1438,7 @@ async fn main(_spawner: Spawner) {
                                     Ok(()) => {
                                         ntp_synced = true;
                                         println!("[NTP] synced");
+                                        log_memory("after-wifi");
                                         if let Ok(dt) = rtc.get_time() {
                                             watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                                             watchface.update_date(dt.day, dt.month, dt.year);
