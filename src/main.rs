@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod apps;
+mod ble_analyzer;
 mod board;
 mod drivers;
 mod outdoor;
@@ -49,6 +50,7 @@ use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
 use crate::apps::authenticator::AuthenticatorApp;
 use crate::apps::work_tracker::WorkTracker;
+use crate::ble_analyzer::BleAnalyzerApp;
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
@@ -253,7 +255,7 @@ async fn main(_spawner: Spawner) {
     // The BLE+WiFi coex radio stack needs ~100KB+ of internal SRAM for
     // btdm_controller_init tasks and buffers. 64KB was too small and
     // caused a StoreProhibited panic (null-pointer from failed alloc).
-    esp_alloc::heap_allocator!(size: 160 * 1024);
+    esp_alloc::heap_allocator!(size: 152 * 1024);
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
@@ -722,6 +724,7 @@ async fn main(_spawner: Spawner) {
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::new();
     let mut authenticator_app = AuthenticatorApp::new();
+    let mut ble_analyzer_app = BleAnalyzerApp::new();
     let mut notification_mgr = NotificationManager::new();
     let mut demo_notif_scheduled = true;
     let demo_notif_time = Instant::now() + Duration::from_secs(7);
@@ -902,7 +905,8 @@ async fn main(_spawner: Spawner) {
                 | AppState::Mp3Player
                 | AppState::SmartHome
                 | AppState::WorkTracker
-                | AppState::Authenticator => Duration::from_millis(100),
+                | AppState::Authenticator
+                | AppState::BleAnalyzer => Duration::from_millis(100),
                 AppState::Outdoor => {
                     if outdoor_app.screen == crate::apps::outdoor_app::OutdoorScreen::Level {
                         Duration::from_millis(50)
@@ -1774,6 +1778,7 @@ async fn main(_spawner: Spawner) {
                         AppState::Outdoor => outdoor_app.setup(),
                         AppState::WorkTracker => work_tracker.setup(),
                         AppState::Authenticator => authenticator_app.setup(),
+                        AppState::BleAnalyzer => ble_analyzer_app.setup(),
                         AppState::Settings => {
                             if let Some(ref creds) = read_credentials() {
                                 if creds.is_configured() {
@@ -2094,6 +2099,37 @@ async fn main(_spawner: Spawner) {
                 }
                 if let AppResult::Exit = res {
                     app_state = AppState::Launcher;
+                }
+                if boot_button.is_low() {
+                    app_state = AppState::Launcher;
+                    Timer::after(Duration::from_millis(200)).await;
+                }
+            }
+
+            AppState::BleAnalyzer => {
+                let input = AppInput {
+                    touch: if tap_event {
+                        Some(crate::peripherals::touch::TouchPoint {
+                            x: last_touch_x,
+                            y: last_touch_y,
+                            fingers: 1,
+                        })
+                    } else {
+                        None
+                    },
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
+                let _ = ble_analyzer_app.update(&input);
+                ble_analyzer_app.render(&mut fb);
+                if notification_mgr.is_visible() {
+                    notification_mgr.render(&mut fb);
+                }
+                if now >= next_watchface_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    next_watchface_flush = now + Duration::from_millis(80);
                 }
                 if boot_button.is_low() {
                     app_state = AppState::Launcher;

@@ -62,6 +62,8 @@ pub mod peripherals {
     }
 }
 
+pub mod ble_analyzer;
+
 pub mod ui {
     pub mod notification;
     pub use notification::{Notification, NotificationManager, Urgency};

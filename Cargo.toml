@@ -17,6 +17,7 @@ static_cell = "2.1"
 # Graphics
 embedded-graphics = "0.8"
 embedded-graphics-core = "0.4"
+heapless = "0.8"
 
 # HAL traits
 embedded-hal = "1.0"

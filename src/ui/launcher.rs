@@ -86,6 +86,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         text_color: Rgb565::CYAN,
     },
     MenuItem {
+        name: "BLE Analyzer",
+        state: AppState::BleAnalyzer,
+        bg_color: Rgb565::new(0, 12, 16),
+        text_color: Rgb565::CYAN,
+    },
+    MenuItem {
         name: "Settings",
         state: AppState::Settings,
         bg_color: Rgb565::new(6, 12, 6),

@@ -63,4 +63,5 @@ pub enum AppState {
     Outdoor,
     WorkTracker,
     Authenticator,
+    BleAnalyzer,
 }
