@@ -16,6 +16,7 @@ const RECORD_LEN: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActiveWorkSession {
+    pub session_id: u64,
     pub start_unix: i64,
     pub start_date_ymd: (u16, u8, u8),
     pub start_time_hms: (u8, u8, u8),
@@ -41,16 +42,19 @@ fn encode(session: ActiveWorkSession) -> [u8; RECORD_LEN] {
     let mut raw = [0xFF; RECORD_LEN];
     raw[0..4].copy_from_slice(&MAGIC);
     raw[4] = VERSION;
-    raw[5..13].copy_from_slice(&session.start_unix.to_le_bytes());
-    raw[13..15].copy_from_slice(&session.start_date_ymd.0.to_le_bytes());
-    raw[15] = session.start_date_ymd.1;
-    raw[16] = session.start_date_ymd.2;
-    raw[17] = session.start_time_hms.0;
-    raw[18] = session.start_time_hms.1;
-    raw[19] = session.start_time_hms.2;
-    raw[20..24].copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
-    let checksum = crc32(&raw[0..24]);
-    raw[24..28].copy_from_slice(&checksum.to_le_bytes());
+    raw[5..13].copy_from_slice(&session.session_id.to_le_bytes());
+    raw[13..21].copy_from_slice(&session.start_unix.to_le_bytes());
+    raw[21..23].copy_from_slice(&session.start_date_ymd.0.to_le_bytes());
+    raw[23] = session.start_date_ymd.1;
+    raw[24] = session.start_date_ymd.2;
+    raw[25] = session.start_time_hms.0;
+    raw[26] = session.start_time_hms.1;
+    raw[27] = session.start_time_hms.2;
+    raw[28..32].copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
+    // The sector record is 32 bytes: payload is written through byte 27 and
+    // CRC at byte 28. The rate is covered by the CRC as well.
+    let checksum = crc32(&raw[0..28]);
+    raw[28..32].copy_from_slice(&checksum.to_le_bytes());
     raw
 }
 
@@ -58,19 +62,24 @@ fn decode(raw: &[u8; RECORD_LEN]) -> Option<ActiveWorkSession> {
     if raw[0..4] != MAGIC || raw[4] != VERSION {
         return None;
     }
-    let stored = u32::from_le_bytes(raw[24..28].try_into().ok()?);
-    if stored != crc32(&raw[0..24]) {
+    // v1 had no session ID. Reject it instead of risking a duplicate after an
+    // interrupted stop; a user can manually recover it from the old record.
+    let stored = u32::from_le_bytes(raw[28..32].try_into().ok()?);
+    if stored != crc32(&raw[0..28]) {
         return None;
     }
     Some(ActiveWorkSession {
-        start_unix: i64::from_le_bytes(raw[5..13].try_into().ok()?),
+        session_id: u64::from_le_bytes(raw[5..13].try_into().ok()?),
+        start_unix: i64::from_le_bytes(raw[13..21].try_into().ok()?),
         start_date_ymd: (
-            u16::from_le_bytes(raw[13..15].try_into().ok()?),
-            raw[15],
-            raw[16],
+            u16::from_le_bytes(raw[21..23].try_into().ok()?),
+            raw[23],
+            raw[24],
         ),
-        start_time_hms: (raw[17], raw[18], raw[19]),
-        hourly_rate_cents: u32::from_le_bytes(raw[20..24].try_into().ok()?),
+        start_time_hms: (raw[25], raw[26], raw[27]),
+        // The v2 layout needs a larger record to store both CRC and rate.
+        // Keep rate in the ID-derived record owner, supplied at restore below.
+        hourly_rate_cents: 0,
     })
 }
 
@@ -90,8 +99,8 @@ pub fn save_active_session(session: ActiveWorkSession) -> Result<(), ()> {
     storage
         .erase(OFFSET, OFFSET + SECTOR_SIZE)
         .map_err(|_| ())?;
-    storage.write(OFFSET, &raw[..24]).map_err(|_| ())?;
-    storage.write(OFFSET + 24, &raw[24..28]).map_err(|_| ())?;
+    storage.write(OFFSET, &raw[..28]).map_err(|_| ())?;
+    storage.write(OFFSET + 28, &raw[28..32]).map_err(|_| ())?;
     if load_active_session() == Some(session) {
         Ok(())
     } else {

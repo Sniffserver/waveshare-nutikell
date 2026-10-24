@@ -22,7 +22,8 @@
 //    16       4   break_secs:   u32 le
 //    20       4   hourly_rate_cents: u32 le
 //    24       4   earned_cents: u32 le
-//    28      20   Reserved / future fields
+//    28       8   session_id: u64 le — deduplicates recovery after power loss
+//    36      12   Reserved / future fields
 //
 // Write strategy: append-only. Records are committed by writing the payload
 // first and its CRC last. A reset during a write leaves an invalid record,
@@ -64,6 +65,8 @@ fn crc32(data: &[u8]) -> u32 {
 /// A completed work session record as stored on flash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionRecord {
+    /// Stable ID shared with the active-session recovery record.
+    pub session_id: u64,
     /// Calendar year (e.g. 2026)
     pub year: u16,
     /// Calendar month (1-12)
@@ -102,7 +105,7 @@ impl SessionRecord {
         out[16..20].copy_from_slice(&self.break_secs.to_le_bytes());
         out[20..24].copy_from_slice(&self.hourly_rate_cents.to_le_bytes());
         out[24..28].copy_from_slice(&self.earned_cents.to_le_bytes());
-        // bytes 28..48 reserved, stay 0
+        out[28..36].copy_from_slice(&self.session_id.to_le_bytes());
         let checksum = crc32(&out[4..]);
         out[0..4].copy_from_slice(&checksum.to_le_bytes());
         out
@@ -128,6 +131,7 @@ impl SessionRecord {
             break_secs: u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]),
             hourly_rate_cents: u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]),
             earned_cents: u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]),
+            session_id: u64::from_le_bytes(raw[28..36].try_into().ok()?),
         })
     }
 
@@ -169,6 +173,16 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
         }
     }
     out
+}
+
+/// Returns true when a previously committed session has the supplied ID.
+/// Used at boot to reconcile a power failure between log commit and clearing
+/// the active-session recovery record.
+#[cfg(target_arch = "xtensa")]
+pub fn contains_session_id(session_id: u64) -> bool {
+    read_all_sessions()
+        .iter()
+        .any(|record| record.session_id == session_id)
 }
 
 /// Scan the on-flash log without mutating it. Corrupt records are retained as
@@ -299,6 +313,7 @@ mod tests {
             break_secs: 0,
             hourly_rate_cents: rate,
             earned_cents: ((elapsed as u64 * rate as u64) / 3600) as u32,
+            session_id: 0x1020_3040_5060_7080,
         }
     }
 
