@@ -98,7 +98,7 @@ use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
 use crate::peripherals::session_log::{append_session, SessionRecord};
-use crate::peripherals::settings::{load_settings, save_settings, WatchSettings};
+use crate::peripherals::settings::{load_settings, save_settings};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
 use crate::ui::launcher::Launcher;
 use crate::ui::notification::{Notification, NotificationManager, Urgency};
@@ -610,7 +610,7 @@ async fn main(_spawner: Spawner) {
 
     // Load persistent watch settings (hourly rate, display prefs, feature flags).
     // Falls back to defaults if flash is blank or CRC fails (first boot).
-    let watch_settings = load_settings();
+    let mut watch_settings = load_settings();
     println!(
         "[SETTINGS] rate={}c/h timeout={}s ble={} wifi={}",
         watch_settings.hourly_rate_cents,

@@ -194,10 +194,29 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
     }
 
     let sessions = read_all_sessions();
-    let slot = sessions.len();
-    if slot >= MAX_SESSIONS {
+    let mut free_slot = None;
+    for slot in 0..MAX_SESSIONS {
+        let mut raw = [0u8; RECORD_SIZE];
+        storage
+            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+            .map_err(|_| ())?;
+        if raw.iter().all(|&byte| byte == 0xFF) {
+            free_slot = Some(slot);
+            break;
+        }
+    }
+
+    if let Some(slot) = free_slot {
+        let raw = rec.to_raw();
+        let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
+        // Commit marker (CRC) comes last. An interrupted payload write is
+        // ignored by read_all_sessions because it cannot pass the CRC.
+        storage.write(record_off + 4, &raw[4..]).map_err(|_| ())?;
+        storage.write(record_off, &raw[0..4]).map_err(|_| ())?;
+    } else {
         // Keep the newest records and make room for the new one. This is the
-        // only path that erases the sector.
+        // only path that erases the sector. This also safely recovers a
+        // partially-written final record after a power loss.
         let mut records: [Option<SessionRecord>; MAX_SESSIONS] = [None; MAX_SESSIONS];
         for (i, session) in sessions.iter().skip(1).enumerate() {
             records[i] = Some(*session);
@@ -208,13 +227,6 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
             .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
             .map_err(|_| ())?;
         storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
-    } else {
-        let raw = rec.to_raw();
-        let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
-        // Commit marker (CRC) comes last. An interrupted payload write is
-        // ignored by read_all_sessions because it cannot pass the CRC.
-        storage.write(record_off + 4, &raw[4..]).map_err(|_| ())?;
-        storage.write(record_off, &raw[0..4]).map_err(|_| ())?;
     }
 
     Ok(())
