@@ -26,6 +26,8 @@ pub const MAX_EVENT_LOCATION_LEN: usize = MAX_LOCATION_BYTES;
 
 pub const WEATHER_FRESH_SECS: u64 = 60 * 60;
 pub const AGENDA_FRESH_SECS: u64 = 15 * 60;
+/// RAM allocation ceiling for the normalized, validated cache.
+pub const SYNC_CACHE_MAX_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeatherCondition {
@@ -123,6 +125,70 @@ pub enum SnapshotFreshness {
     Stale,
     Offline,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreError {
+    InvalidSnapshot(CompanionSyncError),
+}
+
+/// Storage boundary for sync consumers. A future CRC-protected flash store can
+/// implement this trait without changing refresh, widget, or reminder code.
+pub trait SnapshotStore {
+    fn load(&self) -> Option<&SyncSnapshot>;
+    fn generation(&self) -> u32;
+    fn written_at_unix(&self) -> Option<i64>;
+    fn save(&mut self, snapshot: SyncSnapshot, written_at_unix: i64) -> Result<(), StoreError>;
+}
+
+/// Last known-good snapshot kept in explicitly owned RAM.
+///
+/// It deliberately validates before replacement: a failed HTTP fetch or bad
+/// companion response cannot erase the current weather or agenda data.
+pub struct RamSnapshotStore {
+    snapshot: Option<SyncSnapshot>,
+    generation: u32,
+    written_at_unix: Option<i64>,
+}
+
+impl RamSnapshotStore {
+    pub const fn new() -> Self {
+        Self {
+            snapshot: None,
+            generation: 0,
+            written_at_unix: None,
+        }
+    }
+}
+
+impl Default for RamSnapshotStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SnapshotStore for RamSnapshotStore {
+    fn load(&self) -> Option<&SyncSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    fn written_at_unix(&self) -> Option<i64> {
+        self.written_at_unix
+    }
+
+    fn save(&mut self, snapshot: SyncSnapshot, written_at_unix: i64) -> Result<(), StoreError> {
+        snapshot.validate().map_err(StoreError::InvalidSnapshot)?;
+        self.snapshot = Some(snapshot);
+        self.generation = self.generation.wrapping_add(1);
+        self.written_at_unix = Some(written_at_unix);
+        Ok(())
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<RamSnapshotStore>() <= SYNC_CACHE_MAX_BYTES);
 
 impl SyncSnapshot {
     pub fn empty(generated_at_unix: i64) -> Self {
@@ -390,5 +456,33 @@ mod tests {
         );
         assert_eq!(snapshot.agenda_freshness(1_901), SnapshotFreshness::Stale);
         assert_eq!(snapshot.agenda_freshness(8_201), SnapshotFreshness::Offline);
+    }
+
+    #[test]
+    fn invalid_save_preserves_last_good_snapshot() {
+        let mut store = RamSnapshotStore::new();
+        let valid = SyncSnapshot::empty(1_000);
+        store.save(valid, 1_001).unwrap();
+
+        let mut invalid = SyncSnapshot::empty(2_000);
+        invalid.schema = 99;
+        assert_eq!(
+            store.save(invalid, 2_001),
+            Err(StoreError::InvalidSnapshot(CompanionSyncError::BadSchema))
+        );
+        assert_eq!(store.generation(), 1);
+        assert_eq!(store.written_at_unix(), Some(1_001));
+        assert_eq!(store.load().unwrap().generated_at_unix, 1_000);
+    }
+
+    #[test]
+    fn valid_save_replaces_snapshot_and_advances_generation() {
+        let mut store = RamSnapshotStore::new();
+        store.save(SyncSnapshot::empty(1_000), 1_001).unwrap();
+        store.save(SyncSnapshot::empty(2_000), 2_001).unwrap();
+
+        assert_eq!(store.generation(), 2);
+        assert_eq!(store.written_at_unix(), Some(2_001));
+        assert_eq!(store.load().unwrap().generated_at_unix, 2_000);
     }
 }

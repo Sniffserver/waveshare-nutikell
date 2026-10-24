@@ -72,6 +72,7 @@ use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
+use static_cell::StaticCell;
 
 use crate::apps::authenticator::AuthenticatorApp;
 use crate::apps::flappy::FlappyGame;
@@ -96,6 +97,7 @@ use crate::peripherals::active_work::{
 };
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::captive::run_ap_services;
+use crate::peripherals::companion_sync::RamSnapshotStore;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
@@ -308,6 +310,12 @@ async fn main(_spawner: Spawner) {
     // PSRAM
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
     log_memory("init");
+
+    // The normalized companion cache lives in static memory, never in the
+    // Embassy main-task frame. It is RAM-only until the partition layout
+    // explicitly reserves a durable snapshot region.
+    static SYNC_CACHE: StaticCell<RamSnapshotStore> = StaticCell::new();
+    let _sync_cache: &'static mut RamSnapshotStore = SYNC_CACHE.init(RamSnapshotStore::new());
 
     // Embassy timer
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -606,8 +614,6 @@ async fn main(_spawner: Spawner) {
     // If no credentials are stored, enter AP provisioning mode.
     use embassy_net::{Config as NetConfig, StackResources};
     use esp_radio::wifi::{AccessPointConfig, AuthMethod, ClientConfig, ModeConfig};
-    use static_cell::StaticCell;
-
     let nvs_creds: Option<StoredCredentials> = read_credentials();
     let wifi_has_nvs_creds = nvs_creds
         .as_ref()
