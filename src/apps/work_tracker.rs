@@ -63,6 +63,8 @@ pub struct WorkTracker {
     pub date_ymd: (u16, u8, u8),
     pub battery_percent: u8,
     pub is_charging: bool,
+    /// Set by the storage layer before clock-in to preserve existing history.
+    pub start_allowed: bool,
     /// Last completed session, retained until flash storage confirms it.
     pub pending_session: Option<WorkSession>,
 }
@@ -80,6 +82,7 @@ impl WorkTracker {
             date_ymd: (2000, 1, 1),
             battery_percent: 100,
             is_charging: false,
+            start_allowed: true,
             pending_session: None,
         }
     }
@@ -91,7 +94,8 @@ impl WorkTracker {
     }
 
     pub fn clock_in(&mut self) {
-        if self.state == TrackerState::Idle && self.pending_session.is_none() {
+        if self.state == TrackerState::Idle && self.pending_session.is_none() && self.start_allowed
+        {
             self.active_session = Some(WorkSession::new(
                 self.date_ymd,
                 self.time_hms,
@@ -189,6 +193,10 @@ impl WorkTracker {
     pub fn update_battery(&mut self, percent: u8, is_charging: bool) {
         self.battery_percent = percent;
         self.is_charging = is_charging;
+    }
+
+    pub fn set_start_allowed(&mut self, allowed: bool) {
+        self.start_allowed = allowed;
     }
 
     pub fn handle_touch(&mut self, touch: TouchPoint) -> bool {
@@ -398,6 +406,8 @@ impl App for WorkTracker {
         } else {
             if self.pending_session.is_some() {
                 "SAVE FAILED — retry pending".into()
+            } else if !self.start_allowed {
+                "LOG FULL — export and clear".into()
             } else {
                 "Tap [CLOCK IN] to start".into()
             }
@@ -669,6 +679,15 @@ mod tests {
                 .start_date_ymd,
             (2026, 10, 24)
         );
+    }
+
+    #[test]
+    fn clock_in_is_refused_when_log_is_full() {
+        let mut tracker = WorkTracker::new();
+        tracker.set_start_allowed(false);
+        tracker.clock_in();
+        assert_eq!(tracker.state, TrackerState::Idle);
+        assert!(tracker.active_session.is_none());
     }
 
     #[test]

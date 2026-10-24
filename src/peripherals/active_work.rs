@@ -23,6 +23,10 @@ pub struct ActiveWorkSession {
     pub hourly_rate_cents: u32,
 }
 
+pub const fn session_id(start_unix: i64, hourly_rate_cents: u32) -> u64 {
+    (start_unix as u64).rotate_left(17) ^ ((hourly_rate_cents as u64) << 32) ^ 0x574F_524B_0000_0002
+}
+
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &byte in data {

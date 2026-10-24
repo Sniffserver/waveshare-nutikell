@@ -92,7 +92,7 @@ use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::active_work::{
-    calendar_to_unix, clear_active_session, load_active_session, save_active_session,
+    calendar_to_unix, clear_active_session, load_active_session, save_active_session, session_id,
     ActiveWorkSession,
 };
 use crate::peripherals::captive::run_ap_services;
@@ -101,7 +101,9 @@ use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
-use crate::peripherals::session_log::{append_session, session_log_health, SessionRecord};
+use crate::peripherals::session_log::{
+    append_session, contains_session_id, session_log_health, SessionRecord,
+};
 use crate::peripherals::settings::{load_settings, save_settings};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
 use crate::ui::launcher::Launcher;
@@ -854,21 +856,28 @@ async fn main(_spawner: Spawner) {
         );
 
         if let Some(active) = load_active_session() {
-            let now_unix = calendar_to_unix(
-                (2000 + dt.year as u16, dt.month, dt.day),
-                (dt.hours, dt.minutes, dt.seconds),
-            );
-            let elapsed_secs = now_unix.saturating_sub(active.start_unix).max(0) as u32;
-            work_tracker.restore_active_session(
-                crate::apps::work_tracker::WorkSession::new(
-                    active.start_date_ymd,
-                    active.start_time_hms,
-                    active.hourly_rate_cents,
-                ),
-                elapsed_secs,
-            );
-            active_session_persisted = true;
-            println!("[WORK] restored active session ({} seconds)", elapsed_secs);
+            if contains_session_id(active.session_id) {
+                // A power loss after append but before active-record erase is
+                // already committed. Reconciliation prevents a duplicate.
+                let _ = clear_active_session();
+                println!("[WORK] reconciled completed session after interrupted stop");
+            } else {
+                let now_unix = calendar_to_unix(
+                    (2000 + dt.year as u16, dt.month, dt.day),
+                    (dt.hours, dt.minutes, dt.seconds),
+                );
+                let elapsed_secs = now_unix.saturating_sub(active.start_unix).max(0) as u32;
+                work_tracker.restore_active_session(
+                    crate::apps::work_tracker::WorkSession::new(
+                        active.start_date_ymd,
+                        active.start_time_hms,
+                        active.hourly_rate_cents,
+                    ),
+                    elapsed_secs,
+                );
+                active_session_persisted = true;
+                println!("[WORK] restored active session ({} seconds)", elapsed_secs);
+            }
         }
     }
     let worklog_health = session_log_health();
@@ -2173,6 +2182,11 @@ async fn main(_spawner: Spawner) {
                     accel,
                     dt_ms: dt_ms.max(1),
                 };
+                // Check capacity only when a user can initiate a new session;
+                // the flash scan is deliberately not part of every frame.
+                if tap_event && work_tracker.state == crate::apps::work_tracker::TrackerState::Idle {
+                    work_tracker.set_start_allowed(session_log_health().free_records > 0);
+                }
                 let res = work_tracker.update(&input);
 
                 // Persist a changed default rate immediately. The active
@@ -2194,6 +2208,10 @@ async fn main(_spawner: Spawner) {
                                 session.start_date_ymd,
                                 session.start_time_hms,
                             ),
+                            session_id: session_id(
+                                calendar_to_unix(session.start_date_ymd, session.start_time_hms),
+                                session.hourly_rate_cents,
+                            ),
                             start_date_ymd: session.start_date_ymd,
                             start_time_hms: session.start_time_hms,
                             hourly_rate_cents: session.hourly_rate_cents,
@@ -2213,6 +2231,10 @@ async fn main(_spawner: Spawner) {
                     let (year, month, day) = session.start_date_ymd;
                     let (hour, minute, second) = session.start_time_hms;
                     let record = SessionRecord {
+                        session_id: session_id(
+                            calendar_to_unix(session.start_date_ymd, session.start_time_hms),
+                            session.hourly_rate_cents,
+                        ),
                         year,
                         month,
                         day,

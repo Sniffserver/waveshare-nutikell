@@ -180,9 +180,11 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
 /// the active-session recovery record.
 #[cfg(target_arch = "xtensa")]
 pub fn contains_session_id(session_id: u64) -> bool {
-    read_all_sessions()
-        .iter()
-        .any(|record| record.session_id == session_id)
+    has_session_id(&read_all_sessions(), session_id)
+}
+
+fn has_session_id(records: &[SessionRecord], session_id: u64) -> bool {
+    records.iter().any(|record| record.session_id == session_id)
 }
 
 /// Scan the on-flash log without mutating it. Corrupt records are retained as
@@ -354,5 +356,14 @@ mod tests {
         let lines: alloc::vec::Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 3); // header + 2 rows
         assert!(lines[1].starts_with("2026-10-24,"));
+    }
+
+    #[test]
+    fn committed_session_id_prevents_recovery_duplicate() {
+        let session = make_session(3600, 5000);
+        let records = [session];
+        // This models power loss after append, before the active record erase:
+        // recovery must reconcile it rather than append it a second time.
+        assert!(has_session_id(&records, session.session_id));
     }
 }
