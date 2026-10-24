@@ -1,0 +1,389 @@
+// Work-session persistent log — circular binary buffer in one 4 KB flash sector.
+//
+// Flash offset: 0xD000  (sector 13, immediately after settings slots B at 0xC000)
+//
+// Sector layout:
+//
+//   Offset  Size  Content
+//   ------  ----  -------
+//     0       4   Magic:      b"WLOG"
+//     4       2   count:      u16 le — total records written (wraps at 65535)
+//     6       2   head:       u16 le — index of next-write slot (0..MAX_SESSIONS)
+//     8       4   Reserved
+//    12   N*48   Session records (N = MAX_SESSIONS = 85)
+//
+// Each session record (48 bytes):
+//
+//   Offset  Size  Content
+//   ------  ----  -------
+//     0       4   CRC32 of bytes 4..48
+//     4       1   valid flag (0x01 = valid, other = empty/corrupt)
+//     5       3   start date: year_hi, year_lo, month (YY_HH, YY_LL, MM)
+//     8       4   start time: hour, minute, second, _pad
+//    12       4   elapsed_secs: u32 le
+//    16       4   break_secs:   u32 le
+//    20       4   hourly_rate_cents: u32 le
+//    24       4   earned_cents: u32 le
+//    28      20   Reserved / future fields
+//
+// Write strategy: append-only, overwrite oldest slot once full (circular).
+// No erase between records — writing new slots in the same sector.
+// Full re-erase happens only when head wraps around to 0.
+
+#[cfg(target_arch = "xtensa")]
+use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
+#[cfg(target_arch = "xtensa")]
+use esp_storage::FlashStorage;
+
+const LOG_OFFSET: u32 = 0xD000;
+const SECTOR_SIZE: u32 = 4096;
+const HEADER_SIZE: usize = 12;
+const RECORD_SIZE: usize = 48;
+const MAX_SESSIONS: usize = (SECTOR_SIZE as usize - HEADER_SIZE) / RECORD_SIZE; // = 85
+
+const MAGIC: [u8; 4] = *b"WLOG";
+
+// ── CRC32 (same algorithm as settings.rs, copy-free) ────────────────────────
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= (byte as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+// ── Record type ─────────────────────────────────────────────────────────────
+
+/// A completed work session record as stored on flash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionRecord {
+    /// Calendar year (e.g. 2026)
+    pub year: u16,
+    /// Calendar month (1-12)
+    pub month: u8,
+    /// Start time hour (0-23)
+    pub hour: u8,
+    /// Start time minute (0-59)
+    pub minute: u8,
+    /// Start time second (0-59)
+    pub second: u8,
+    /// Billable seconds worked
+    pub elapsed_secs: u32,
+    /// Break time in seconds
+    pub break_secs: u32,
+    /// Hourly rate in cents
+    pub hourly_rate_cents: u32,
+    /// Earnings in cents (pre-computed at clock-out)
+    pub earned_cents: u32,
+}
+
+impl SessionRecord {
+    fn to_raw(&self) -> [u8; RECORD_SIZE] {
+        let mut out = [0u8; RECORD_SIZE];
+        // CRC written last; leave bytes 0..4 zero for now
+        out[4] = 0x01; // valid flag
+        out[5] = (self.year >> 8) as u8;
+        out[6] = (self.year & 0xFF) as u8;
+        out[7] = self.month;
+        out[8] = self.hour;
+        out[9] = self.minute;
+        out[10] = self.second;
+        out[11] = 0; // pad
+        out[12..16].copy_from_slice(&self.elapsed_secs.to_le_bytes());
+        out[16..20].copy_from_slice(&self.break_secs.to_le_bytes());
+        out[20..24].copy_from_slice(&self.hourly_rate_cents.to_le_bytes());
+        out[24..28].copy_from_slice(&self.earned_cents.to_le_bytes());
+        // bytes 28..48 reserved, stay 0
+        let checksum = crc32(&out[4..]);
+        out[0..4].copy_from_slice(&checksum.to_le_bytes());
+        out
+    }
+
+    fn from_raw(raw: &[u8; RECORD_SIZE]) -> Option<Self> {
+        let stored_crc = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        let computed_crc = crc32(&raw[4..]);
+        if stored_crc != computed_crc {
+            return None;
+        }
+        if raw[4] != 0x01 {
+            return None;
+        }
+        Some(Self {
+            year: ((raw[5] as u16) << 8) | (raw[6] as u16),
+            month: raw[7],
+            hour: raw[8],
+            minute: raw[9],
+            second: raw[10],
+            elapsed_secs: u32::from_le_bytes([raw[12], raw[13], raw[14], raw[15]]),
+            break_secs: u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]),
+            hourly_rate_cents: u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]),
+            earned_cents: u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]),
+        })
+    }
+
+    fn record_offset(slot: usize) -> u32 {
+        (HEADER_SIZE + slot * RECORD_SIZE) as u32
+    }
+}
+
+// ── Header r/w ───────────────────────────────────────────────────────────────
+
+struct LogHeader {
+    count: u16,
+    head: u16,
+}
+
+#[cfg(target_arch = "xtensa")]
+fn read_header(storage: &mut FlashStorage) -> Option<LogHeader> {
+    let mut buf = [0u8; 12];
+    storage.read(LOG_OFFSET, &mut buf).ok()?;
+    if &buf[0..4] != &MAGIC {
+        return None;
+    }
+    Some(LogHeader {
+        count: u16::from_le_bytes([buf[4], buf[5]]),
+        head: u16::from_le_bytes([buf[6], buf[7]]),
+    })
+}
+
+#[allow(dead_code)]
+#[cfg(target_arch = "xtensa")]
+fn write_header(storage: &mut FlashStorage, hdr: &LogHeader) -> Result<(), ()> {
+    // We cannot write just 12 bytes into the middle of a NOR flash sector
+    // without erasing — handled by caller who rebuilds full sector.
+    // This function is a placeholder used during full-sector rewrites.
+    let _ = storage;
+    let _ = hdr;
+    Ok(())
+}
+
+// ── Full sector rebuild ───────────────────────────────────────────────────────
+
+fn rebuild_sector(
+    records: &[Option<SessionRecord>; MAX_SESSIONS],
+    count: u16,
+    head: u16,
+) -> alloc::boxed::Box<[u8; SECTOR_SIZE as usize]> {
+    let mut sector = alloc::boxed::Box::new([0xFFu8; SECTOR_SIZE as usize]);
+    sector[0..4].copy_from_slice(&MAGIC);
+    sector[4..6].copy_from_slice(&count.to_le_bytes());
+    sector[6..8].copy_from_slice(&head.to_le_bytes());
+    sector[8..12].copy_from_slice(&[0u8; 4]);
+    for (i, slot) in records.iter().enumerate() {
+        if let Some(rec) = slot {
+            let off = HEADER_SIZE + i * RECORD_SIZE;
+            let raw = rec.to_raw();
+            sector[off..off + RECORD_SIZE].copy_from_slice(&raw);
+        } else {
+            // Leave as 0xFF (erased)
+        }
+    }
+    sector
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Read all valid session records from flash, in chronological order.
+/// Returns up to MAX_SESSIONS records.
+#[cfg(target_arch = "xtensa")]
+pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
+    let mut storage = FlashStorage::new();
+    let mut out = alloc::vec::Vec::new();
+
+    let Some(hdr) = read_header(&mut storage) else {
+        return out;
+    };
+
+    let count = hdr.count as usize;
+    let head = hdr.head as usize;
+    let filled = count.min(MAX_SESSIONS);
+
+    // Start from the oldest slot in the circular buffer
+    let start = if count >= MAX_SESSIONS { head } else { 0 };
+
+    for i in 0..filled {
+        let slot = (start + i) % MAX_SESSIONS;
+        let offset = LOG_OFFSET + SessionRecord::record_offset(slot);
+        let mut raw = [0u8; RECORD_SIZE];
+        if storage.read(offset, &mut raw).is_err() {
+            continue;
+        }
+        if let Some(rec) = SessionRecord::from_raw(&raw) {
+            out.push(rec);
+        }
+    }
+    out
+}
+
+/// Append one session record to the circular flash log.
+///
+/// Automatically erases and rewrites the sector when the head pointer wraps.
+#[cfg(target_arch = "xtensa")]
+pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
+    let mut storage = FlashStorage::new();
+    let raw = rec.to_raw();
+
+    let hdr = read_header(&mut storage).unwrap_or(LogHeader { count: 0, head: 0 });
+    let slot = hdr.head as usize % MAX_SESSIONS;
+
+    if slot == 0 {
+        // Head has wrapped — must erase and rewrite entire sector.
+        // Read all current records first.
+        let mut records: [Option<SessionRecord>; MAX_SESSIONS] =
+            [None; MAX_SESSIONS];
+        let sessions = read_all_sessions();
+        for (i, s) in sessions.iter().enumerate().take(MAX_SESSIONS) {
+            records[i] = Some(*s);
+        }
+        // Inject new record at slot 0
+        records[0] = Some(*rec);
+        let new_hdr = LogHeader {
+            count: hdr.count.saturating_add(1),
+            head: 1,
+        };
+        let sector = rebuild_sector(&records, new_hdr.count, new_hdr.head);
+        storage.erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE).map_err(|_| ())?;
+        storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
+    } else {
+        // Normal append path — just update header + write one record.
+        // Since NOR flash starts all bits at 1 and we only clear bits,
+        // we can write the record bytes directly (slot bytes are 0xFF initially).
+        let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
+        storage.write(record_off, &raw).map_err(|_| ())?;
+
+        // Rewrite header (first 8 bytes)
+        // NOR flash can only clear bits; header starts as WLOG on first erase.
+        // We update count and head by doing a full-sector rebuild if needed.
+        // Shortcut: rebuild only if we've crossed a sector boundary —
+        // for most writes, read sector, patch header, rewrite.
+        let new_count = hdr.count.saturating_add(1);
+        let new_head = (slot + 1) as u16;
+        let records = {
+            let mut recs: [Option<SessionRecord>; MAX_SESSIONS] = [None; MAX_SESSIONS];
+            let sessions = read_all_sessions();
+            for (i, s) in sessions.iter().enumerate().take(MAX_SESSIONS) {
+                recs[i] = Some(*s);
+            }
+            recs[slot] = Some(*rec);
+            recs
+        };
+        let sector = rebuild_sector(&records, new_count, new_head);
+        storage.erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE).map_err(|_| ())?;
+        storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
+    }
+
+    Ok(())
+}
+
+/// Format all sessions as a CSV string.
+///
+/// Suitable for writing to an SD card file.
+/// Format: date,start_time,elapsed_h,break_h,rate_per_h,earned
+pub fn sessions_to_csv(sessions: &[SessionRecord]) -> alloc::string::String {
+    use alloc::string::ToString;
+
+    let mut out = alloc::string::String::from(
+        "Date,Start,Elapsed (min),Break (min),Rate ($/h),Earned ($)\n",
+    );
+    for s in sessions {
+        let elapsed_min = s.elapsed_secs / 60;
+        let break_min = s.break_secs / 60;
+        let rate_dollars = s.hourly_rate_cents / 100;
+        let earned_dollars = s.earned_cents / 100;
+        let earned_cents = s.earned_cents % 100;
+        let row = alloc::format!(
+            "{}-{:02}-??,{:02}:{:02}:{:02},{},{},{},{}.{:02}\n",
+            s.year,
+            s.month,
+            s.hour,
+            s.minute,
+            s.second,
+            elapsed_min,
+            break_min,
+            rate_dollars,
+            earned_dollars,
+            earned_cents,
+        );
+        out.push_str(&row);
+    }
+    out
+}
+
+/// Erase the entire session log (factory reset).
+#[cfg(target_arch = "xtensa")]
+pub fn erase_session_log() -> Result<(), ()> {
+    let mut storage = FlashStorage::new();
+    storage
+        .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
+        .map_err(|_| ())
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_session(elapsed: u32, rate: u32) -> SessionRecord {
+        SessionRecord {
+            year: 2026,
+            month: 10,
+            hour: 9,
+            minute: 0,
+            second: 0,
+            elapsed_secs: elapsed,
+            break_secs: 0,
+            hourly_rate_cents: rate,
+            earned_cents: ((elapsed as u64 * rate as u64) / 3600) as u32,
+        }
+    }
+
+    #[test]
+    fn record_roundtrip() {
+        let s = make_session(3600, 5000);
+        let raw = s.to_raw();
+        let recovered = SessionRecord::from_raw(&raw).expect("should decode");
+        assert_eq!(recovered, s);
+    }
+
+    #[test]
+    fn corrupt_record_rejected() {
+        let s = make_session(3600, 5000);
+        let mut raw = s.to_raw();
+        raw[12] ^= 0xFF; // corrupt elapsed_secs
+        assert!(SessionRecord::from_raw(&raw).is_none());
+    }
+
+    #[test]
+    fn earned_calculation() {
+        // 2 hours @ $50/h = $100 = 10000 cents
+        let s = make_session(7200, 5000);
+        assert_eq!(s.earned_cents, 10000);
+    }
+
+    #[test]
+    fn csv_header_present() {
+        let sessions = alloc::vec![make_session(3600, 5000)];
+        let csv = sessions_to_csv(&sessions);
+        assert!(csv.starts_with("Date,Start,"));
+    }
+
+    #[test]
+    fn csv_row_count() {
+        let sessions = alloc::vec![
+            make_session(3600, 5000),
+            make_session(7200, 7500),
+        ];
+        let csv = sessions_to_csv(&sessions);
+        let lines: alloc::vec::Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3); // header + 2 rows
+    }
+}

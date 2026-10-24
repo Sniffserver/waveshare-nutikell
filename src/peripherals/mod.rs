@@ -9,5 +9,7 @@ pub mod power;
 pub mod power_stats;
 pub mod rtc;
 pub mod sdcard;
+pub mod session_log;
+pub mod settings;
 pub mod touch;
 pub mod wifi;

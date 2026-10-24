@@ -55,6 +55,8 @@ pub struct WorkTracker {
     pub time_hms: (u8, u8, u8),
     pub battery_percent: u8,
     pub is_charging: bool,
+    /// Last completed session, held until `take_completed_session()` drains it.
+    pub pending_session: Option<WorkSession>,
 }
 
 impl WorkTracker {
@@ -69,6 +71,7 @@ impl WorkTracker {
             time_hms: (12, 0, 0),
             battery_percent: 100,
             is_charging: false,
+            pending_session: None,
         }
     }
 
@@ -104,11 +107,20 @@ impl WorkTracker {
             self.today_earnings_cents = self.today_earnings_cents.saturating_add(earned);
             self.completed_sessions_today = self.completed_sessions_today.saturating_add(1);
             self.state = TrackerState::Idle;
+            self.pending_session = Some(session);
             Some(session)
         } else {
             self.state = TrackerState::Idle;
             None
         }
+    }
+
+    /// Take the last completed session out of the tracker (clears it).
+    ///
+    /// Call this once per frame in `main.rs` to detect a new clock-out and
+    /// persist the session to flash / SD card.
+    pub fn take_completed_session(&mut self) -> Option<WorkSession> {
+        self.pending_session.take()
     }
 
     pub fn tick_1s(&mut self) {

@@ -88,6 +88,8 @@ use crate::ui::notification::{Notification, NotificationManager, Urgency};
 use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
+use crate::peripherals::session_log::{append_session, SessionRecord};
+use crate::peripherals::settings::{load_settings, save_settings, WatchSettings};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
@@ -599,6 +601,17 @@ async fn main(_spawner: Spawner) {
         .map(|c| c.is_configured())
         .unwrap_or(false);
 
+    // Load persistent watch settings (hourly rate, display prefs, feature flags).
+    // Falls back to defaults if flash is blank or CRC fails (first boot).
+    let watch_settings = load_settings();
+    println!(
+        "[SETTINGS] rate={}c/h timeout={}s ble={} wifi={}",
+        watch_settings.hourly_rate_cents,
+        watch_settings.display_timeout_secs,
+        watch_settings.ble_enabled,
+        watch_settings.wifi_enabled,
+    );
+
     // Compile-time fallback credentials (for development without NVS provisioning)
     let fallback_ssid = option_env!("WIFI_SSID").unwrap_or("");
     let fallback_pass = option_env!("WIFI_PASS").unwrap_or("");
@@ -753,7 +766,7 @@ async fn main(_spawner: Spawner) {
     let mut maze_game = MazeGame::new();
     let mut launcher = Launcher::new();
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
-    let mut work_tracker = WorkTracker::new();
+    let mut work_tracker = WorkTracker::with_rate(watch_settings.hourly_rate_cents);
     let mut authenticator_app = AuthenticatorApp::new();
     log_memory("before-analyzer");
     println!(

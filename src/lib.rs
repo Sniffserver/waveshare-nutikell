@@ -45,6 +45,8 @@ pub mod apps {
 }
 
 pub mod peripherals {
+    pub mod session_log;
+    pub mod settings;
     pub mod touch {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub struct TouchPoint {
