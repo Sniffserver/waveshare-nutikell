@@ -1,12 +1,18 @@
 {
+  "rust-analyzer.linkedProjects": [
+    "${workspaceFolder}/Cargo.toml"
+  ],
+  "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf",
+  "rust-analyzer.check.targets": "xtensa-esp32s3-none-elf",
   "rust-analyzer.cargo.allTargets": false,
   "rust-analyzer.check.allTargets": false,
   "rust-analyzer.check.command": "check",
   "rust-analyzer.check.extraArgs": [
     "--release"
   ],
-  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.cargo.features": [],
   "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.cargo.buildScripts.enable": true,
   "editor.formatOnSave": true,
   "editor.rulers": [
     100
