@@ -2163,6 +2163,7 @@ async fn main(_spawner: Spawner) {
                     let record = SessionRecord {
                         year,
                         month,
+                        day,
                         hour,
                         minute,
                         second,

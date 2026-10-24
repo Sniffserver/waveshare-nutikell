@@ -16,8 +16,8 @@
 //   ------  ----  -------
 //     0       4   CRC32 of bytes 4..48
 //     4       1   valid flag (0x01 = valid, other = empty/corrupt)
-//     5       3   start date: year_hi, year_lo, month (YY_HH, YY_LL, MM)
-//     8       4   start time: hour, minute, second, _pad
+//     5       4   start date: year_hi, year_lo, month, day
+//     9       3   start time: hour, minute, second
 //    12       4   elapsed_secs: u32 le
 //    16       4   break_secs:   u32 le
 //    20       4   hourly_rate_cents: u32 le
@@ -68,6 +68,8 @@ pub struct SessionRecord {
     pub year: u16,
     /// Calendar month (1-12)
     pub month: u8,
+    /// Calendar day (1-31)
+    pub day: u8,
     /// Start time hour (0-23)
     pub hour: u8,
     /// Start time minute (0-59)
@@ -92,10 +94,10 @@ impl SessionRecord {
         out[5] = (self.year >> 8) as u8;
         out[6] = (self.year & 0xFF) as u8;
         out[7] = self.month;
-        out[8] = self.hour;
-        out[9] = self.minute;
-        out[10] = self.second;
-        out[11] = 0; // pad
+        out[8] = self.day;
+        out[9] = self.hour;
+        out[10] = self.minute;
+        out[11] = self.second;
         out[12..16].copy_from_slice(&self.elapsed_secs.to_le_bytes());
         out[16..20].copy_from_slice(&self.break_secs.to_le_bytes());
         out[20..24].copy_from_slice(&self.hourly_rate_cents.to_le_bytes());
@@ -118,9 +120,10 @@ impl SessionRecord {
         Some(Self {
             year: ((raw[5] as u16) << 8) | (raw[6] as u16),
             month: raw[7],
-            hour: raw[8],
-            minute: raw[9],
-            second: raw[10],
+            day: raw[8],
+            hour: raw[9],
+            minute: raw[10],
+            second: raw[11],
             elapsed_secs: u32::from_le_bytes([raw[12], raw[13], raw[14], raw[15]]),
             break_secs: u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]),
             hourly_rate_cents: u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]),
@@ -250,9 +253,10 @@ pub fn sessions_to_csv(sessions: &[SessionRecord]) -> alloc::string::String {
         let earned_dollars = s.earned_cents / 100;
         let earned_cents = s.earned_cents % 100;
         let row = alloc::format!(
-            "{}-{:02}-??,{:02}:{:02}:{:02},{},{},{},{}.{:02}\n",
+            "{}-{:02}-{:02},{:02}:{:02}:{:02},{},{},{},{}.{:02}\n",
             s.year,
             s.month,
+            s.day,
             s.hour,
             s.minute,
             s.second,
@@ -286,6 +290,7 @@ mod tests {
         SessionRecord {
             year: 2026,
             month: 10,
+            day: 24,
             hour: 9,
             minute: 0,
             second: 0,
@@ -332,5 +337,6 @@ mod tests {
         let csv = sessions_to_csv(&sessions);
         let lines: alloc::vec::Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 3); // header + 2 rows
+        assert!(lines[1].starts_with("2026-10-24,"));
     }
 }
