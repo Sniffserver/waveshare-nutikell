@@ -2,7 +2,7 @@
 
 use alloc::format;
 use embedded_graphics::geometry::Point as EgPoint;
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_9X18_BOLD};
+use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_9X18_BOLD};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -10,6 +10,7 @@ use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, RoundedRectangle}
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::apps::{App, AppInput, AppResult};
+use crate::peripherals::session_log::{LogSeverity, SessionLogHealth};
 use crate::peripherals::touch::TouchPoint;
 
 pub const PRESET_RATES: [u32; 6] = [2500, 3500, 5000, 7500, 10000, 15000]; // in cents ($25, $35, $50, $75, $100, $150)
@@ -19,6 +20,26 @@ pub enum TrackerState {
     Idle,
     Working,
     Paused,
+}
+
+/// Progress of an on-demand CSV export.
+///
+/// The UI deliberately starts at `Unavailable`: no destination has been
+/// selected yet, so it must not imply that history can be exported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportState {
+    Unavailable,
+    Ready,
+    Preparing,
+    Writing,
+    Completed,
+    Failed,
+}
+
+impl Default for ExportState {
+    fn default() -> Self {
+        Self::Unavailable
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +86,13 @@ pub struct WorkTracker {
     pub is_charging: bool,
     /// Set by the storage layer before clock-in to preserve existing history.
     pub start_allowed: bool,
+    /// Non-destructive integrity diagnostics from persistent work history.
+    pub duplicate_session_ids: u16,
+    pub duplicate_records: u16,
+    pub corrupt_log_records: u16,
+    pub log_severity: LogSeverity,
+    /// Export remains unavailable until a destination and durable marker exist.
+    pub export_state: ExportState,
     /// Last completed session, retained until flash storage confirms it.
     pub pending_session: Option<WorkSession>,
 }
@@ -83,6 +111,11 @@ impl WorkTracker {
             battery_percent: 100,
             is_charging: false,
             start_allowed: true,
+            duplicate_session_ids: 0,
+            duplicate_records: 0,
+            corrupt_log_records: 0,
+            log_severity: LogSeverity::Ok,
+            export_state: ExportState::Unavailable,
             pending_session: None,
         }
     }
@@ -197,6 +230,24 @@ impl WorkTracker {
 
     pub fn set_start_allowed(&mut self, allowed: bool) {
         self.start_allowed = allowed;
+    }
+
+    pub fn set_log_health(&mut self, health: SessionLogHealth) {
+        self.duplicate_session_ids = health.duplicate_session_ids;
+        self.duplicate_records = health.duplicate_records;
+        self.corrupt_log_records = health.corrupt_records;
+        self.log_severity = health.severity();
+    }
+
+    fn export_status(&self) -> (&'static str, Rgb565) {
+        match self.export_state {
+            ExportState::Unavailable => ("EXPORT CSV - SOON", Rgb565::CSS_GRAY),
+            ExportState::Ready => ("EXPORT CSV", Rgb565::CYAN),
+            ExportState::Preparing => ("PREPARING EXPORT", Rgb565::YELLOW),
+            ExportState::Writing => ("WRITING EXPORT", Rgb565::YELLOW),
+            ExportState::Completed => ("EXPORT COMPLETE", Rgb565::GREEN),
+            ExportState::Failed => ("EXPORT FAILED", Rgb565::RED),
+        }
     }
 
     pub fn handle_touch(&mut self, touch: TouchPoint) -> bool {
@@ -440,6 +491,38 @@ impl App for WorkTracker {
         )
         .draw(d);
         let _ = Text::new(&today_sess_str, EgPoint::new(240, 262), label_style).draw(d);
+        if self.log_severity != LogSeverity::Ok {
+            let (warning, color) = match self.log_severity {
+                LogSeverity::Warning => (
+                    format!(
+                        "! {} dup IDs / {} recs",
+                        self.duplicate_session_ids, self.duplicate_records
+                    ),
+                    Rgb565::YELLOW,
+                ),
+                LogSeverity::Error => (
+                    format!("! LOG ERROR: {} corrupt", self.corrupt_log_records),
+                    Rgb565::RED,
+                ),
+                LogSeverity::Ok => unreachable!(),
+            };
+            let _ = Text::new(
+                &warning,
+                EgPoint::new(210, 298),
+                MonoTextStyle::new(&FONT_10X20, color),
+            )
+            .draw(d);
+        }
+        // This is status-only until a destination chooser and export marker are
+        // implemented. It intentionally has no touch target.
+        let (export_status, export_color) = self.export_status();
+        let _ = Text::with_alignment(
+            export_status,
+            EgPoint::new(205, 315),
+            MonoTextStyle::new(&FONT_6X10, export_color),
+            Alignment::Center,
+        )
+        .draw(d);
 
         // Action Buttons (y: 332..402)
         match self.state {
@@ -582,6 +665,8 @@ mod tests {
         assert_eq!(tracker.today_total_secs, 0);
         assert_eq!(tracker.today_earnings_cents, 0);
         assert_eq!(tracker.completed_sessions_today, 0);
+        assert_eq!(tracker.export_state, ExportState::Unavailable);
+        assert_eq!(tracker.export_status().0, "EXPORT CSV - SOON");
     }
 
     #[test]

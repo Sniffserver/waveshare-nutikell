@@ -21,7 +21,7 @@ pub mod apps {
     pub use media_controller::{
         MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState,
     };
-    pub use work_tracker::{TrackerState, WorkSession, WorkTracker};
+    pub use work_tracker::{ExportState, TrackerState, WorkSession, WorkTracker};
 
     pub use crate::peripherals::touch::{SwipeDirection, TouchPoint};
 
@@ -53,6 +53,7 @@ pub mod apps {
 
 pub mod peripherals {
     pub mod active_work;
+    pub mod companion_sync;
     pub mod session_log;
     pub mod settings;
     pub mod touch {

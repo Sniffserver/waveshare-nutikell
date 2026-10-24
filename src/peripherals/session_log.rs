@@ -40,6 +40,7 @@ const SECTOR_SIZE: u32 = 4096;
 const HEADER_SIZE: usize = 12;
 const RECORD_SIZE: usize = 48;
 pub const MAX_SESSION_RECORDS: usize = (SECTOR_SIZE as usize - HEADER_SIZE) / RECORD_SIZE; // = 85
+pub const LOG_FORMAT_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"WLOG";
 
@@ -141,11 +142,47 @@ impl SessionRecord {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TailState {
+    #[default]
+    Ok,
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogSeverity {
+    Ok,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionLogHealth {
     pub valid_records: u16,
     pub corrupt_records: u16,
     pub free_records: u16,
+    /// Number of valid records whose session ID was already seen earlier in
+    /// the log. They are preserved for export and explicit user review.
+    pub duplicate_session_ids: u16,
+    /// Total valid records belonging to duplicated session-ID groups. For an
+    /// ID that appears twice this is 2, not 1.
+    pub duplicate_records: u16,
+    /// False for the present fixed 85-record sector; exposed so future larger
+    /// log formats cannot silently claim a complete duplicate scan.
+    pub duplicate_scan_truncated: bool,
+    pub tail_state: TailState,
     pub last_valid_offset: Option<u32>,
+}
+
+impl SessionLogHealth {
+    pub fn severity(&self) -> LogSeverity {
+        if self.corrupt_records > 0 || self.tail_state != TailState::Ok {
+            LogSeverity::Error
+        } else if self.duplicate_session_ids > 0 {
+            LogSeverity::Warning
+        } else {
+            LogSeverity::Ok
+        }
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -187,12 +224,34 @@ fn has_session_id(records: &[SessionRecord], session_id: u64) -> bool {
     records.iter().any(|record| record.session_id == session_id)
 }
 
+#[cfg(test)]
+fn duplicate_counts(records: &[SessionRecord]) -> (u16, u16) {
+    let mut duplicate_ids = 0u16;
+    let mut duplicate_records = 0u16;
+    for (index, record) in records.iter().enumerate() {
+        let occurrences = records[..=index]
+            .iter()
+            .filter(|earlier| earlier.session_id == record.session_id)
+            .count();
+        if occurrences == 2 {
+            duplicate_ids = duplicate_ids.saturating_add(1);
+            duplicate_records = duplicate_records.saturating_add(2);
+        } else if occurrences > 2 {
+            duplicate_records = duplicate_records.saturating_add(1);
+        }
+    }
+    (duplicate_ids, duplicate_records)
+}
+
 /// Scan the on-flash log without mutating it. Corrupt records are retained as
 /// evidence of an interrupted write and never treated as completed work.
 #[cfg(target_arch = "xtensa")]
 pub fn session_log_health() -> SessionLogHealth {
     let mut storage = FlashStorage::new();
     let mut health = SessionLogHealth::default();
+    let mut seen_ids = [0u64; MAX_SESSION_RECORDS];
+    let mut seen_len = 0usize;
+    let mut last_occupied_valid = None;
     let mut magic = [0u8; 4];
     if storage.read(LOG_OFFSET, &mut magic).is_err() || magic != MAGIC {
         health.free_records = MAX_SESSION_RECORDS as u16;
@@ -205,14 +264,44 @@ pub fn session_log_health() -> SessionLogHealth {
             .is_err()
         {
             health.corrupt_records = health.corrupt_records.saturating_add(1);
+            last_occupied_valid = Some(false);
         } else if raw.iter().all(|&byte| byte == 0xFF) {
             health.free_records = health.free_records.saturating_add(1);
-        } else if SessionRecord::from_raw(&raw).is_some() {
+        } else if let Some(record) = SessionRecord::from_raw(&raw) {
+            last_occupied_valid = Some(true);
             health.valid_records = health.valid_records.saturating_add(1);
             health.last_valid_offset = Some(LOG_OFFSET + SessionRecord::record_offset(slot));
+            if let Some(index) = seen_ids[..seen_len]
+                .iter()
+                .position(|&id| id == record.session_id)
+            {
+                // The second occurrence makes one ID and two records part of
+                // a duplicate group; each later occurrence adds one record.
+                let occurrences = seen_ids[..seen_len]
+                    .iter()
+                    .filter(|&&id| id == record.session_id)
+                    .count();
+                if occurrences == 1 {
+                    health.duplicate_session_ids = health.duplicate_session_ids.saturating_add(1);
+                    health.duplicate_records = health.duplicate_records.saturating_add(2);
+                } else {
+                    health.duplicate_records = health.duplicate_records.saturating_add(1);
+                }
+                // Retain a repeated ID in the local scan list so later
+                // occurrences are counted as records in the same group.
+                seen_ids[seen_len] = seen_ids[index];
+                seen_len += 1;
+            } else {
+                seen_ids[seen_len] = record.session_id;
+                seen_len += 1;
+            }
         } else {
             health.corrupt_records = health.corrupt_records.saturating_add(1);
+            last_occupied_valid = Some(false);
         }
+    }
+    if last_occupied_valid == Some(false) {
+        health.tail_state = TailState::Invalid;
     }
     health
 }
@@ -365,5 +454,81 @@ mod tests {
         // This models power loss after append, before the active record erase:
         // recovery must reconcile it rather than append it a second time.
         assert!(has_session_id(&records, session.session_id));
+    }
+
+    #[test]
+    fn duplicate_health_distinguishes_ids_and_records() {
+        let first = make_session(3600, 5000);
+        let second = SessionRecord {
+            elapsed_secs: 1800,
+            ..first
+        };
+        let mut third = make_session(900, 7500);
+        third.session_id = 43;
+        let fourth = SessionRecord {
+            elapsed_secs: 1_200,
+            ..third
+        };
+        let fifth = SessionRecord {
+            elapsed_secs: 2_400,
+            ..third
+        };
+        let mut unique = make_session(600, 2500);
+        unique.session_id = 61;
+        assert_eq!(
+            duplicate_counts(&[first, second, third, fourth, fifth, unique]),
+            (2, 5)
+        );
+    }
+
+    #[test]
+    fn clean_log_reports_zero_duplicate_counts() {
+        let first = make_session(3600, 5000);
+        let mut second = make_session(1800, 7500);
+        second.session_id = 43;
+        assert_eq!(duplicate_counts(&[first, second]), (0, 0));
+    }
+
+    #[test]
+    fn duplicate_scan_does_not_mutate_records() {
+        let first = make_session(3600, 5000);
+        let second = SessionRecord {
+            elapsed_secs: 1800,
+            ..first
+        };
+        let records = [first, second];
+        let before = records;
+        let _ = duplicate_counts(&records);
+        assert_eq!(records, before);
+    }
+
+    #[test]
+    fn repeated_duplicate_scans_are_identical_and_read_only() {
+        let first = make_session(3600, 5000);
+        let second = SessionRecord {
+            elapsed_secs: 1800,
+            ..first
+        };
+        let records = [first, second];
+        let before = records;
+        let first_scan = duplicate_counts(&records);
+        let second_scan = duplicate_counts(&records);
+        assert_eq!(first_scan, second_scan);
+        assert_eq!(records, before);
+    }
+
+    #[test]
+    fn duplicates_are_warning_but_corruption_is_error() {
+        let warning = SessionLogHealth {
+            duplicate_session_ids: 1,
+            duplicate_records: 2,
+            ..SessionLogHealth::default()
+        };
+        assert_eq!(warning.severity(), LogSeverity::Warning);
+        let error = SessionLogHealth {
+            corrupt_records: 1,
+            ..warning
+        };
+        assert_eq!(error.severity(), LogSeverity::Error);
     }
 }

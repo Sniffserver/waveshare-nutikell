@@ -90,11 +90,11 @@ use crate::ble_analyzer::BleAnalyzerApp;
 use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
-use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::active_work::{
     calendar_to_unix, clear_active_session, load_active_session, save_active_session, session_id,
     ActiveWorkSession,
 };
+use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
@@ -102,7 +102,7 @@ use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
 use crate::peripherals::session_log::{
-    append_session, contains_session_id, session_log_health, SessionRecord,
+    append_session, contains_session_id, session_log_health, LogSeverity, SessionRecord,
 };
 use crate::peripherals::settings::{load_settings, save_settings};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
@@ -881,14 +881,31 @@ async fn main(_spawner: Spawner) {
         }
     }
     let worklog_health = session_log_health();
+    work_tracker.set_log_health(worklog_health);
     println!(
-        "[WORKLOG] records={} valid={} corrupt={} free={} tail={}",
-        worklog_health.valid_records + worklog_health.corrupt_records,
+        "[WORKLOG] v{} valid={} corrupt={} free={} tail={} dup_ids={} dup_records={} scan={}",
+        crate::peripherals::session_log::LOG_FORMAT_VERSION,
         worklog_health.valid_records,
         worklog_health.corrupt_records,
         worklog_health.free_records,
-        if worklog_health.corrupt_records == 0 { "ok" } else { "recoverable" },
+        if worklog_health.tail_state == crate::peripherals::session_log::TailState::Ok {
+            "ok"
+        } else {
+            "bad"
+        },
+        worklog_health.duplicate_session_ids,
+        worklog_health.duplicate_records,
+        if worklog_health.duplicate_scan_truncated {
+            "partial"
+        } else {
+            "full"
+        },
     );
+    if worklog_health.severity() == LogSeverity::Warning {
+        println!("[WORKLOG] WARNING: duplicate session IDs detected");
+    } else if worklog_health.severity() == LogSeverity::Error {
+        println!("[WORKLOG] ERROR: invalid or corrupt log record detected");
+    }
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
     fb.flush(&mut display);
@@ -2184,7 +2201,8 @@ async fn main(_spawner: Spawner) {
                 };
                 // Check capacity only when a user can initiate a new session;
                 // the flash scan is deliberately not part of every frame.
-                if tap_event && work_tracker.state == crate::apps::work_tracker::TrackerState::Idle {
+                if tap_event && work_tracker.state == crate::apps::work_tracker::TrackerState::Idle
+                {
                     work_tracker.set_start_allowed(session_log_health().free_records > 0);
                 }
                 let res = work_tracker.update(&input);

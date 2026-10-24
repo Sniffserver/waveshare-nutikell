@@ -24,7 +24,7 @@ pub use authenticator::{AuthenticatorApp, TotpAccount};
 pub use media_controller::{
     MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState,
 };
-pub use work_tracker::{TrackerState, WorkSession, WorkTracker};
+pub use work_tracker::{ExportState, TrackerState, WorkSession, WorkTracker};
 
 /// Input state passed to apps each frame
 pub struct AppInput {

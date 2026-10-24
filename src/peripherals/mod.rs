@@ -1,7 +1,8 @@
-pub mod audio;
 pub mod active_work;
+pub mod audio;
 pub mod ble;
 pub mod captive;
+pub mod companion_sync;
 pub mod cpu_clock;
 pub mod http;
 pub mod imu;
