@@ -7,9 +7,7 @@
 //   Offset  Size  Content
 //   ------  ----  -------
 //     0       4   Magic:      b"WLOG"
-//     4       2   count:      u16 le — total records written (wraps at 65535)
-//     6       2   head:       u16 le — index of next-write slot (0..MAX_SESSIONS)
-//     8       4   Reserved
+//     4       8   Reserved (all 0xFF)
 //    12   N*48   Session records (N = MAX_SESSIONS = 85)
 //
 // Each session record (48 bytes):
@@ -26,9 +24,10 @@
 //    24       4   earned_cents: u32 le
 //    28      20   Reserved / future fields
 //
-// Write strategy: append-only, overwrite oldest slot once full (circular).
-// No erase between records — writing new slots in the same sector.
-// Full re-erase happens only when head wraps around to 0.
+// Write strategy: append-only. Records are committed by writing the payload
+// first and its CRC last. A reset during a write leaves an invalid record,
+// rather than a phantom session. The sector is rebuilt only after all slots
+// are full, retaining the newest MAX_SESSIONS - 1 entries.
 
 #[cfg(target_arch = "xtensa")]
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
@@ -136,47 +135,11 @@ impl SessionRecord {
 
 // ── Header r/w ───────────────────────────────────────────────────────────────
 
-struct LogHeader {
-    count: u16,
-    head: u16,
-}
-
-#[cfg(target_arch = "xtensa")]
-fn read_header(storage: &mut FlashStorage) -> Option<LogHeader> {
-    let mut buf = [0u8; 12];
-    storage.read(LOG_OFFSET, &mut buf).ok()?;
-    if &buf[0..4] != &MAGIC {
-        return None;
-    }
-    Some(LogHeader {
-        count: u16::from_le_bytes([buf[4], buf[5]]),
-        head: u16::from_le_bytes([buf[6], buf[7]]),
-    })
-}
-
-#[allow(dead_code)]
-#[cfg(target_arch = "xtensa")]
-fn write_header(storage: &mut FlashStorage, hdr: &LogHeader) -> Result<(), ()> {
-    // We cannot write just 12 bytes into the middle of a NOR flash sector
-    // without erasing — handled by caller who rebuilds full sector.
-    // This function is a placeholder used during full-sector rewrites.
-    let _ = storage;
-    let _ = hdr;
-    Ok(())
-}
-
 // ── Full sector rebuild ───────────────────────────────────────────────────────
 
-fn rebuild_sector(
-    records: &[Option<SessionRecord>; MAX_SESSIONS],
-    count: u16,
-    head: u16,
-) -> alloc::boxed::Box<[u8; SECTOR_SIZE as usize]> {
+fn rebuild_sector(records: &[Option<SessionRecord>; MAX_SESSIONS]) -> alloc::boxed::Box<[u8; SECTOR_SIZE as usize]> {
     let mut sector = alloc::boxed::Box::new([0xFFu8; SECTOR_SIZE as usize]);
     sector[0..4].copy_from_slice(&MAGIC);
-    sector[4..6].copy_from_slice(&count.to_le_bytes());
-    sector[6..8].copy_from_slice(&head.to_le_bytes());
-    sector[8..12].copy_from_slice(&[0u8; 4]);
     for (i, slot) in records.iter().enumerate() {
         if let Some(rec) = slot {
             let off = HEADER_SIZE + i * RECORD_SIZE;
@@ -198,19 +161,12 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
     let mut storage = FlashStorage::new();
     let mut out = alloc::vec::Vec::new();
 
-    let Some(hdr) = read_header(&mut storage) else {
+    let mut magic = [0u8; 4];
+    if storage.read(LOG_OFFSET, &mut magic).is_err() || magic != MAGIC {
         return out;
-    };
+    }
 
-    let count = hdr.count as usize;
-    let head = hdr.head as usize;
-    let filled = count.min(MAX_SESSIONS);
-
-    // Start from the oldest slot in the circular buffer
-    let start = if count >= MAX_SESSIONS { head } else { 0 };
-
-    for i in 0..filled {
-        let slot = (start + i) % MAX_SESSIONS;
+    for slot in 0..MAX_SESSIONS {
         let offset = LOG_OFFSET + SessionRecord::record_offset(slot);
         let mut raw = [0u8; RECORD_SIZE];
         if storage.read(offset, &mut raw).is_err() {
@@ -225,62 +181,40 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
 
 /// Append one session record to the circular flash log.
 ///
-/// Automatically erases and rewrites the sector when the head pointer wraps.
+/// The normal path writes exactly one 48-byte record. Only a full log causes
+/// an erase/rebuild, so ordinary clock-outs do not erase the flash sector.
 #[cfg(target_arch = "xtensa")]
 pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
     let mut storage = FlashStorage::new();
-    let raw = rec.to_raw();
+    let mut magic = [0u8; 4];
+    let initialized = storage.read(LOG_OFFSET, &mut magic).is_ok() && magic == MAGIC;
+    if !initialized {
+        storage.erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE).map_err(|_| ())?;
+        storage.write(LOG_OFFSET, &MAGIC).map_err(|_| ())?;
+    }
 
-    let hdr = read_header(&mut storage).unwrap_or(LogHeader { count: 0, head: 0 });
-    let slot = hdr.head as usize % MAX_SESSIONS;
-
-    if slot == 0 {
-        // Head has wrapped — must erase and rewrite entire sector.
-        // Read all current records first.
+    let sessions = read_all_sessions();
+    let slot = sessions.len();
+    if slot >= MAX_SESSIONS {
+        // Keep the newest records and make room for the new one. This is the
+        // only path that erases the sector.
         let mut records: [Option<SessionRecord>; MAX_SESSIONS] = [None; MAX_SESSIONS];
-        let sessions = read_all_sessions();
-        for (i, s) in sessions.iter().enumerate().take(MAX_SESSIONS) {
-            records[i] = Some(*s);
+        for (i, session) in sessions.iter().skip(1).enumerate() {
+            records[i] = Some(*session);
         }
-        // Inject new record at slot 0
-        records[0] = Some(*rec);
-        let new_hdr = LogHeader {
-            count: hdr.count.saturating_add(1),
-            head: 1,
-        };
-        let sector = rebuild_sector(&records, new_hdr.count, new_hdr.head);
+        records[MAX_SESSIONS - 1] = Some(*rec);
+        let sector = rebuild_sector(&records);
         storage
             .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
             .map_err(|_| ())?;
         storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
     } else {
-        // Normal append path — just update header + write one record.
-        // Since NOR flash starts all bits at 1 and we only clear bits,
-        // we can write the record bytes directly (slot bytes are 0xFF initially).
+        let raw = rec.to_raw();
         let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
-        storage.write(record_off, &raw).map_err(|_| ())?;
-
-        // Rewrite header (first 8 bytes)
-        // NOR flash can only clear bits; header starts as WLOG on first erase.
-        // We update count and head by doing a full-sector rebuild if needed.
-        // Shortcut: rebuild only if we've crossed a sector boundary —
-        // for most writes, read sector, patch header, rewrite.
-        let new_count = hdr.count.saturating_add(1);
-        let new_head = (slot + 1) as u16;
-        let records = {
-            let mut recs: [Option<SessionRecord>; MAX_SESSIONS] = [None; MAX_SESSIONS];
-            let sessions = read_all_sessions();
-            for (i, s) in sessions.iter().enumerate().take(MAX_SESSIONS) {
-                recs[i] = Some(*s);
-            }
-            recs[slot] = Some(*rec);
-            recs
-        };
-        let sector = rebuild_sector(&records, new_count, new_head);
-        storage
-            .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
-            .map_err(|_| ())?;
-        storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
+        // Commit marker (CRC) comes last. An interrupted payload write is
+        // ignored by read_all_sessions because it cannot pass the CRC.
+        storage.write(record_off + 4, &raw[4..]).map_err(|_| ())?;
+        storage.write(record_off, &raw[0..4]).map_err(|_| ())?;
     }
 
     Ok(())

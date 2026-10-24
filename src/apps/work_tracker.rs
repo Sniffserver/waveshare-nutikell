@@ -23,6 +23,8 @@ pub enum TrackerState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkSession {
+    /// Local calendar date when the session was started.
+    pub start_date_ymd: (u16, u8, u8),
     pub start_time_hms: (u8, u8, u8),
     pub elapsed_secs: u32,
     pub break_secs: u32,
@@ -30,8 +32,13 @@ pub struct WorkSession {
 }
 
 impl WorkSession {
-    pub fn new(start_time_hms: (u8, u8, u8), hourly_rate_cents: u32) -> Self {
+    pub fn new(
+        start_date_ymd: (u16, u8, u8),
+        start_time_hms: (u8, u8, u8),
+        hourly_rate_cents: u32,
+    ) -> Self {
         Self {
+            start_date_ymd,
             start_time_hms,
             elapsed_secs: 0,
             break_secs: 0,
@@ -53,6 +60,7 @@ pub struct WorkTracker {
     pub today_earnings_cents: u32,
     pub completed_sessions_today: u16,
     pub time_hms: (u8, u8, u8),
+    pub date_ymd: (u16, u8, u8),
     pub battery_percent: u8,
     pub is_charging: bool,
     /// Last completed session, held until `take_completed_session()` drains it.
@@ -69,6 +77,7 @@ impl WorkTracker {
             today_earnings_cents: 0,
             completed_sessions_today: 0,
             time_hms: (12, 0, 0),
+            date_ymd: (2000, 1, 1),
             battery_percent: 100,
             is_charging: false,
             pending_session: None,
@@ -83,7 +92,11 @@ impl WorkTracker {
 
     pub fn clock_in(&mut self) {
         if self.state == TrackerState::Idle {
-            self.active_session = Some(WorkSession::new(self.time_hms, self.hourly_rate_cents));
+            self.active_session = Some(WorkSession::new(
+                self.date_ymd,
+                self.time_hms,
+                self.hourly_rate_cents,
+            ));
             self.state = TrackerState::Working;
         }
     }
@@ -155,6 +168,10 @@ impl WorkTracker {
 
     pub fn update_time(&mut self, hms: (u8, u8, u8)) {
         self.time_hms = hms;
+    }
+
+    pub fn update_date(&mut self, ymd: (u16, u8, u8)) {
+        self.date_ymd = ymd;
     }
 
     pub fn update_battery(&mut self, percent: u8, is_charging: bool) {
