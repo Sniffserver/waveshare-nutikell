@@ -63,7 +63,7 @@ pub struct WorkTracker {
     pub date_ymd: (u16, u8, u8),
     pub battery_percent: u8,
     pub is_charging: bool,
-    /// Last completed session, held until `take_completed_session()` drains it.
+    /// Last completed session, retained until flash storage confirms it.
     pub pending_session: Option<WorkSession>,
 }
 
@@ -91,7 +91,7 @@ impl WorkTracker {
     }
 
     pub fn clock_in(&mut self) {
-        if self.state == TrackerState::Idle {
+        if self.state == TrackerState::Idle && self.pending_session.is_none() {
             self.active_session = Some(WorkSession::new(
                 self.date_ymd,
                 self.time_hms,
@@ -99,6 +99,17 @@ impl WorkTracker {
             ));
             self.state = TrackerState::Working;
         }
+    }
+
+    /// Restore a session recovered from the dedicated active-session record.
+    /// It always resumes as working; no completed log entry is created here.
+    pub fn restore_active_session(&mut self, session: WorkSession, elapsed_secs: u32) {
+        self.hourly_rate_cents = session.hourly_rate_cents;
+        self.active_session = Some(WorkSession {
+            elapsed_secs,
+            ..session
+        });
+        self.state = TrackerState::Working;
     }
 
     pub fn pause(&mut self) {
@@ -128,12 +139,13 @@ impl WorkTracker {
         }
     }
 
-    /// Take the last completed session out of the tracker (clears it).
-    ///
-    /// Call this once per frame in `main.rs` to detect a new clock-out and
-    /// persist the session to flash / SD card.
-    pub fn take_completed_session(&mut self) -> Option<WorkSession> {
-        self.pending_session.take()
+    /// The completed session remains pending until durable storage confirms it.
+    pub fn pending_completed_session(&self) -> Option<WorkSession> {
+        self.pending_session
+    }
+
+    pub fn confirm_completed_session_saved(&mut self) {
+        self.pending_session = None;
     }
 
     pub fn tick_1s(&mut self) {
@@ -384,7 +396,11 @@ impl App for WorkTracker {
         let info_str = if self.state != TrackerState::Idle {
             format!("Break: {}m {:02}s", break_secs / 60, break_secs % 60)
         } else {
-            "Tap [CLOCK IN] to start".into()
+            if self.pending_session.is_some() {
+                "SAVE FAILED — retry pending".into()
+            } else {
+                "Tap [CLOCK IN] to start".into()
+            }
         };
         let _ = Text::new(&info_str, EgPoint::new(40, 195), label_style).draw(d);
 
@@ -635,6 +651,23 @@ mod tests {
                 .expect("active session")
                 .hourly_rate_cents,
             5000
+        );
+    }
+
+    #[test]
+    fn recovered_session_resumes_with_saved_rate_and_elapsed_time() {
+        let mut tracker = WorkTracker::with_rate(7500);
+        let session = WorkSession::new((2026, 10, 24), (9, 0, 0), 5000);
+        tracker.restore_active_session(session, 1_800);
+
+        assert_eq!(tracker.state, TrackerState::Working);
+        assert_eq!(tracker.current_session_earnings(), 2500);
+        assert_eq!(
+            tracker
+                .active_session
+                .expect("restored session")
+                .start_date_ymd,
+            (2026, 10, 24)
         );
     }
 

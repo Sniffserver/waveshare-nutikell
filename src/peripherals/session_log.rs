@@ -1,4 +1,4 @@
-// Work-session persistent log — circular binary buffer in one 4 KB flash sector.
+// Work-session persistent log — append-only binary buffer in one 4 KB sector.
 //
 // Flash offset: 0xD000  (sector 13, immediately after settings slots B at 0xC000)
 //
@@ -26,8 +26,8 @@
 //
 // Write strategy: append-only. Records are committed by writing the payload
 // first and its CRC last. A reset during a write leaves an invalid record,
-// rather than a phantom session. The sector is rebuilt only after all slots
-// are full, retaining the newest MAX_SESSIONS - 1 entries.
+// rather than a phantom session. The log never rotates automatically: when it
+// is full, clock-out fails visibly until the user exports and clears it.
 
 #[cfg(target_arch = "xtensa")]
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
@@ -38,7 +38,7 @@ const LOG_OFFSET: u32 = 0xD000;
 const SECTOR_SIZE: u32 = 4096;
 const HEADER_SIZE: usize = 12;
 const RECORD_SIZE: usize = 48;
-const MAX_SESSIONS: usize = (SECTOR_SIZE as usize - HEADER_SIZE) / RECORD_SIZE; // = 85
+pub const MAX_SESSION_RECORDS: usize = (SECTOR_SIZE as usize - HEADER_SIZE) / RECORD_SIZE; // = 85
 
 const MAGIC: [u8; 4] = *b"WLOG";
 
@@ -136,31 +136,18 @@ impl SessionRecord {
     }
 }
 
-// ── Header r/w ───────────────────────────────────────────────────────────────
-
-// ── Full sector rebuild ───────────────────────────────────────────────────────
-
-fn rebuild_sector(
-    records: &[Option<SessionRecord>; MAX_SESSIONS],
-) -> alloc::boxed::Box<[u8; SECTOR_SIZE as usize]> {
-    let mut sector = alloc::boxed::Box::new([0xFFu8; SECTOR_SIZE as usize]);
-    sector[0..4].copy_from_slice(&MAGIC);
-    for (i, slot) in records.iter().enumerate() {
-        if let Some(rec) = slot {
-            let off = HEADER_SIZE + i * RECORD_SIZE;
-            let raw = rec.to_raw();
-            sector[off..off + RECORD_SIZE].copy_from_slice(&raw);
-        } else {
-            // Leave as 0xFF (erased)
-        }
-    }
-    sector
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionLogHealth {
+    pub valid_records: u16,
+    pub corrupt_records: u16,
+    pub free_records: u16,
+    pub last_valid_offset: Option<u32>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Read all valid session records from flash, in chronological order.
-/// Returns up to MAX_SESSIONS records.
+/// Returns up to MAX_SESSION_RECORDS records.
 #[cfg(target_arch = "xtensa")]
 pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
     let mut storage = FlashStorage::new();
@@ -171,7 +158,7 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
         return out;
     }
 
-    for slot in 0..MAX_SESSIONS {
+    for slot in 0..MAX_SESSION_RECORDS {
         let offset = LOG_OFFSET + SessionRecord::record_offset(slot);
         let mut raw = [0u8; RECORD_SIZE];
         if storage.read(offset, &mut raw).is_err() {
@@ -184,10 +171,40 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
     out
 }
 
-/// Append one session record to the circular flash log.
+/// Scan the on-flash log without mutating it. Corrupt records are retained as
+/// evidence of an interrupted write and never treated as completed work.
+#[cfg(target_arch = "xtensa")]
+pub fn session_log_health() -> SessionLogHealth {
+    let mut storage = FlashStorage::new();
+    let mut health = SessionLogHealth::default();
+    let mut magic = [0u8; 4];
+    if storage.read(LOG_OFFSET, &mut magic).is_err() || magic != MAGIC {
+        health.free_records = MAX_SESSION_RECORDS as u16;
+        return health;
+    }
+    for slot in 0..MAX_SESSION_RECORDS {
+        let mut raw = [0u8; RECORD_SIZE];
+        if storage
+            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+            .is_err()
+        {
+            health.corrupt_records = health.corrupt_records.saturating_add(1);
+        } else if raw.iter().all(|&byte| byte == 0xFF) {
+            health.free_records = health.free_records.saturating_add(1);
+        } else if SessionRecord::from_raw(&raw).is_some() {
+            health.valid_records = health.valid_records.saturating_add(1);
+            health.last_valid_offset = Some(LOG_OFFSET + SessionRecord::record_offset(slot));
+        } else {
+            health.corrupt_records = health.corrupt_records.saturating_add(1);
+        }
+    }
+    health
+}
+
+/// Append one session record to the flash log.
 ///
-/// The normal path writes exactly one 48-byte record. Only a full log causes
-/// an erase/rebuild, so ordinary clock-outs do not erase the flash sector.
+/// The normal path writes exactly one 48-byte record. A full log returns an
+/// error rather than silently discarding billing history.
 #[cfg(target_arch = "xtensa")]
 pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
     let mut storage = FlashStorage::new();
@@ -200,9 +217,8 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
         storage.write(LOG_OFFSET, &MAGIC).map_err(|_| ())?;
     }
 
-    let sessions = read_all_sessions();
     let mut free_slot = None;
-    for slot in 0..MAX_SESSIONS {
+    for slot in 0..MAX_SESSION_RECORDS {
         let mut raw = [0u8; RECORD_SIZE];
         storage
             .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
@@ -213,28 +229,13 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
         }
     }
 
-    if let Some(slot) = free_slot {
-        let raw = rec.to_raw();
-        let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
-        // Commit marker (CRC) comes last. An interrupted payload write is
-        // ignored by read_all_sessions because it cannot pass the CRC.
-        storage.write(record_off + 4, &raw[4..]).map_err(|_| ())?;
-        storage.write(record_off, &raw[0..4]).map_err(|_| ())?;
-    } else {
-        // Keep the newest records and make room for the new one. This is the
-        // only path that erases the sector. This also safely recovers a
-        // partially-written final record after a power loss.
-        let mut records: [Option<SessionRecord>; MAX_SESSIONS] = [None; MAX_SESSIONS];
-        for (i, session) in sessions.iter().skip(1).enumerate() {
-            records[i] = Some(*session);
-        }
-        records[MAX_SESSIONS - 1] = Some(*rec);
-        let sector = rebuild_sector(&records);
-        storage
-            .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
-            .map_err(|_| ())?;
-        storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
-    }
+    let slot = free_slot.ok_or(())?;
+    let raw = rec.to_raw();
+    let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
+    // Commit marker (CRC) comes last. An interrupted payload write is
+    // ignored by read_all_sessions because it cannot pass the CRC.
+    storage.write(record_off + 4, &raw[4..]).map_err(|_| ())?;
+    storage.write(record_off, &raw[0..4]).map_err(|_| ())?;
 
     Ok(())
 }

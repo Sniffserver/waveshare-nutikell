@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod active_work;
 pub mod ble;
 pub mod captive;
 pub mod cpu_clock;

@@ -91,13 +91,17 @@ use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
+use crate::peripherals::active_work::{
+    calendar_to_unix, clear_active_session, load_active_session, save_active_session,
+    ActiveWorkSession,
+};
 use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
-use crate::peripherals::session_log::{append_session, SessionRecord};
+use crate::peripherals::session_log::{append_session, session_log_health, SessionRecord};
 use crate::peripherals::settings::{load_settings, save_settings};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
 use crate::ui::launcher::Launcher;
@@ -774,6 +778,7 @@ async fn main(_spawner: Spawner) {
     let mut launcher = Launcher::new();
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::with_rate(watch_settings.hourly_rate_cents);
+    let mut active_session_persisted = false;
     let mut authenticator_app = AuthenticatorApp::new();
     log_memory("before-analyzer");
     println!(
@@ -847,7 +852,34 @@ async fn main(_spawner: Spawner) {
             (dt.hours, dt.minutes, dt.seconds),
             (2000 + dt.year as u16, dt.month, dt.day),
         );
+
+        if let Some(active) = load_active_session() {
+            let now_unix = calendar_to_unix(
+                (2000 + dt.year as u16, dt.month, dt.day),
+                (dt.hours, dt.minutes, dt.seconds),
+            );
+            let elapsed_secs = now_unix.saturating_sub(active.start_unix).max(0) as u32;
+            work_tracker.restore_active_session(
+                crate::apps::work_tracker::WorkSession::new(
+                    active.start_date_ymd,
+                    active.start_time_hms,
+                    active.hourly_rate_cents,
+                ),
+                elapsed_secs,
+            );
+            active_session_persisted = true;
+            println!("[WORK] restored active session ({} seconds)", elapsed_secs);
+        }
     }
+    let worklog_health = session_log_health();
+    println!(
+        "[WORKLOG] records={} valid={} corrupt={} free={} tail={}",
+        worklog_health.valid_records + worklog_health.corrupt_records,
+        worklog_health.valid_records,
+        worklog_health.corrupt_records,
+        worklog_health.free_records,
+        if worklog_health.corrupt_records == 0 { "ok" } else { "recoverable" },
+    );
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
     fb.flush(&mut display);
@@ -2153,11 +2185,31 @@ async fn main(_spawner: Spawner) {
                     }
                 }
 
+                // A clock-in is only recoverable after this CRC-protected
+                // record verifies. Keep retrying on transient flash failure.
+                if !active_session_persisted {
+                    if let Some(session) = work_tracker.active_session {
+                        let active = ActiveWorkSession {
+                            start_unix: calendar_to_unix(
+                                session.start_date_ymd,
+                                session.start_time_hms,
+                            ),
+                            start_date_ymd: session.start_date_ymd,
+                            start_time_hms: session.start_time_hms,
+                            hourly_rate_cents: session.hourly_rate_cents,
+                        };
+                        match save_active_session(active) {
+                            Ok(()) => active_session_persisted = true,
+                            Err(()) => println!("[WORK] failed to persist active session"),
+                        }
+                    }
+                }
+
                 // Clock-out produces exactly one pending session. Commit it
                 // to the compact flash log before reporting success to the
                 // user; a power loss can therefore never show a false saved
                 // session notification.
-                if let Some(session) = work_tracker.take_completed_session() {
+                if let Some(session) = work_tracker.pending_completed_session() {
                     let (year, month, day) = session.start_date_ymd;
                     let (hour, minute, second) = session.start_time_hms;
                     let record = SessionRecord {
@@ -2174,6 +2226,14 @@ async fn main(_spawner: Spawner) {
                     };
                     match append_session(&record) {
                         Ok(()) => {
+                            // The completed record is durable. Only now may
+                            // recovery state be removed and RAM pending state
+                            // be cleared.
+                            if clear_active_session().is_err() {
+                                println!("[WORK] saved session but could not clear recovery state");
+                            }
+                            active_session_persisted = false;
+                            work_tracker.confirm_completed_session_saved();
                             let body = alloc::format!(
                                 "{}h {:02}m — ${}.{:02}",
                                 session.elapsed_secs / 3600,
@@ -2196,7 +2256,7 @@ async fn main(_spawner: Spawner) {
                                 now.as_millis() as u32,
                                 "Work Tracker",
                                 "Session not saved",
-                                "Flash storage error — export or retry later",
+                                "Work log full or flash error — export and clear history",
                                 (hour, minute, second),
                                 Urgency::Critical,
                             ));

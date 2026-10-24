@@ -52,6 +52,7 @@ pub mod apps {
 }
 
 pub mod peripherals {
+    pub mod active_work;
     pub mod session_log;
     pub mod settings;
     pub mod touch {
