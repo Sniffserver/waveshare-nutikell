@@ -685,13 +685,13 @@ mod tests {
     #[test]
     fn account_carousel_and_countdown() {
         let mut app = AuthenticatorApp::new();
-        assert_eq!(app.accounts.len(), 4);
+        assert_eq!(app.accounts.len(), 3);
         assert_eq!(app.selected_index, 0);
-        assert_eq!(app.current_account().unwrap().issuer, "GitHub");
+        assert_eq!(app.current_account().unwrap().issuer, "RFC 6238");
 
         app.next_account();
         assert_eq!(app.selected_index, 1);
-        assert_eq!(app.current_account().unwrap().issuer, "Google");
+        assert_eq!(app.current_account().unwrap().issuer, "RFC 3548");
 
         app.prev_account();
         assert_eq!(app.selected_index, 0);
