@@ -7,12 +7,25 @@
 use heapless::{String, Vec};
 
 pub const SCHEMA_VERSION: u16 = 1;
+/// Maximum hourly entries accepted from `sbie-watch.sync.v1`.
 pub const MAX_HOURLY_FORECASTS: usize = 24;
+/// Maximum today/tomorrow agenda entries accepted from `sbie-watch.sync.v1`.
 pub const MAX_AGENDA_EVENTS: usize = 20;
-pub const MAX_LOCATION_LEN: usize = 32;
+/// Maximum UTF-8 bytes in the weather location name.
+pub const MAX_WEATHER_LOCATION_BYTES: usize = 32;
 pub const MAX_EVENT_ID_LEN: usize = 40;
-pub const MAX_EVENT_TITLE_LEN: usize = 64;
-pub const MAX_EVENT_LOCATION_LEN: usize = 48;
+/// Maximum UTF-8 bytes in an agenda title.
+pub const MAX_TITLE_BYTES: usize = 64;
+/// Maximum UTF-8 bytes in an agenda location.
+pub const MAX_LOCATION_BYTES: usize = 64;
+
+// Compatibility names for code written against the first v1 model.
+pub const MAX_LOCATION_LEN: usize = MAX_WEATHER_LOCATION_BYTES;
+pub const MAX_EVENT_TITLE_LEN: usize = MAX_TITLE_BYTES;
+pub const MAX_EVENT_LOCATION_LEN: usize = MAX_LOCATION_BYTES;
+
+pub const WEATHER_FRESH_SECS: u64 = 60 * 60;
+pub const AGENDA_FRESH_SECS: u64 = 15 * 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeatherCondition {
@@ -80,14 +93,35 @@ pub struct SyncSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SnapshotError {
-    UnsupportedSchema,
+pub enum CompanionSyncError {
+    BadSchema,
+    /// The response exceeded the companion JSON body limit before parsing.
+    BodyTooLarge,
+    /// A bounded collection would hide information, so reject the snapshot.
+    TooManyHourlyForecasts,
+    TooManyAgendaEvents,
+    Truncated,
+    InvalidTimestamp,
     InvalidProbability,
     InvalidTemperatureRange,
     InvalidWeatherRange,
-    InvalidEventTime,
-    EventsNotOrdered,
-    ForecastNotOrdered,
+    InvalidWeatherCondition,
+    TitleTooLong,
+    LocationTooLong,
+    EmptyEventId,
+    DuplicateEventId,
+    UnorderedAgenda,
+    UnorderedForecast,
+}
+
+/// The former public name remains available for existing consumers.
+pub type SnapshotError = CompanionSyncError;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotFreshness {
+    Fresh,
+    Stale,
+    Offline,
 }
 
 impl SyncSnapshot {
@@ -110,19 +144,34 @@ impl SyncSnapshot {
         }
     }
 
-    pub fn validate(&self) -> Result<(), SnapshotError> {
+    pub fn weather_freshness(&self, now_unix: i64) -> SnapshotFreshness {
+        freshness(self.age_secs(now_unix), WEATHER_FRESH_SECS, 6 * 60 * 60)
+    }
+
+    pub fn agenda_freshness(&self, now_unix: i64) -> SnapshotFreshness {
+        freshness(self.age_secs(now_unix), AGENDA_FRESH_SECS, 2 * 60 * 60)
+    }
+
+    pub fn validate(&self) -> Result<(), CompanionSyncError> {
         if self.schema != SCHEMA_VERSION {
-            return Err(SnapshotError::UnsupportedSchema);
+            return Err(CompanionSyncError::BadSchema);
+        }
+        if self.generated_at_unix < 0 {
+            return Err(CompanionSyncError::InvalidTimestamp);
         }
 
         if let Some(weather) = &self.weather {
+            if weather.observed_at_unix < 0 || weather.hourly.iter().any(|hour| hour.start_unix < 0)
+            {
+                return Err(CompanionSyncError::InvalidTimestamp);
+            }
             if weather.precipitation_probability_percent > 100
                 || weather
                     .hourly
                     .iter()
                     .any(|hour| hour.precipitation_probability_percent > 100)
             {
-                return Err(SnapshotError::InvalidProbability);
+                return Err(CompanionSyncError::InvalidProbability);
             }
             // Sanity bounds protect rendering and reject accidental units such
             // as a provider sending Fahrenheit or raw tenths incorrectly.
@@ -134,17 +183,17 @@ impl SyncSnapshot {
                     .iter()
                     .any(|hour| !(-900..=700).contains(&hour.temperature_tenths_c))
             {
-                return Err(SnapshotError::InvalidTemperatureRange);
+                return Err(CompanionSyncError::InvalidTemperatureRange);
             }
             if weather.low_tenths_c > weather.high_tenths_c {
-                return Err(SnapshotError::InvalidWeatherRange);
+                return Err(CompanionSyncError::InvalidWeatherRange);
             }
             if weather
                 .hourly
                 .windows(2)
                 .any(|pair| pair[0].start_unix >= pair[1].start_unix)
             {
-                return Err(SnapshotError::ForecastNotOrdered);
+                return Err(CompanionSyncError::UnorderedForecast);
             }
         }
 
@@ -152,9 +201,20 @@ impl SyncSnapshot {
             .agenda
             .events
             .iter()
-            .any(|event| event.end_unix < event.start_unix)
+            .any(|event| event.start_unix < 0 || event.end_unix < event.start_unix)
         {
-            return Err(SnapshotError::InvalidEventTime);
+            return Err(CompanionSyncError::InvalidTimestamp);
+        }
+        if self.agenda.events.iter().any(|event| event.id.is_empty()) {
+            return Err(CompanionSyncError::EmptyEventId);
+        }
+        for (index, event) in self.agenda.events.iter().enumerate() {
+            if self.agenda.events[index + 1..]
+                .iter()
+                .any(|other| other.id == event.id)
+            {
+                return Err(CompanionSyncError::DuplicateEventId);
+            }
         }
         if self
             .agenda
@@ -162,9 +222,19 @@ impl SyncSnapshot {
             .windows(2)
             .any(|pair| pair[0].start_unix > pair[1].start_unix)
         {
-            return Err(SnapshotError::EventsNotOrdered);
+            return Err(CompanionSyncError::UnorderedAgenda);
         }
         Ok(())
+    }
+}
+
+fn freshness(age_secs: u64, fresh_until_secs: u64, offline_after_secs: u64) -> SnapshotFreshness {
+    if age_secs <= fresh_until_secs {
+        SnapshotFreshness::Fresh
+    } else if age_secs <= offline_after_secs {
+        SnapshotFreshness::Stale
+    } else {
+        SnapshotFreshness::Offline
     }
 }
 
@@ -229,7 +299,10 @@ mod tests {
             precipitation_probability_percent: 35,
             hourly: Vec::new(),
         });
-        assert_eq!(snapshot.validate(), Err(SnapshotError::InvalidWeatherRange));
+        assert_eq!(
+            snapshot.validate(),
+            Err(CompanionSyncError::InvalidWeatherRange)
+        );
 
         snapshot.weather.as_mut().unwrap().low_tenths_c = 70;
         snapshot
@@ -242,6 +315,80 @@ mod tests {
             .events
             .push(event("early", 1_000, 1_100))
             .unwrap();
-        assert_eq!(snapshot.validate(), Err(SnapshotError::EventsNotOrdered));
+        assert_eq!(
+            snapshot.validate(),
+            Err(CompanionSyncError::UnorderedAgenda)
+        );
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_or_empty_event_ids() {
+        let mut snapshot = SyncSnapshot::empty(1_000);
+        snapshot
+            .agenda
+            .events
+            .push(event("same", 1_100, 1_200))
+            .unwrap();
+        snapshot
+            .agenda
+            .events
+            .push(event("same", 1_300, 1_400))
+            .unwrap();
+        assert_eq!(
+            snapshot.validate(),
+            Err(CompanionSyncError::DuplicateEventId)
+        );
+
+        snapshot.agenda.events.clear();
+        snapshot
+            .agenda
+            .events
+            .push(event("", 1_100, 1_200))
+            .unwrap();
+        assert_eq!(snapshot.validate(), Err(CompanionSyncError::EmptyEventId));
+    }
+
+    #[test]
+    fn bounded_collections_reject_an_extra_entry() {
+        let mut hourly = Vec::<HourlyForecast, MAX_HOURLY_FORECASTS>::new();
+        for hour in 0..MAX_HOURLY_FORECASTS {
+            hourly
+                .push(HourlyForecast {
+                    start_unix: hour as i64,
+                    temperature_tenths_c: 100,
+                    condition: WeatherCondition::Clear,
+                    precipitation_probability_percent: 0,
+                })
+                .unwrap();
+        }
+        assert!(hourly
+            .push(HourlyForecast {
+                start_unix: 99,
+                temperature_tenths_c: 100,
+                condition: WeatherCondition::Clear,
+                precipitation_probability_percent: 0,
+            })
+            .is_err());
+
+        let mut events = Vec::<CalendarEvent, MAX_AGENDA_EVENTS>::new();
+        for index in 0..MAX_AGENDA_EVENTS {
+            events
+                .push(event("id", index as i64, index as i64))
+                .unwrap();
+        }
+        assert!(events.push(event("extra", 30, 30)).is_err());
+    }
+
+    #[test]
+    fn freshness_thresholds_are_centralized_and_rtc_safe() {
+        let snapshot = SyncSnapshot::empty(1_000);
+        assert_eq!(snapshot.weather_freshness(900), SnapshotFreshness::Fresh);
+        assert_eq!(snapshot.weather_freshness(4_601), SnapshotFreshness::Stale);
+        assert_eq!(
+            snapshot.weather_freshness(22_601),
+            SnapshotFreshness::Offline
+        );
+        assert_eq!(snapshot.agenda_freshness(1_901), SnapshotFreshness::Stale);
+        assert_eq!(snapshot.agenda_freshness(8_201), SnapshotFreshness::Offline);
     }
 }

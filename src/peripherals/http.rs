@@ -24,6 +24,108 @@ pub struct HttpResponse {
     pub body_len: usize,
 }
 
+/// Errors returned by a consumer that receives a streamed response body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpSinkError {
+    Rejected,
+}
+
+/// Receives a successful HTTP response body without requiring the transport to
+/// retain the whole body. Implementations must apply their own bounded limits.
+pub trait HttpResponseSink {
+    fn on_chunk(&mut self, chunk: &[u8]) -> Result<(), HttpSinkError>;
+    fn on_complete(&mut self, total_len: usize) -> Result<(), HttpSinkError>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpStreamError {
+    Transport,
+    InvalidResponse,
+    Sink(HttpSinkError),
+}
+
+/// Send an HTTP GET and stream only its body to `sink`.
+///
+/// The response headers are capped at 512 bytes, but the body is never
+/// accumulated by this function. This is the required path for companion
+/// snapshots: a 12 KiB JSON document must not be placed on an Embassy task
+/// stack merely to get from Wi-Fi to a bounded parser.
+pub async fn http_get_stream<'a, S: HttpResponseSink>(
+    stack: Stack<'a>,
+    url: &str,
+    sink: &mut S,
+) -> Result<u16, HttpStreamError> {
+    let (host, port, path) = parse_url(url).map_err(|_| HttpStreamError::Transport)?;
+    let ip = parse_ip(host).map_err(|_| HttpStreamError::Transport)?;
+
+    let mut socket_rx = [0u8; 1024];
+    let mut socket_tx = [0u8; 512];
+    let mut socket = TcpSocket::new(stack, &mut socket_rx, &mut socket_tx);
+    socket.set_timeout(Some(Duration::from_secs(5)));
+    socket
+        .connect((ip, port))
+        .await
+        .map_err(|_| HttpStreamError::Transport)?;
+
+    let mut request = [0u8; 256];
+    let request_len = format_request(&mut request, "GET", host, path);
+    write_all(&mut socket, &request[..request_len])
+        .await
+        .map_err(|_| HttpStreamError::Transport)?;
+
+    let mut chunk = [0u8; 512];
+    let mut headers = [0u8; 512];
+    let mut header_len = 0usize;
+    let mut body_len = 0usize;
+    let mut status = None;
+
+    loop {
+        let read = socket
+            .read(&mut chunk)
+            .await
+            .map_err(|_| HttpStreamError::Transport)?;
+        if read == 0 {
+            break;
+        }
+
+        if let Some(_) = status {
+            sink.on_chunk(&chunk[..read])
+                .map_err(HttpStreamError::Sink)?;
+            body_len += read;
+            continue;
+        }
+
+        let remaining = headers.len().saturating_sub(header_len);
+        if read > remaining {
+            return Err(HttpStreamError::InvalidResponse);
+        }
+        headers[header_len..header_len + read].copy_from_slice(&chunk[..read]);
+        header_len += read;
+
+        if let Some(body_start) = header_end(&headers[..header_len]) {
+            let response_status =
+                response_status(&headers[..body_start]).ok_or(HttpStreamError::InvalidResponse)?;
+            status = Some(response_status);
+
+            if response_status != 200 {
+                return Ok(response_status);
+            }
+
+            let body = &headers[body_start..header_len];
+            if !body.is_empty() {
+                sink.on_chunk(body).map_err(HttpStreamError::Sink)?;
+                body_len += body.len();
+            }
+        }
+    }
+
+    let response_status = status.ok_or(HttpStreamError::InvalidResponse)?;
+    if response_status == 200 {
+        sink.on_complete(body_len).map_err(HttpStreamError::Sink)?;
+    }
+    Ok(response_status)
+}
+
 /// Send an HTTP GET request and return the response.
 /// URL format: "http://host:port/path" or "http://host/path" (port defaults to 80)
 pub async fn http_get<'a>(stack: Stack<'a>, url: &str) -> Result<HttpResponse, ()> {
@@ -274,4 +376,37 @@ fn parse_response(data: &[u8]) -> Result<HttpResponse, ()> {
     resp.body_len = copy_len;
 
     Ok(resp)
+}
+
+fn header_end(data: &[u8]) -> Option<usize> {
+    data.windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+}
+
+fn response_status(headers: &[u8]) -> Option<u16> {
+    if headers.len() < 12 || &headers[..5] != b"HTTP/" {
+        return None;
+    }
+    core::str::from_utf8(&headers[9..12]).ok()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_parser_preserves_body_boundary() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+        let body_start = header_end(response).expect("header terminator");
+        assert_eq!(response_status(&response[..body_start]), Some(200));
+        assert_eq!(&response[body_start..], b"{}");
+    }
+
+    #[test]
+    fn malformed_or_incomplete_headers_are_rejected() {
+        assert_eq!(header_end(b"HTTP/1.1 200 OK\r\n"), None);
+        assert_eq!(response_status(b"NOT HTTP\r\n\r\n"), None);
+        assert_eq!(response_status(b"HTTP/1.1 XX0\r\n\r\n"), None);
+    }
 }
