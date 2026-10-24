@@ -11,8 +11,8 @@ use esp_storage::FlashStorage;
 const OFFSET: u32 = 0xE000;
 const SECTOR_SIZE: u32 = 4096;
 const MAGIC: [u8; 4] = *b"WACT";
-const VERSION: u8 = 1;
-const RECORD_LEN: usize = 32;
+const VERSION: u8 = 2;
+const RECORD_LEN: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActiveWorkSession {
@@ -51,10 +51,8 @@ fn encode(session: ActiveWorkSession) -> [u8; RECORD_LEN] {
     raw[26] = session.start_time_hms.1;
     raw[27] = session.start_time_hms.2;
     raw[28..32].copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
-    // The sector record is 32 bytes: payload is written through byte 27 and
-    // CRC at byte 28. The rate is covered by the CRC as well.
-    let checksum = crc32(&raw[0..28]);
-    raw[28..32].copy_from_slice(&checksum.to_le_bytes());
+    let checksum = crc32(&raw[0..32]);
+    raw[32..36].copy_from_slice(&checksum.to_le_bytes());
     raw
 }
 
@@ -64,8 +62,8 @@ fn decode(raw: &[u8; RECORD_LEN]) -> Option<ActiveWorkSession> {
     }
     // v1 had no session ID. Reject it instead of risking a duplicate after an
     // interrupted stop; a user can manually recover it from the old record.
-    let stored = u32::from_le_bytes(raw[28..32].try_into().ok()?);
-    if stored != crc32(&raw[0..28]) {
+    let stored = u32::from_le_bytes(raw[32..36].try_into().ok()?);
+    if stored != crc32(&raw[0..32]) {
         return None;
     }
     Some(ActiveWorkSession {
@@ -77,9 +75,7 @@ fn decode(raw: &[u8; RECORD_LEN]) -> Option<ActiveWorkSession> {
             raw[24],
         ),
         start_time_hms: (raw[25], raw[26], raw[27]),
-        // The v2 layout needs a larger record to store both CRC and rate.
-        // Keep rate in the ID-derived record owner, supplied at restore below.
-        hourly_rate_cents: 0,
+        hourly_rate_cents: u32::from_le_bytes(raw[28..32].try_into().ok()?),
     })
 }
 
@@ -99,8 +95,8 @@ pub fn save_active_session(session: ActiveWorkSession) -> Result<(), ()> {
     storage
         .erase(OFFSET, OFFSET + SECTOR_SIZE)
         .map_err(|_| ())?;
-    storage.write(OFFSET, &raw[..28]).map_err(|_| ())?;
-    storage.write(OFFSET + 28, &raw[28..32]).map_err(|_| ())?;
+    storage.write(OFFSET, &raw[..32]).map_err(|_| ())?;
+    storage.write(OFFSET + 32, &raw[32..36]).map_err(|_| ())?;
     if load_active_session() == Some(session) {
         Ok(())
     } else {
@@ -158,6 +154,7 @@ mod tests {
     #[test]
     fn active_record_rejects_partial_write() {
         let session = ActiveWorkSession {
+            session_id: 42,
             start_unix: 1_729_758_400,
             start_date_ymd: (2024, 10, 24),
             start_time_hms: (9, 0, 0),
