@@ -7,9 +7,6 @@
   "rust-analyzer.cargo.allTargets": false,
   "rust-analyzer.check.allTargets": false,
   "rust-analyzer.check.command": "check",
-  "rust-analyzer.check.extraArgs": [
-    "--release"
-  ],
   "rust-analyzer.cargo.features": [],
   "rust-analyzer.procMacro.enable": true,
   "rust-analyzer.cargo.buildScripts.enable": true,
