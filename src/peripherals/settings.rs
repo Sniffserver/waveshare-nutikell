@@ -307,6 +307,14 @@ mod tests {
     }
 
     #[test]
+    fn unknown_version_rejected() {
+        let s = WatchSettings::default();
+        let mut sector = encode_sector(s);
+        sector[4..8].copy_from_slice(&2u32.to_le_bytes());
+        assert!(decode_sector(&sector).is_none());
+    }
+
+    #[test]
     fn default_settings_are_sane() {
         let d = WatchSettings::default();
         assert_eq!(d.hourly_rate_cents, 5000);
