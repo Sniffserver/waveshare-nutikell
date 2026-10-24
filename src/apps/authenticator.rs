@@ -225,7 +225,12 @@ impl TotpAccount {
 
     #[inline]
     pub fn compute_code(&self, unix_secs: u64) -> u32 {
-        totp(&self.secret, unix_secs, self.period as u32, self.digits as u32)
+        totp(
+            &self.secret,
+            unix_secs,
+            self.period as u32,
+            self.digits as u32,
+        )
     }
 
     /// Formats code with 3-3 grouping (e.g., "482 190")
@@ -441,7 +446,7 @@ impl AuthenticatorApp {
         };
 
         // Background track circle
-                let _ = Circle::with_center(center, (radius * 2.0) as u32)
+        let _ = Circle::with_center(center, (radius * 2.0) as u32)
             .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(3, 4, 5), 4))
             .draw(d);
 
@@ -449,12 +454,21 @@ impl AuthenticatorApp {
         let total_ticks = 16;
         let active_ticks = (remaining_secs as u32 * total_ticks) / (period as u32);
         for i in 0..total_ticks {
-            let angle = (i as f32) * (2.0 * core::f32::consts::PI / (total_ticks as f32)) - (core::f32::consts::PI / 2.0);
+            let angle = (i as f32) * (2.0 * core::f32::consts::PI / (total_ticks as f32))
+                - (core::f32::consts::PI / 2.0);
             let cos_a = libm::cosf(angle);
             let sin_a = libm::sinf(angle);
 
-            let p_inner = center + EgPoint::new((cos_a * (radius - 8.0)) as i32, (sin_a * (radius - 8.0)) as i32);
-            let p_outer = center + EgPoint::new((cos_a * (radius + 2.0)) as i32, (sin_a * (radius + 2.0)) as i32);
+            let p_inner = center
+                + EgPoint::new(
+                    (cos_a * (radius - 8.0)) as i32,
+                    (sin_a * (radius - 8.0)) as i32,
+                );
+            let p_outer = center
+                + EgPoint::new(
+                    (cos_a * (radius + 2.0)) as i32,
+                    (sin_a * (radius + 2.0)) as i32,
+                );
 
             let stroke_col = if i < active_ticks { color } else { bg_color };
             let _ = Line::new(p_inner, p_outer)
@@ -465,7 +479,13 @@ impl AuthenticatorApp {
         // Inner remaining seconds text
         let rem_str = format!("{}s", remaining_secs);
         let rem_style = MonoTextStyle::new(&FONT_10X20, color);
-        let _ = Text::with_alignment(&rem_str, center + EgPoint::new(0, 6), rem_style, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            &rem_str,
+            center + EgPoint::new(0, 6),
+            rem_style,
+            Alignment::Center,
+        )
+        .draw(d);
     }
 }
 
@@ -550,7 +570,11 @@ impl App for AuthenticatorApp {
             } else {
                 account.format_code(unix_secs)
             };
-            let code_col = if remaining <= 5 { Rgb565::RED } else { Rgb565::WHITE };
+            let code_col = if remaining <= 5 {
+                Rgb565::RED
+            } else {
+                Rgb565::WHITE
+            };
             let _ = Text::new(
                 &code_str,
                 EgPoint::new(38, 164),
@@ -563,19 +587,41 @@ impl App for AuthenticatorApp {
 
             // Toast / Hint text at bottom of card
             if self.copied_toast {
-                let _ = Text::new("Code Copied to Clipboard ✓", EgPoint::new(38, 215), MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN)).draw(d);
+                let _ = Text::new(
+                    "Code Copied to Clipboard ✓",
+                    EgPoint::new(38, 215),
+                    MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN),
+                )
+                .draw(d);
             } else {
-                let _ = Text::new("Tap card to copy / reveal", EgPoint::new(38, 215), label_style).draw(d);
+                let _ = Text::new(
+                    "Tap card to copy / reveal",
+                    EgPoint::new(38, 215),
+                    label_style,
+                )
+                .draw(d);
             }
 
             // Standard progress line across card bottom
             let progress_w = ((remaining as u32) * 340) / (account.period as u32);
-            let bar_col = if remaining > 10 { Rgb565::GREEN } else if remaining > 5 { Rgb565::YELLOW } else { Rgb565::RED };
+            let bar_col = if remaining > 10 {
+                Rgb565::GREEN
+            } else if remaining > 5 {
+                Rgb565::YELLOW
+            } else {
+                Rgb565::RED
+            };
             let _ = Rectangle::new(EgPoint::new(35, 270), Size::new(progress_w, 4))
                 .into_styled(PrimitiveStyle::with_fill(bar_col))
                 .draw(d);
         } else {
-            let _ = Text::with_alignment("No 2FA Accounts", EgPoint::new(205, 160), value_style, Alignment::Center).draw(d);
+            let _ = Text::with_alignment(
+                "No 2FA Accounts",
+                EgPoint::new(205, 160),
+                value_style,
+                Alignment::Center,
+            )
+            .draw(d);
         }
 
         // Navigation Action Buttons (y: 300..370)

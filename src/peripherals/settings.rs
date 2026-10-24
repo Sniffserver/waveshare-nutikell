@@ -70,28 +70,28 @@ fn crc32(data: &[u8]) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WatchSettings {
     /// Billable hourly rate in cents (e.g. 5000 = $50.00)
-    pub hourly_rate_cents: u32,          // 4
+    pub hourly_rate_cents: u32, // 4
 
     /// Display timeout in seconds before dimming (0 = never)
-    pub display_timeout_secs: u16,       // 2
+    pub display_timeout_secs: u16, // 2
 
     /// Default map zoom level (1-18)
-    pub map_zoom: u8,                    // 1
+    pub map_zoom: u8, // 1
 
     /// Haptic feedback enabled
-    pub haptics_enabled: bool,           // 1
+    pub haptics_enabled: bool, // 1
 
     /// Audio alerts enabled
-    pub audio_enabled: bool,             // 1
+    pub audio_enabled: bool, // 1
 
     /// Wi-Fi enabled on boot
-    pub wifi_enabled: bool,              // 1
+    pub wifi_enabled: bool, // 1
 
     /// BLE enabled on boot
-    pub ble_enabled: bool,               // 1
+    pub ble_enabled: bool, // 1
 
     /// 24-hour clock display
-    pub clock_24h: bool,                 // 1
+    pub clock_24h: bool, // 1
 
     // padding to 44 bytes
     _pad: [u8; 32],
@@ -164,9 +164,7 @@ fn decode_sector(buf: &[u8; SECTOR_SIZE as usize]) -> Option<WatchSettings> {
     let _version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
 
     let stored_crc = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-    let blob: [u8; BLOB_LEN] = buf[BLOB_OFFSET..BLOB_OFFSET + BLOB_LEN]
-        .try_into()
-        .ok()?;
+    let blob: [u8; BLOB_LEN] = buf[BLOB_OFFSET..BLOB_OFFSET + BLOB_LEN].try_into().ok()?;
     let computed_crc = crc32(&blob);
 
     if stored_crc != computed_crc {
@@ -208,7 +206,9 @@ pub fn load_settings() -> WatchSettings {
 #[cfg(target_arch = "xtensa")]
 fn restore_from_backup(storage: &mut FlashStorage, s: WatchSettings) -> Result<(), ()> {
     let sector = encode_sector(s);
-    storage.erase(SLOT_A, SLOT_A + SECTOR_SIZE).map_err(|_| ())?;
+    storage
+        .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
+        .map_err(|_| ())?;
     storage.write(SLOT_A, sector.as_ref()).map_err(|_| ())?;
     Ok(())
 }
@@ -222,7 +222,9 @@ pub fn save_settings(settings: WatchSettings) -> Result<(), ()> {
     let sector = encode_sector(settings);
 
     // Step 1: Write to slot B (staging)
-    storage.erase(SLOT_B, SLOT_B + SECTOR_SIZE).map_err(|_| ())?;
+    storage
+        .erase(SLOT_B, SLOT_B + SECTOR_SIZE)
+        .map_err(|_| ())?;
     storage.write(SLOT_B, sector.as_ref()).map_err(|_| ())?;
 
     // Step 2: Verify slot B read-back
@@ -231,7 +233,9 @@ pub fn save_settings(settings: WatchSettings) -> Result<(), ()> {
     }
 
     // Step 3: Promote to slot A
-    storage.erase(SLOT_A, SLOT_A + SECTOR_SIZE).map_err(|_| ())?;
+    storage
+        .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
+        .map_err(|_| ())?;
     storage.write(SLOT_A, sector.as_ref()).map_err(|_| ())?;
 
     Ok(())
@@ -241,8 +245,12 @@ pub fn save_settings(settings: WatchSettings) -> Result<(), ()> {
 #[cfg(target_arch = "xtensa")]
 pub fn erase_settings() -> Result<(), ()> {
     let mut storage = FlashStorage::new();
-    storage.erase(SLOT_A, SLOT_A + SECTOR_SIZE).map_err(|_| ())?;
-    storage.erase(SLOT_B, SLOT_B + SECTOR_SIZE).map_err(|_| ())?;
+    storage
+        .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
+        .map_err(|_| ())?;
+    storage
+        .erase(SLOT_B, SLOT_B + SECTOR_SIZE)
+        .map_err(|_| ())?;
     Ok(())
 }
 

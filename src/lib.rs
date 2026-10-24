@@ -5,20 +5,22 @@
 extern crate alloc;
 
 pub mod outdoor {
-    pub mod steps;
+    pub mod ble;
     pub mod packet;
+    pub mod power_policy;
     pub mod solar;
     pub mod state;
-    pub mod power_policy;
-    pub mod ble;
+    pub mod steps;
 }
 
 pub mod apps {
     pub mod authenticator;
-    pub mod work_tracker;
     pub mod media_controller;
+    pub mod work_tracker;
     pub use authenticator::{AuthenticatorApp, TotpAccount};
-    pub use media_controller::{MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState};
+    pub use media_controller::{
+        MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState,
+    };
     pub use work_tracker::{TrackerState, WorkSession, WorkTracker};
 
     pub use crate::peripherals::touch::{SwipeDirection, TouchPoint};
@@ -40,7 +42,12 @@ pub mod apps {
         fn name(&self) -> &str;
         fn setup(&mut self);
         fn update(&mut self, input: &AppInput) -> AppResult;
-        fn render<D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>>(&self, d: &mut D);
+        fn render<
+            D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
+        >(
+            &self,
+            d: &mut D,
+        );
     }
 }
 

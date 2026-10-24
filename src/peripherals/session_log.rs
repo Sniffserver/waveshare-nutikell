@@ -237,8 +237,7 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
     if slot == 0 {
         // Head has wrapped — must erase and rewrite entire sector.
         // Read all current records first.
-        let mut records: [Option<SessionRecord>; MAX_SESSIONS] =
-            [None; MAX_SESSIONS];
+        let mut records: [Option<SessionRecord>; MAX_SESSIONS] = [None; MAX_SESSIONS];
         let sessions = read_all_sessions();
         for (i, s) in sessions.iter().enumerate().take(MAX_SESSIONS) {
             records[i] = Some(*s);
@@ -250,7 +249,9 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
             head: 1,
         };
         let sector = rebuild_sector(&records, new_hdr.count, new_hdr.head);
-        storage.erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE).map_err(|_| ())?;
+        storage
+            .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
+            .map_err(|_| ())?;
         storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
     } else {
         // Normal append path — just update header + write one record.
@@ -276,7 +277,9 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
             recs
         };
         let sector = rebuild_sector(&records, new_count, new_head);
-        storage.erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE).map_err(|_| ())?;
+        storage
+            .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
+            .map_err(|_| ())?;
         storage.write(LOG_OFFSET, sector.as_ref()).map_err(|_| ())?;
     }
 
@@ -290,9 +293,8 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
 pub fn sessions_to_csv(sessions: &[SessionRecord]) -> alloc::string::String {
     use alloc::string::ToString;
 
-    let mut out = alloc::string::String::from(
-        "Date,Start,Elapsed (min),Break (min),Rate ($/h),Earned ($)\n",
-    );
+    let mut out =
+        alloc::string::String::from("Date,Start,Elapsed (min),Break (min),Rate ($/h),Earned ($)\n");
     for s in sessions {
         let elapsed_min = s.elapsed_secs / 60;
         let break_min = s.break_secs / 60;
@@ -378,10 +380,7 @@ mod tests {
 
     #[test]
     fn csv_row_count() {
-        let sessions = alloc::vec![
-            make_session(3600, 5000),
-            make_session(7200, 7500),
-        ];
+        let sessions = alloc::vec![make_session(3600, 5000), make_session(7200, 7500),];
         let csv = sessions_to_csv(&sessions);
         let lines: alloc::vec::Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 3); // header + 2 rows

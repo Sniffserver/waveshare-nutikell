@@ -11,10 +11,15 @@ pub fn log_memory(label: &'static str) {
     let mut psram_used = 0;
 
     for r in stats.region_stats.iter().flatten() {
-        if r.capabilities.contains(esp_alloc::MemoryCapability::Internal) {
+        if r.capabilities
+            .contains(esp_alloc::MemoryCapability::Internal)
+        {
             internal_free += r.free;
             internal_used += r.used;
-        } else if r.capabilities.contains(esp_alloc::MemoryCapability::External) {
+        } else if r
+            .capabilities
+            .contains(esp_alloc::MemoryCapability::External)
+        {
             psram_free += r.free;
             psram_used += r.used;
         }
@@ -26,10 +31,12 @@ pub fn log_memory(label: &'static str) {
     );
 
     if internal_free < 16 * 1024 {
-        println!("[MEM:{}] WARNING: Low internal heap headroom (<16KB)!", label);
+        println!(
+            "[MEM:{}] WARNING: Low internal heap headroom (<16KB)!",
+            label
+        );
     }
 }
-
 
 mod apps;
 mod ble_analyzer;
@@ -66,35 +73,35 @@ use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
 
+use crate::apps::authenticator::AuthenticatorApp;
 use crate::apps::flappy::FlappyGame;
 use crate::apps::game2048::Game2048;
 use crate::apps::maze::MazeGame;
-use crate::apps::mp3player::Mp3Player;
 use crate::apps::media_controller::{MediaAction, MediaCommand, MediaController};
+use crate::apps::mp3player::Mp3Player;
 use crate::apps::settings::SettingsApp;
 use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
-use crate::apps::authenticator::AuthenticatorApp;
 use crate::apps::work_tracker::WorkTracker;
-use crate::ble_analyzer::BleAnalyzerApp;
 use crate::apps::{App, AppInput, AppResult, AppState};
+use crate::ble_analyzer::BleAnalyzerApp;
 use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
-use crate::ui::notification::{Notification, NotificationManager, Urgency};
 use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
-use crate::peripherals::session_log::{append_session, SessionRecord};
-use crate::peripherals::settings::{load_settings, save_settings, WatchSettings};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
+use crate::peripherals::session_log::{append_session, SessionRecord};
+use crate::peripherals::settings::{load_settings, save_settings, WatchSettings};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
 use crate::ui::launcher::Launcher;
+use crate::ui::notification::{Notification, NotificationManager, Urgency};
 use crate::ui::pages::{self, Page};
 use crate::ui::power_page;
 use crate::ui::watchface::WatchFace;
@@ -835,7 +842,10 @@ async fn main(_spawner: Spawner) {
         outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
         outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
         work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
-        authenticator_app.update_time((dt.hours, dt.minutes, dt.seconds), (2000 + dt.year as u16, dt.month, dt.day));
+        authenticator_app.update_time(
+            (dt.hours, dt.minutes, dt.seconds),
+            (2000 + dt.year as u16, dt.month, dt.day),
+        );
     }
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
@@ -971,7 +981,7 @@ async fn main(_spawner: Spawner) {
                 | AppState::Snake
                 | AppState::Game2048
                 | AppState::Tetris
-                | AppState::Maze => Duration::from_millis(33)
+                | AppState::Maze => Duration::from_millis(33),
             }
         };
 
@@ -1006,7 +1016,8 @@ async fn main(_spawner: Spawner) {
         // Accel only (~150 µA) is sufficient for step detection, hike tracking, and watchface tilt.
         let need_accel = need_gyro
             || hike_running
-            || (screen_state >= 2 && (app_state == AppState::Outdoor || app_state == AppState::Watchface));
+            || (screen_state >= 2
+                && (app_state == AppState::Outdoor || app_state == AppState::Watchface));
 
         let target_imu_mode = if need_gyro {
             ImuPowerMode::Full6Axis
@@ -1083,7 +1094,10 @@ async fn main(_spawner: Spawner) {
                 outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
                 outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
                 work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
-                authenticator_app.update_time((dt.hours, dt.minutes, dt.seconds), (2000 + dt.year as u16, dt.month, dt.day));
+                authenticator_app.update_time(
+                    (dt.hours, dt.minutes, dt.seconds),
+                    (2000 + dt.year as u16, dt.month, dt.day),
+                );
             }
             next_rtc = now + Duration::from_secs(1);
         }
@@ -1476,8 +1490,10 @@ async fn main(_spawner: Spawner) {
                                         if let Ok(dt) = rtc.get_time() {
                                             watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                                             watchface.update_date(dt.day, dt.month, dt.year);
-                                            outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
-                                            outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
+                                            outdoor_state.time_hms =
+                                                (dt.hours, dt.minutes, dt.seconds);
+                                            outdoor_state.date_ymd =
+                                                (2000 + dt.year as u16, dt.month, dt.day);
                                             watchface.force_redraw();
                                             page_dirty = true;
                                         }
@@ -1552,10 +1568,16 @@ async fn main(_spawner: Spawner) {
         }
 
         // Auto-reconnect supervisor: if in Backoff and timer elapsed, resume advertising
-        if ble_on && ble_status.state == crate::outdoor::BleState::Backoff && now >= ble_backoff_until {
+        if ble_on
+            && ble_status.state == crate::outdoor::BleState::Backoff
+            && now >= ble_backoff_until
+        {
             ble_status.on_backoff_expired();
             let _ = crate::peripherals::ble::start_advertising(&mut ble_connector);
-            println!("[BLE] Backoff expired, resumed advertising (attempt {})", ble_status.reconnect_attempt);
+            println!(
+                "[BLE] Backoff expired, resumed advertising (attempt {})",
+                ble_status.reconnect_attempt
+            );
         }
 
         // Link loss recovery: if BLE was connected but timed out (fix_age > 30s)
@@ -1563,7 +1585,10 @@ async fn main(_spawner: Spawner) {
             let backoff_secs = ble_status.on_disconnected();
             ble_backoff_until = now + Duration::from_secs(backoff_secs);
             let _ = crate::peripherals::ble::stop_advertising(&mut ble_connector);
-            println!("[BLE] Link loss detected! Backing off for {}s...", backoff_secs);
+            println!(
+                "[BLE] Link loss detected! Backing off for {}s...",
+                backoff_secs
+            );
         }
 
         // Companion link established
@@ -1996,8 +2021,15 @@ async fn main(_spawner: Spawner) {
 
                 match media_controller.take_pending_action() {
                     MediaAction::AddToPlaylist(source, title) => {
-                        println!("[BLE MEDIA] Saved track to {} playlist: {}", source.name(), title);
-                        let (h, m, s) = rtc.get_time().map(|dt| (dt.hours, dt.minutes, dt.seconds)).unwrap_or((12, 0, 0));
+                        println!(
+                            "[BLE MEDIA] Saved track to {} playlist: {}",
+                            source.name(),
+                            title
+                        );
+                        let (h, m, s) = rtc
+                            .get_time()
+                            .map(|dt| (dt.hours, dt.minutes, dt.seconds))
+                            .unwrap_or((12, 0, 0));
                         let mut body_str = alloc::string::String::from("Added '");
                         body_str.push_str(&title);
                         body_str.push_str("' to Favorites");
