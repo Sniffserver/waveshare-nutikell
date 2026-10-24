@@ -196,7 +196,7 @@ impl OutdoorState {
     }
 
     /// Periodic update (called every 1 second).
-    
+
     pub fn is_hike_running(&self) -> bool {
         self.hike.status == HikeStatus::Running
     }
@@ -267,7 +267,6 @@ pub fn on_position_write(state: &mut OutdoorState, data: &[u8], now_unix: i64) {
     let _ = state.handle_position_write(data, now_unix);
 }
 
-
 // ── Unit tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -322,7 +321,11 @@ mod tests {
         // Helsinki: 60.1699 N, 24.9384 E
         let d = haversine_distance_m(59.4370, 24.7535, 60.1699, 24.9384);
         // Approx 82.5 km (between 80 km and 85 km)
-        assert!(d > 80_000.0 && d < 85_000.0, "Expected ~82.5 km, got {} m", d);
+        assert!(
+            d > 80_000.0 && d < 85_000.0,
+            "Expected ~82.5 km, got {} m",
+            d
+        );
     }
 
     #[test]
@@ -356,7 +359,10 @@ mod tests {
         }
         assert_eq!(state.telemetry, TelemetryState::Stale);
         assert!(!state.gps_valid);
-        assert!(state.ble_connected, "stale telemetry must NOT drop BLE link");
+        assert!(
+            state.ble_connected,
+            "stale telemetry must NOT drop BLE link"
+        );
 
         // Advance to 35s: Invalid telemetry
         for _ in 0..20 {
@@ -364,6 +370,9 @@ mod tests {
         }
         assert_eq!(state.telemetry, TelemetryState::Invalid);
         assert!(!state.gps_valid);
-        assert!(state.ble_connected, "invalid GPS fix must NOT disconnect BLE");
+        assert!(
+            state.ble_connected,
+            "invalid GPS fix must NOT disconnect BLE"
+        );
     }
 }

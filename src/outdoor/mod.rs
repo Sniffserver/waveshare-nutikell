@@ -1,9 +1,9 @@
-pub mod solar;
 pub mod attitude;
 pub mod battery;
 pub mod ble;
 pub mod packet;
 pub mod power_policy;
+pub mod solar;
 pub mod state;
 pub mod steps;
 pub mod ui;
@@ -16,7 +16,9 @@ pub use packet::{
     FLAG_COURSE_VALID, FLAG_SPEED_VALID, POSITION_PACKET_LEN,
 };
 pub use power_policy::{can_enter_light_sleep, PowerMode, PowerPolicy};
-pub use state::{haversine_distance_m, HikeSession, HikeStatus, OutdoorState, telemetry_state, TelemetryState};
+pub use state::{
+    haversine_distance_m, telemetry_state, HikeSession, HikeStatus, OutdoorState, TelemetryState,
+};
 pub use steps::{AccelSample, MotionState, StepConfig, StepDetector};
 pub use ui::{
     AppState, DirtyRegions, OutdoorDisplay, Screen, TouchPoint, UiEvent, BLACK, GREEN, MUTED,

@@ -842,6 +842,7 @@ async fn main(_spawner: Spawner) {
         outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
         outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
         work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
+        work_tracker.update_date((2000 + dt.year as u16, dt.month, dt.day));
         authenticator_app.update_time(
             (dt.hours, dt.minutes, dt.seconds),
             (2000 + dt.year as u16, dt.month, dt.day),
@@ -1094,6 +1095,7 @@ async fn main(_spawner: Spawner) {
                 outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
                 outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
                 work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
+                work_tracker.update_date((2000 + dt.year as u16, dt.month, dt.day));
                 authenticator_app.update_time(
                     (dt.hours, dt.minutes, dt.seconds),
                     (2000 + dt.year as u16, dt.month, dt.day),
@@ -2140,6 +2142,66 @@ async fn main(_spawner: Spawner) {
                     dt_ms: dt_ms.max(1),
                 };
                 let res = work_tracker.update(&input);
+
+                // Persist a changed default rate immediately. The active
+                // session retains the rate it started with, so this is safe
+                // to do while work is in progress.
+                if watch_settings.hourly_rate_cents != work_tracker.hourly_rate_cents {
+                    watch_settings.hourly_rate_cents = work_tracker.hourly_rate_cents;
+                    if save_settings(watch_settings).is_err() {
+                        println!("[SETTINGS] failed to save hourly rate");
+                    }
+                }
+
+                // Clock-out produces exactly one pending session. Commit it
+                // to the compact flash log before reporting success to the
+                // user; a power loss can therefore never show a false saved
+                // session notification.
+                if let Some(session) = work_tracker.take_completed_session() {
+                    let (year, month, day) = session.start_date_ymd;
+                    let (hour, minute, second) = session.start_time_hms;
+                    let record = SessionRecord {
+                        year,
+                        month,
+                        hour,
+                        minute,
+                        second,
+                        elapsed_secs: session.elapsed_secs,
+                        break_secs: session.break_secs,
+                        hourly_rate_cents: session.hourly_rate_cents,
+                        earned_cents: session.earned_cents(),
+                    };
+                    match append_session(&record) {
+                        Ok(()) => {
+                            let body = alloc::format!(
+                                "{}h {:02}m — ${}.{:02}",
+                                session.elapsed_secs / 3600,
+                                (session.elapsed_secs % 3600) / 60,
+                                record.earned_cents / 100,
+                                record.earned_cents % 100,
+                            );
+                            notification_mgr.push(Notification::new(
+                                now.as_millis() as u32,
+                                "Work Tracker",
+                                "Session saved",
+                                &body,
+                                (hour, minute, second),
+                                Urgency::Normal,
+                            ));
+                        }
+                        Err(()) => {
+                            println!("[WORK] failed to persist completed session");
+                            notification_mgr.push(Notification::new(
+                                now.as_millis() as u32,
+                                "Work Tracker",
+                                "Session not saved",
+                                "Flash storage error — export or retry later",
+                                (hour, minute, second),
+                                Urgency::Critical,
+                            ));
+                        }
+                    }
+                }
                 work_tracker.render(&mut fb);
                 if notification_mgr.is_visible() {
                     notification_mgr.render(&mut fb);

@@ -136,10 +136,30 @@ pub struct MediaController {
 impl MediaController {
     pub fn new() -> Self {
         let mut tracks = Vec::new();
-        tracks.push(TrackInfo::new("Strobe (Club Edit)", "deadmau5", "mau5trap Chill", 355));
-        tracks.push(TrackInfo::new("Sunset Lover", "Petit Biscuit", "SoundCloud Wave", 237));
-        tracks.push(TrackInfo::new("Resonance", "HOME", "Synthwave Essentials", 212));
-        tracks.push(TrackInfo::new("Midnight City", "M83", "Hurry Up, We Are Dreaming", 243));
+        tracks.push(TrackInfo::new(
+            "Strobe (Club Edit)",
+            "deadmau5",
+            "mau5trap Chill",
+            355,
+        ));
+        tracks.push(TrackInfo::new(
+            "Sunset Lover",
+            "Petit Biscuit",
+            "SoundCloud Wave",
+            237,
+        ));
+        tracks.push(TrackInfo::new(
+            "Resonance",
+            "HOME",
+            "Synthwave Essentials",
+            212,
+        ));
+        tracks.push(TrackInfo::new(
+            "Midnight City",
+            "M83",
+            "Hurry Up, We Are Dreaming",
+            243,
+        ));
 
         Self {
             source: MediaSource::SoundCloud,
@@ -393,12 +413,18 @@ impl App for MediaController {
         let outer_r = 75i32;
 
         // Outer glow ring
-        let _ = Circle::new(center - EgPoint::new(outer_r, outer_r), (outer_r * 2) as u32)
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 3, 4)))
-            .draw(d);
-        let _ = Circle::new(center - EgPoint::new(outer_r, outer_r), (outer_r * 2) as u32)
-            .into_styled(PrimitiveStyle::with_stroke(accent, 2))
-            .draw(d);
+        let _ = Circle::new(
+            center - EgPoint::new(outer_r, outer_r),
+            (outer_r * 2) as u32,
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 3, 4)))
+        .draw(d);
+        let _ = Circle::new(
+            center - EgPoint::new(outer_r, outer_r),
+            (outer_r * 2) as u32,
+        )
+        .into_styled(PrimitiveStyle::with_stroke(accent, 2))
+        .draw(d);
 
         // Vinyl Grooves
         let _ = Circle::new(center - EgPoint::new(55, 55), 110)
@@ -502,7 +528,8 @@ impl App for MediaController {
         )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 4, 6)))
         .draw(d);
-        let _ = Text::with_alignment("|<<", EgPoint::new(77, 376), white, Alignment::Center).draw(d);
+        let _ =
+            Text::with_alignment("|<<", EgPoint::new(77, 376), white, Alignment::Center).draw(d);
 
         // Central Play/Pause Hero Button
         let play_center = EgPoint::new(SCREEN_W / 2, 370);
@@ -537,7 +564,8 @@ impl App for MediaController {
         )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 4, 6)))
         .draw(d);
-        let _ = Text::with_alignment(">>|", EgPoint::new(332, 376), white, Alignment::Center).draw(d);
+        let _ =
+            Text::with_alignment(">>|", EgPoint::new(332, 376), white, Alignment::Center).draw(d);
 
         // 6. Volume Row (y: 412..436)
         let _ = Text::new("-", EgPoint::new(55, 428), white).draw(d);
@@ -545,7 +573,10 @@ impl App for MediaController {
         let vol_bar_w = 240i32;
         let vol_bar_y = 422i32;
         let _ = RoundedRectangle::with_equal_corners(
-            Rectangle::new(EgPoint::new(vol_bar_x, vol_bar_y), Size::new(vol_bar_w as u32, 4)),
+            Rectangle::new(
+                EgPoint::new(vol_bar_x, vol_bar_y),
+                Size::new(vol_bar_w as u32, 4),
+            ),
             Size::new(2, 2),
         )
         .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 5, 6)))
@@ -553,7 +584,10 @@ impl App for MediaController {
         let vol_fill = ((self.volume_pct as i32 * vol_bar_w) / 100).min(vol_bar_w);
         if vol_fill > 0 {
             let _ = RoundedRectangle::with_equal_corners(
-                Rectangle::new(EgPoint::new(vol_bar_x, vol_bar_y), Size::new(vol_fill as u32, 4)),
+                Rectangle::new(
+                    EgPoint::new(vol_bar_x, vol_bar_y),
+                    Size::new(vol_fill as u32, 4),
+                ),
                 Size::new(2, 2),
             )
             .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
@@ -673,7 +707,10 @@ mod tests {
 
         // Prev tap (x: 75, y: 370)
         let act_prev = player.handle_touch_point(TouchPoint { x: 75, y: 370 });
-        assert_eq!(act_prev, MediaAction::SendCommand(MediaCommand::PreviousTrack));
+        assert_eq!(
+            act_prev,
+            MediaAction::SendCommand(MediaCommand::PreviousTrack)
+        );
         assert_eq!(player.current_track, 0);
     }
 

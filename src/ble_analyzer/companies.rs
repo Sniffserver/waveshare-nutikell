@@ -60,8 +60,23 @@ pub fn lookup_company(id: u16) -> Option<&'static str> {
 pub fn is_space_sector(id: u16) -> bool {
     matches!(
         id,
-        0x00E4 | 0x0171 | 0x0182 | 0x02FE | 0x04BF | 0x05D8 | 0x072A | 0x0819 |
-        0x09C2 | 0x0A8E | 0x0B45 | 0x0C12 | 0x0CE8 | 0x0DB4 | 0x0E21 | 0x0F03 | 0x0FAF
+        0x00E4
+            | 0x0171
+            | 0x0182
+            | 0x02FE
+            | 0x04BF
+            | 0x05D8
+            | 0x072A
+            | 0x0819
+            | 0x09C2
+            | 0x0A8E
+            | 0x0B45
+            | 0x0C12
+            | 0x0CE8
+            | 0x0DB4
+            | 0x0E21
+            | 0x0F03
+            | 0x0FAF
     )
 }
 
@@ -75,10 +90,14 @@ pub fn format_company<'a>(id: u16, buf: &'a mut [u8; 32]) -> &'a str {
     p += 2;
 
     const HEX_CHARS: &[u8; 16] = b"0123456789ABCDEF";
-    buf[p] = HEX_CHARS[((id >> 12) & 0xF) as usize]; p += 1;
-    buf[p] = HEX_CHARS[((id >> 8) & 0xF) as usize]; p += 1;
-    buf[p] = HEX_CHARS[((id >> 4) & 0xF) as usize]; p += 1;
-    buf[p] = HEX_CHARS[(id & 0xF) as usize]; p += 1;
+    buf[p] = HEX_CHARS[((id >> 12) & 0xF) as usize];
+    p += 1;
+    buf[p] = HEX_CHARS[((id >> 8) & 0xF) as usize];
+    p += 1;
+    buf[p] = HEX_CHARS[((id >> 4) & 0xF) as usize];
+    p += 1;
+    buf[p] = HEX_CHARS[(id & 0xF) as usize];
+    p += 1;
 
     core::str::from_utf8(&buf[..p]).unwrap_or("Unknown")
 }
@@ -89,14 +108,8 @@ mod tests {
 
     #[test]
     fn company_lookup_works() {
-        assert_eq!(
-            company_name(0x0059),
-            Some("Nordic Semiconductor")
-        );
-        assert_eq!(
-            company_name(0xFFFF),
-            None
-        );
+        assert_eq!(company_name(0x0059), Some("Nordic Semiconductor"));
+        assert_eq!(company_name(0xFFFF), None);
     }
 
     #[test]

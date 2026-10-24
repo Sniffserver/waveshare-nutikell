@@ -55,7 +55,7 @@ impl Notification {
             "security" | "urgent" | "call" | "emergency" => Rgb565::RED,
             "slack" | "github" | "telegram" | "email" => Rgb565::CYAN,
             "soundcloud" | "music" | "spotify" => Rgb565::new(31, 21, 0), // Vibrant Orange
-            _ => Rgb565::new(10, 20, 31), // Ice blue
+            _ => Rgb565::new(10, 20, 31),                                 // Ice blue
         };
 
         Self {
@@ -232,7 +232,12 @@ impl NotificationManager {
         // 4. Timestamp: "14:28"
         let (h, m, _) = notif.timestamp_hms;
         let time_str = format!("{:02}:{:02}", h, m);
-        let _ = Text::new(&time_str, EgPoint::new(card_x + 270, card_y + 27), label_style).draw(d);
+        let _ = Text::new(
+            &time_str,
+            EgPoint::new(card_x + 270, card_y + 27),
+            label_style,
+        )
+        .draw(d);
 
         // 5. Dismiss [✕] button indicator
         let _ = Text::new(
@@ -243,7 +248,12 @@ impl NotificationManager {
         .draw(d);
 
         // 6. Title
-        let _ = Text::new(&notif.title, EgPoint::new(card_x + 14, card_y + 60), title_style).draw(d);
+        let _ = Text::new(
+            &notif.title,
+            EgPoint::new(card_x + 14, card_y + 60),
+            title_style,
+        )
+        .draw(d);
 
         // 7. Body snippet (truncated if too long to fit cleanly)
         let body_preview = if notif.body.len() > 34 {
@@ -253,7 +263,12 @@ impl NotificationManager {
         } else {
             notif.body.clone()
         };
-        let _ = Text::new(&body_preview, EgPoint::new(card_x + 14, card_y + 88), body_style).draw(d);
+        let _ = Text::new(
+            &body_preview,
+            EgPoint::new(card_x + 14, card_y + 88),
+            body_style,
+        )
+        .draw(d);
 
         // 8. Progress timeout bar at bottom of card
         if notif.urgency != Urgency::Critical && self.display_timeout_ms > 0 {
@@ -298,7 +313,10 @@ mod tests {
         assert!(mgr.active.is_some());
         assert_eq!(mgr.unread_count, 1);
         assert_eq!(mgr.history.len(), 1);
-        assert!(mgr.take_pending_chime(), "normal notification must request chime");
+        assert!(
+            mgr.take_pending_chime(),
+            "normal notification must request chime"
+        );
         assert!(!mgr.take_pending_chime(), "chime flag should be consumed");
     }
 
@@ -355,7 +373,10 @@ mod tests {
         mgr.push(notif);
 
         mgr.tick(10000); // 10s elapsed
-        assert!(mgr.active.is_some(), "critical notification must not auto-dismiss");
+        assert!(
+            mgr.active.is_some(),
+            "critical notification must not auto-dismiss"
+        );
 
         // Dismiss via touch
         let handled = mgr.handle_touch(TouchPoint { x: 50, y: 30 });

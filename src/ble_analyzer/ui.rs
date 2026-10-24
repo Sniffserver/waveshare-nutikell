@@ -52,13 +52,7 @@ pub trait AnalyzerDisplay: DrawTarget<Color = Rgb565> {
     fn flush(&mut self) -> Result<(), Self::Error>;
 }
 
-fn draw_text<D>(
-    display: &mut D,
-    text: &str,
-    x: i32,
-    y: i32,
-    color: Rgb565,
-) -> Result<(), D::Error>
+fn draw_text<D>(display: &mut D, text: &str, x: i32, y: i32, color: Rgb565) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -82,12 +76,7 @@ where
     Ok(())
 }
 
-fn draw_rssi_bar<D>(
-    display: &mut D,
-    x: i32,
-    y: i32,
-    rssi: i8,
-) -> Result<(), D::Error>
+fn draw_rssi_bar<D>(display: &mut D, x: i32, y: i32, rssi: i8) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -145,9 +134,11 @@ where
             Rectangle::new(Point::new(12, y), Size::new(386, 48)),
             Size::new(6, 6),
         )
-        .into_styled(PrimitiveStyle::with_fill(
-            if device_index == ui.selected { PANEL } else { BG },
-        ))
+        .into_styled(PrimitiveStyle::with_fill(if device_index == ui.selected {
+            PANEL
+        } else {
+            BG
+        }))
         .draw(display)?;
 
         RoundedRectangle::with_equal_corners(
@@ -183,10 +174,7 @@ where
     Ok(())
 }
 
-pub fn draw_device_detail<D>(
-    display: &mut D,
-    device: &TrackedDevice,
-) -> Result<(), D::Error>
+pub fn draw_device_detail<D>(display: &mut D, device: &TrackedDevice) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -208,7 +196,13 @@ where
     draw_text(display, "< BACK", 30, 29, Rgb565::CYAN)?;
 
     let name = device.name.as_deref().unwrap_or("Unnamed");
-    draw_text_bold(display, name, 18, 62, if device.is_space { GOLD } else { TEXT })?;
+    draw_text_bold(
+        display,
+        name,
+        18,
+        62,
+        if device.is_space { GOLD } else { TEXT },
+    )?;
 
     draw_text(
         display,
@@ -277,7 +271,13 @@ where
     )
     .into_styled(PrimitiveStyle::with_stroke(Rgb565::CYAN, 1))
     .draw(display)?;
-    draw_text_bold(display, "READ-ONLY GATT EXPLORER", 70, btn_y + 28, Rgb565::CYAN)?;
+    draw_text_bold(
+        display,
+        "READ-ONLY GATT EXPLORER",
+        70,
+        btn_y + 28,
+        Rgb565::CYAN,
+    )?;
 
     Ok(())
 }
@@ -340,14 +340,26 @@ where
     draw_text(display, "READ-ONLY (NO WRITES)", 210, 26, Rgb565::RED)?;
 
     draw_text_bold(display, "0x180F Battery Service", 18, 80, TEXT)?;
-    draw_text(display, "Char 0x2A19 Battery Level: 87% [READ]", 28, 105, Rgb565::GREEN)?;
+    draw_text(
+        display,
+        "Char 0x2A19 Battery Level: 87% [READ]",
+        28,
+        105,
+        Rgb565::GREEN,
+    )?;
 
     draw_text_bold(display, "0x180A Device Information", 18, 140, TEXT)?;
     draw_text(display, "Char 0x2A24 Model: SpaceWatch-S3", 28, 165, TEXT)?;
     draw_text(display, "Char 0x2A26 Firmware: v0.4.0-rs", 28, 185, TEXT)?;
 
     draw_text_bold(display, "0x181A Environmental", 18, 220, TEXT)?;
-    draw_text(display, "Char 0x2A6E Temperature: 22.4 C", 28, 245, Rgb565::CYAN)?;
+    draw_text(
+        display,
+        "Char 0x2A6E Temperature: 22.4 C",
+        28,
+        245,
+        Rgb565::CYAN,
+    )?;
 
     // Back instruction
     draw_text(display, "< TAP BACK TO RETURN", 18, 480, MUTED)?;

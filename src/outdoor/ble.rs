@@ -193,7 +193,11 @@ mod tests {
 
         let pkt1 = PositionPacket {
             version: 1,
-            flags: FLAG_COORDS_VALID | FLAG_ALTITUDE_VALID | FLAG_SPEED_VALID | FLAG_COURSE_VALID | FLAG_ACCURACY_VALID,
+            flags: FLAG_COORDS_VALID
+                | FLAG_ALTITUDE_VALID
+                | FLAG_SPEED_VALID
+                | FLAG_COURSE_VALID
+                | FLAG_ACCURACY_VALID,
             sequence: 10,
             timestamp_unix: 1718000010,
             latitude_e7: 594370000,

@@ -82,9 +82,7 @@ pub struct AccelSample {
 impl AccelSample {
     #[inline]
     pub fn magnitude(self) -> f32 {
-        libm::sqrtf(
-            self.x_g * self.x_g + self.y_g * self.y_g + self.z_g * self.z_g,
-        )
+        libm::sqrtf(self.x_g * self.x_g + self.y_g * self.y_g + self.z_g * self.z_g)
     }
 }
 
@@ -174,7 +172,7 @@ impl StepDetector {
         let sa = self.config.signal_alpha;
         self.dynamic = self.dynamic * (1.0 - sa) + raw_dynamic * sa;
 
-        let rising  = self.dynamic > self.previous_dynamic;
+        let rising = self.dynamic > self.previous_dynamic;
         let falling = self.dynamic < self.previous_dynamic;
         let elapsed = now_ms.saturating_sub(self.last_step_ms);
         let enough_time = elapsed >= self.config.min_step_interval_ms;
@@ -227,7 +225,11 @@ mod tests {
     ];
 
     fn sample(magnitude: f32) -> AccelSample {
-        AccelSample { x_g: 0.0, y_g: 0.0, z_g: magnitude }
+        AccelSample {
+            x_g: 0.0,
+            y_g: 0.0,
+            z_g: magnitude,
+        }
     }
 
     fn inject_step(d: &mut StepDetector, now: &mut u64) -> bool {
@@ -293,7 +295,10 @@ mod tests {
             }
             now += 15;
         }
-        assert!(!rapid_detected, "chatter within refractory interval should be rejected");
+        assert!(
+            !rapid_detected,
+            "chatter within refractory interval should be rejected"
+        );
         assert_eq!(d.steps(), 1);
     }
 
@@ -318,7 +323,10 @@ mod tests {
     fn reset_clears_steps_and_state() {
         let mut d = StepDetector::default();
         let mut now = 0u64;
-        for _ in 0..50 { d.update(sample(1.0), now); now += 32; }
+        for _ in 0..50 {
+            d.update(sample(1.0), now);
+            now += 32;
+        }
         assert!(inject_step(&mut d, &mut now));
         assert!(d.steps() > 0);
 
@@ -332,9 +340,13 @@ mod tests {
     fn motion_state_active_above_threshold() {
         let mut d = StepDetector::default();
         // Warm up gravity at 1 g.
-        for i in 0..50 { d.update(sample(1.0), i * 32); }
+        for i in 0..50 {
+            d.update(sample(1.0), i * 32);
+        }
         // Inject a large jolt — dynamic signal should exceed 0.35 g.
-        for i in 50..60 { d.update(sample(1.6), i * 32); }
+        for i in 50..60 {
+            d.update(sample(1.6), i * 32);
+        }
         assert_eq!(d.motion_state(), MotionState::Active);
     }
 
@@ -349,13 +361,20 @@ mod tests {
         };
         let mut d = StepDetector::new(config);
         let mut now = 0u64;
-        for _ in 0..50 { d.update(sample(1.0), now); now += 32; }
+        for _ in 0..50 {
+            d.update(sample(1.0), now);
+            now += 32;
+        }
         // A peak that would trigger default thresholds (0.07/0.14) but not
         // the custom ones (0.10/0.20).
         for &mag in &[1.00_f32, 1.05, 1.12, 1.10, 1.05, 1.00] {
             d.update(sample(mag), now);
             now += 32;
         }
-        assert_eq!(d.steps(), 0, "sub-threshold peak should not count with raised config");
+        assert_eq!(
+            d.steps(),
+            0,
+            "sub-threshold peak should not count with raised config"
+        );
     }
 }

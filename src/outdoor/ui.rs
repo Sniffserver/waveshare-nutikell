@@ -32,14 +32,7 @@ pub trait OutdoorDisplay {
         height: i32,
         color: u32,
     ) -> Result<(), Self::Error>;
-    fn line(
-        &mut self,
-        x1: i32,
-        y1: i32,
-        x2: i32,
-        y2: i32,
-        color: u32,
-    ) -> Result<(), Self::Error>;
+    fn line(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), Self::Error>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

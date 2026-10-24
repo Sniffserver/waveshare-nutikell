@@ -1,7 +1,7 @@
 //! Battery state calculation and drawing helpers.
 
-pub use crate::peripherals::power::BatteryState;
 use crate::outdoor::ui::{OutdoorDisplay, GREEN, ORANGE, RED, WHITE};
+pub use crate::peripherals::power::BatteryState;
 
 /// Map battery percentage to a level bar segment count (0..=5).
 pub const fn battery_level(percent: u8) -> u8 {

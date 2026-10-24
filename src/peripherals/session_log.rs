@@ -137,7 +137,9 @@ impl SessionRecord {
 
 // ── Full sector rebuild ───────────────────────────────────────────────────────
 
-fn rebuild_sector(records: &[Option<SessionRecord>; MAX_SESSIONS]) -> alloc::boxed::Box<[u8; SECTOR_SIZE as usize]> {
+fn rebuild_sector(
+    records: &[Option<SessionRecord>; MAX_SESSIONS],
+) -> alloc::boxed::Box<[u8; SECTOR_SIZE as usize]> {
     let mut sector = alloc::boxed::Box::new([0xFFu8; SECTOR_SIZE as usize]);
     sector[0..4].copy_from_slice(&MAGIC);
     for (i, slot) in records.iter().enumerate() {
@@ -189,7 +191,9 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
     let mut magic = [0u8; 4];
     let initialized = storage.read(LOG_OFFSET, &mut magic).is_ok() && magic == MAGIC;
     if !initialized {
-        storage.erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE).map_err(|_| ())?;
+        storage
+            .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
+            .map_err(|_| ())?;
         storage.write(LOG_OFFSET, &MAGIC).map_err(|_| ())?;
     }
 
@@ -237,8 +241,6 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
 /// Suitable for writing to an SD card file.
 /// Format: date,start_time,elapsed_h,break_h,rate_per_h,earned
 pub fn sessions_to_csv(sessions: &[SessionRecord]) -> alloc::string::String {
-    use alloc::string::ToString;
-
     let mut out =
         alloc::string::String::from("Date,Start,Elapsed (min),Break (min),Rate ($/h),Earned ($)\n");
     for s in sessions {

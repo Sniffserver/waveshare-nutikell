@@ -98,7 +98,8 @@ impl<I: I2c> Ft3168Touch<I> {
     /// Returns None if no touch.
     pub fn read(&mut self) -> Result<Option<TouchPoint>, I::Error> {
         let mut buf = [0u8; 5];
-        self.i2c.write_read(FT3168_ADDR, &[REG_FINGER_NUM], &mut buf)?;
+        self.i2c
+            .write_read(FT3168_ADDR, &[REG_FINGER_NUM], &mut buf)?;
         let fingers = buf[0];
         if fingers == 0 {
             return Ok(None);

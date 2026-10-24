@@ -82,8 +82,10 @@ pub fn calculate_solar(
     let a = (14 - m) / 12;
     let y_adj = y + 4800 - a;
     let m_adj = m + 12 * a - 3;
-    let jdn = d + (153 * m_adj + 2) / 5 + 365 * y_adj + y_adj / 4 - y_adj / 100 + y_adj / 400 - 32045;
-    let time_frac = ((hour as f32) + (minute as f32) / 60.0 + (second as f32) / 3600.0 - 12.0) / 24.0;
+    let jdn =
+        d + (153 * m_adj + 2) / 5 + 365 * y_adj + y_adj / 4 - y_adj / 100 + y_adj / 400 - 32045;
+    let time_frac =
+        ((hour as f32) + (minute as f32) / 60.0 + (second as f32) / 3600.0 - 12.0) / 24.0;
     let jd = (jdn as f32) + time_frac;
     let t = (jd - 2451545.0) / 36525.0;
 
@@ -100,7 +102,8 @@ pub fn calculate_solar(
         + libm::sinf(3.0 * m_rad) * 0.000289;
 
     let sun_true_lon = l0 + c;
-    let sun_app_lon = sun_true_lon - 0.00569 - 0.00478 * libm::sinf((125.04 - 1934.136 * t) * DEG_TO_RAD);
+    let sun_app_lon =
+        sun_true_lon - 0.00569 - 0.00478 * libm::sinf((125.04 - 1934.136 * t) * DEG_TO_RAD);
 
     let obliq = 23.439291 - 0.0130042 * t;
     let obliq_corr = obliq + 0.00256 * libm::cosf((125.04 - 1934.136 * t) * DEG_TO_RAD);
@@ -113,13 +116,12 @@ pub fn calculate_solar(
     let tan_half = libm::tanf(half_obliq);
     let y_var = tan_half * tan_half;
     let l0_rad = l0 * DEG_TO_RAD;
-    let eot_min = 4.0 * RAD_TO_DEG * (
-        y_var * libm::sinf(2.0 * l0_rad)
-            - 2.0 * e * libm::sinf(m_rad)
+    let eot_min = 4.0
+        * RAD_TO_DEG
+        * (y_var * libm::sinf(2.0 * l0_rad) - 2.0 * e * libm::sinf(m_rad)
             + 4.0 * e * y_var * libm::sinf(m_rad) * libm::cosf(2.0 * l0_rad)
             - 0.5 * (y_var * y_var) * libm::sinf(4.0 * l0_rad)
-            - 1.25 * (e * e) * libm::sinf(2.0 * m_rad)
-    );
+            - 1.25 * (e * e) * libm::sinf(2.0 * m_rad));
 
     // Solar Time & Hour Angle
     let time_min = (hour as f32) * 60.0 + (minute as f32) + (second as f32) / 60.0;
@@ -131,7 +133,13 @@ pub fn calculate_solar(
     let ha_rad = ha_deg * DEG_TO_RAD;
     let sin_elev = libm::sinf(lat_rad) * libm::sinf(dec_rad)
         + libm::cosf(lat_rad) * libm::cosf(dec_rad) * libm::cosf(ha_rad);
-    let sin_elev_clamped = if sin_elev < -1.0 { -1.0 } else if sin_elev > 1.0 { 1.0 } else { sin_elev };
+    let sin_elev_clamped = if sin_elev < -1.0 {
+        -1.0
+    } else if sin_elev > 1.0 {
+        1.0
+    } else {
+        sin_elev
+    };
     let elev_deg = libm::asinf(sin_elev_clamped) * RAD_TO_DEG;
 
     // Solar Azimuth
@@ -141,7 +149,11 @@ pub fn calculate_solar(
     let az_deg = if sin_zenith > 0.0001 {
         let num = libm::sinf(lat_rad) * cos_zenith - libm::sinf(dec_rad);
         let den = libm::cosf(lat_rad) * sin_zenith;
-        let cos_az = if den.abs() > 1e-6 { (num / den).clamp(-1.0, 1.0) } else { 0.0 };
+        let cos_az = if den.abs() > 1e-6 {
+            (num / den).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
         let mut angle = 180.0 - libm::acosf(cos_az) * RAD_TO_DEG;
         if ha_deg > 0.0 {
             angle = 360.0 - angle;
@@ -178,7 +190,6 @@ pub fn calculate_solar(
     }
 }
 
-
 // ── Unit tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -192,12 +203,20 @@ mod tests {
         let pos = calculate_solar(2026, 6, 21, 10, 21, 0, 59.437, 24.753);
 
         // At solar noon, azimuth should be nearly due South (approx 180 deg)
-        assert!((pos.azimuth_deg - 180.0).abs() < 5.0, "Azimuth expected ~180, got {}", pos.azimuth_deg);
+        assert!(
+            (pos.azimuth_deg - 180.0).abs() < 5.0,
+            "Azimuth expected ~180, got {}",
+            pos.azimuth_deg
+        );
         assert_eq!(pos.cardinal_str(), "S");
 
         // Solar elevation in Tallinn at summer solstice noon is approx:
         // 90 - 59.437 + 23.44 = ~54 degrees
-        assert!((pos.elevation_deg - 54.0).abs() < 2.0, "Elevation expected ~54, got {}", pos.elevation_deg);
+        assert!(
+            (pos.elevation_deg - 54.0).abs() < 2.0,
+            "Elevation expected ~54, got {}",
+            pos.elevation_deg
+        );
 
         // Sunrise and sunset should be present
         assert!(pos.sunrise_utc_min.is_some());
@@ -207,7 +226,11 @@ mod tests {
         // Summer solstice in Tallinn: very long day (>18 hours)
         assert!(sset > rise);
         let day_len_min = sset - rise;
-        assert!(day_len_min > 18 * 60, "Expected >18h day, got {} min", day_len_min);
+        assert!(
+            day_len_min > 18 * 60,
+            "Expected >18h day, got {} min",
+            day_len_min
+        );
     }
 
     #[test]
@@ -217,8 +240,16 @@ mod tests {
 
         // Solar elevation in Tallinn at winter solstice noon is approx:
         // 90 - 59.437 - 23.44 = ~7.1 degrees
-        assert!((pos.elevation_deg - 7.1).abs() < 2.0, "Elevation expected ~7.1, got {}", pos.elevation_deg);
-        assert!((pos.azimuth_deg - 180.0).abs() < 5.0, "Azimuth expected ~180, got {}", pos.azimuth_deg);
+        assert!(
+            (pos.elevation_deg - 7.1).abs() < 2.0,
+            "Elevation expected ~7.1, got {}",
+            pos.elevation_deg
+        );
+        assert!(
+            (pos.azimuth_deg - 180.0).abs() < 5.0,
+            "Azimuth expected ~180, got {}",
+            pos.azimuth_deg
+        );
     }
 
     #[test]

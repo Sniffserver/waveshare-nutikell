@@ -157,9 +157,9 @@ impl WorkTracker {
             .unwrap_or(0);
         let next_idx = (idx + 1) % PRESET_RATES.len();
         self.hourly_rate_cents = PRESET_RATES[next_idx];
-        if let Some(ref mut session) = self.active_session {
-            session.hourly_rate_cents = self.hourly_rate_cents;
-        }
+        // A running session keeps the rate it started with. Changing the
+        // preference affects the next clock-in and never reprices work that
+        // has already elapsed.
     }
 
     pub fn current_session_earnings(&self) -> u32 {
@@ -621,6 +621,21 @@ mod tests {
         assert_eq!(tracker.hourly_rate_cents, 15000);
         tracker.cycle_rate();
         assert_eq!(tracker.hourly_rate_cents, 2500);
+    }
+
+    #[test]
+    fn changing_default_rate_does_not_reprice_active_session() {
+        let mut tracker = WorkTracker::with_rate(5000);
+        tracker.clock_in();
+        tracker.cycle_rate();
+        assert_eq!(tracker.hourly_rate_cents, 7500);
+        assert_eq!(
+            tracker
+                .active_session
+                .expect("active session")
+                .hourly_rate_cents,
+            5000
+        );
     }
 
     #[test]

@@ -104,10 +104,8 @@ pub fn extract_ad_info(structures: &[AdStructure]) -> AdvertisementInfo {
             // Manufacturer Specific Data
             0xFF => {
                 if structure.data.len() >= 2 {
-                    result.company_id = Some(u16::from_le_bytes([
-                        structure.data[0],
-                        structure.data[1],
-                    ]));
+                    result.company_id =
+                        Some(u16::from_le_bytes([structure.data[0], structure.data[1]]));
                 }
             }
             _ => {}
@@ -144,9 +142,7 @@ mod tests {
     #[test]
     fn parses_name_and_company() {
         let bytes = [
-            2, 0x01, 0x06,
-            5, 0x09, b'T', b'e', b's', b't',
-            4, 0xFF, 0x4C, 0x00, 0x01,
+            2, 0x01, 0x06, 5, 0x09, b'T', b'e', b's', b't', 4, 0xFF, 0x4C, 0x00, 0x01,
         ];
         let ad = parse_advertising_data(&bytes).unwrap();
         let info = extract_ad_info(&ad);

@@ -6,7 +6,9 @@ pub mod gatt;
 pub mod tracker;
 pub mod ui;
 
-pub use ad::{explain_ad_type, extract_ad_info, parse_advertising_data, AdStructure, AdvertisementInfo};
+pub use ad::{
+    explain_ad_type, extract_ad_info, parse_advertising_data, AdStructure, AdvertisementInfo,
+};
 pub use companies::{company_name, format_company, is_space_sector, lookup_company};
 pub use gatt::{
     explore_read_only, GattCharacteristicInfo, GattError, GattExplorerResult, GattPolicy,
@@ -62,8 +64,7 @@ impl BleAnalyzerApp {
         // 1. Honeywell Aerospace Avionics Beacon (Space Sector)
         let hw_mac = BdAddr([0x00, 0x18, 0x82, 0x33, 0x44, 0x55]);
         let hw_raw = [
-            0x02, 0x01, 0x06,
-            0x0A, 0x09, b'H', b'o', b'n', b'e', b'y', b'w', b'e', b'l', b'l',
+            0x02, 0x01, 0x06, 0x0A, 0x09, b'H', b'o', b'n', b'e', b'y', b'w', b'e', b'l', b'l',
             0x04, 0xFF, 0x82, 0x01, 0x42, // Company ID 0x0182 (Honeywell Aerospace)
             0x03, 0x03, 0x0A, 0x18,
         ];
@@ -73,9 +74,8 @@ impl BleAnalyzerApp {
         // 2. SpaceX / Starlink Terminal Sensor (Space Sector)
         let sx_mac = BdAddr([0x50, 0x41, 0x43, 0x45, 0x58, 0x01]);
         let sx_raw = [
-            0x02, 0x01, 0x06,
-            0x09, 0x09, b'S', b't', b'a', b'r', b'l', b'i', b'n', b'k',
-            0x04, 0xFF, 0x8E, 0x0A, 0x01, // Company ID 0x0A8E (SpaceX / Starlink)
+            0x02, 0x01, 0x06, 0x09, 0x09, b'S', b't', b'a', b'r', b'l', b'i', b'n', b'k', 0x04,
+            0xFF, 0x8E, 0x0A, 0x01, // Company ID 0x0A8E (SpaceX / Starlink)
             0x03, 0x03, 0x1A, 0x18,
         ];
         let sx_ad = parse_advertising_data(&sx_raw).unwrap_or_default();
@@ -84,9 +84,8 @@ impl BleAnalyzerApp {
         // 3. Apple iPhone Companion
         let ap_mac = BdAddr([0xF4, 0xD4, 0x88, 0xAA, 0xBB, 0xCC]);
         let ap_raw = [
-            0x02, 0x01, 0x1A,
-            0x07, 0x09, b'i', b'P', b'h', b'o', b'n', b'e',
-            0x04, 0xFF, 0x4C, 0x00, 0x10, // Company ID 0x004C (Apple Inc.)
+            0x02, 0x01, 0x1A, 0x07, 0x09, b'i', b'P', b'h', b'o', b'n', b'e', 0x04, 0xFF, 0x4C,
+            0x00, 0x10, // Company ID 0x004C (Apple Inc.)
             0x03, 0x03, 0x0F, 0x18,
         ];
         let ap_ad = parse_advertising_data(&ap_raw).unwrap_or_default();
@@ -95,9 +94,8 @@ impl BleAnalyzerApp {
         // 4. Garmin GPS Flight Deck (Space / Aviation)
         let gm_mac = BdAddr([0x00, 0xE4, 0x12, 0x34, 0x56, 0x78]);
         let gm_raw = [
-            0x02, 0x01, 0x06,
-            0x0B, 0x09, b'G', b'a', b'r', b'm', b'i', b'n', b' ', b'G', b'P', b'S',
-            0x04, 0xFF, 0xE4, 0x00, 0x01, // Company ID 0x00E4 (Garmin)
+            0x02, 0x01, 0x06, 0x0B, 0x09, b'G', b'a', b'r', b'm', b'i', b'n', b' ', b'G', b'P',
+            b'S', 0x04, 0xFF, 0xE4, 0x00, 0x01, // Company ID 0x00E4 (Garmin)
             0x03, 0x03, 0x19, 0x18,
         ];
         let gm_ad = parse_advertising_data(&gm_raw).unwrap_or_default();

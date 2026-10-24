@@ -160,8 +160,12 @@ fn decode_sector(buf: &[u8; SECTOR_SIZE as usize]) -> Option<WatchSettings> {
     if &buf[0..4] != &MAGIC {
         return None;
     }
-    // version ≥ 1 accepted (forward-compatible: unknown fields stay zero)
-    let _version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    // This fixed-size decoder only understands v1. Rejecting newer layouts is
+    // safer than silently interpreting their bytes as v1 settings.
+    let version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    if version != VERSION {
+        return None;
+    }
 
     let stored_crc = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
     let blob: [u8; BLOB_LEN] = buf[BLOB_OFFSET..BLOB_OFFSET + BLOB_LEN].try_into().ok()?;

@@ -130,7 +130,7 @@ impl OutdoorApp {
         }
     }
 
-        fn draw_status_header<D: DrawTarget<Color = Rgb565>>(
+    fn draw_status_header<D: DrawTarget<Color = Rgb565>>(
         d: &mut D,
         state: &OutdoorState,
         title: &str,
@@ -189,9 +189,10 @@ impl OutdoorApp {
                 let acc = state.accuracy_m.unwrap_or(5.0);
                 (format!("GPS ±{:.0}m", acc), Rgb565::GREEN)
             }
-            TelemetryState::Stale => {
-                (format!("GPS STALE ({}s)", state.fix_age_secs), Rgb565::YELLOW)
-            }
+            TelemetryState::Stale => (
+                format!("GPS STALE ({}s)", state.fix_age_secs),
+                Rgb565::YELLOW,
+            ),
             TelemetryState::Invalid => {
                 if state.ble_connected {
                     (format!("GPS NO FIX"), Rgb565::RED)
@@ -689,14 +690,7 @@ impl OutdoorApp {
         let (hour, minute, second) = state.time_hms;
 
         let solar = crate::outdoor::solar::calculate_solar(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            lat,
-            lon,
+            year, month, day, hour, minute, second, lat, lon,
         );
 
         let _ = Text::new(
@@ -724,7 +718,12 @@ impl OutdoorApp {
         } else {
             Rgb565::CSS_GRAY
         };
-        let _ = Text::new(&el_str, EgPoint::new(35, 180), MonoTextStyle::new(&FONT_10X20, el_color)).draw(d);
+        let _ = Text::new(
+            &el_str,
+            EgPoint::new(35, 180),
+            MonoTextStyle::new(&FONT_10X20, el_color),
+        )
+        .draw(d);
 
         let _ = Text::new("Sunrise / Sunset:", EgPoint::new(35, 215), label_style).draw(d);
         // Estimate local solar timezone offset from longitude (15 deg per hour)

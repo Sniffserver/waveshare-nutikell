@@ -34,10 +34,13 @@ impl BdAddr {
         let mut p = 0;
         for i in 0..6 {
             let b = self.0[i];
-            buf[p] = HEX[(b >> 4) as usize]; p += 1;
-            buf[p] = HEX[(b & 0xF) as usize]; p += 1;
+            buf[p] = HEX[(b >> 4) as usize];
+            p += 1;
+            buf[p] = HEX[(b & 0xF) as usize];
+            p += 1;
             if i < 5 {
-                buf[p] = b':'; p += 1;
+                buf[p] = b':';
+                p += 1;
             }
         }
         core::str::from_utf8(&buf[..p]).unwrap_or("00:00:00:00:00:00")
@@ -81,8 +84,12 @@ impl RssiHistory {
         let mut max = i8::MIN;
         let mut sum: i32 = 0;
         for s in &self.samples {
-            if s.rssi < min { min = s.rssi; }
-            if s.rssi > max { max = s.rssi; }
+            if s.rssi < min {
+                min = s.rssi;
+            }
+            if s.rssi > max {
+                max = s.rssi;
+            }
             sum += s.rssi as i32;
         }
         let avg = (sum / self.samples.len() as i32) as i8;
@@ -169,7 +176,11 @@ impl DeviceTracker {
         let kind = classify_device(&info);
         let space = info.company_id.map(is_space_sector).unwrap_or(false);
 
-        if let Some(device) = self.devices.iter_mut().find(|device| device.address == address) {
+        if let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|device| device.address == address)
+        {
             device.rssi = rssi;
             device.last_seen_ms = now_ms;
             device.company_id = info.company_id;

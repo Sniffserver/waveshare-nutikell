@@ -73,20 +73,12 @@ impl PowerPolicy {
 /// - BLE connection is recovering / active
 /// - Touch interaction is occurring
 /// - QMI8658 continuous high-rate step detection is required
-pub fn can_enter_light_sleep(
-    mode: PowerMode,
-    screen_is_dimmed: bool,
-    ble_connected: bool,
-) -> bool {
+pub fn can_enter_light_sleep(mode: PowerMode, screen_is_dimmed: bool, ble_connected: bool) -> bool {
     matches!(mode, PowerMode::Idle | PowerMode::Paused) && screen_is_dimmed && !ble_connected
 }
 
 /// Determine the active PowerMode based on screen level and hike activity.
-pub fn determine_power_mode(
-    screen_state: u8,
-    hike_running: bool,
-    hike_paused: bool,
-) -> PowerMode {
+pub fn determine_power_mode(screen_state: u8, hike_running: bool, hike_paused: bool) -> PowerMode {
     if hike_running {
         PowerMode::Navigation
     } else if hike_paused {

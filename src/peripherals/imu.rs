@@ -2,8 +2,8 @@
 // Reference: SensorLib/src/SensorQMI8658.hpp
 // I2C address 0x6B
 
-use esp_println::println;
 use embedded_hal::i2c::I2c;
+use esp_println::println;
 
 const QMI8658_ADDR: u8 = 0x6B;
 
@@ -210,7 +210,11 @@ impl<I: I2c> Qmi8658Imu<I> {
                         "[QMI] addr={:#04x} WHO_AM_I={:#04x}{}",
                         addr,
                         who[0],
-                        if who[0] == 0x05 { " ✓" } else { " (unexpected)" }
+                        if who[0] == 0x05 {
+                            " ✓"
+                        } else {
+                            " (unexpected)"
+                        }
                     );
                     if who[0] == 0x05 {
                         return Some(addr);
@@ -228,17 +232,17 @@ impl<I: I2c> Qmi8658Imu<I> {
     pub fn dump_config(&mut self) {
         let regs = [
             (REG_WHO_AM_I, "WHO_AM_I"),
-            (REG_CTRL1,    "CTRL1   "),
-            (REG_CTRL2,    "CTRL2   "),
-            (REG_CTRL3,    "CTRL3   "),
-            (REG_CTRL5,    "CTRL5   "),
-            (REG_CTRL7,    "CTRL7   "),
-            (REG_STATUS0,  "STATUS0 "),
+            (REG_CTRL1, "CTRL1   "),
+            (REG_CTRL2, "CTRL2   "),
+            (REG_CTRL3, "CTRL3   "),
+            (REG_CTRL5, "CTRL5   "),
+            (REG_CTRL7, "CTRL7   "),
+            (REG_STATUS0, "STATUS0 "),
         ];
         println!("[QMI] ── register dump ──────────────────");
         for (reg, name) in regs {
             match self.read_reg(reg) {
-                Ok(v)  => println!("[QMI]  {name} ({:#04x}) = {:#04x}  ({:08b}b)", reg, v, v),
+                Ok(v) => println!("[QMI]  {name} ({:#04x}) = {:#04x}  ({:08b}b)", reg, v, v),
                 Err(_) => println!("[QMI]  {name} ({:#04x}) = ERR", reg),
             }
         }

@@ -71,9 +71,7 @@ pub trait ReadOnlyGattConnection {
 }
 
 /// Traverses GATT hierarchy and performs strictly read-only reads of readable characteristics.
-pub async fn explore_read_only<C>(
-    connection: &mut C,
-) -> Result<GattExplorerResult, C::Error>
+pub async fn explore_read_only<C>(connection: &mut C) -> Result<GattExplorerResult, C::Error>
 where
     C: ReadOnlyGattConnection,
 {
