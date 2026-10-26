@@ -163,7 +163,9 @@ pub fn base32_decode(s: &str) -> Vec<u8> {
 
 /// Computes RFC 6238 TOTP code from secret and Unix epoch seconds
 pub fn totp(secret: &[u8], unix_secs: u64, period: u32, digits: u32) -> u32 {
-    let counter = unix_secs / (period as u64);
+    // Imported records are validated before construction, but this public
+    // helper remains total for callers holding older/corrupt data.
+    let counter = unix_secs / (period.max(1) as u64);
     let counter_bytes = counter.to_be_bytes();
 
     let h = hmac_sha1(secret, &counter_bytes);
@@ -183,12 +185,29 @@ pub fn totp(secret: &[u8], unix_secs: u64, period: u32, digits: u32) -> u32 {
     binary % modulus
 }
 
-/// Converts UTC date/time to POSIX Unix epoch seconds
+/// Converts a validated UTC date/time to POSIX Unix epoch seconds.
 pub fn datetime_to_unix_secs(year: u16, month: u8, day: u8, hour: u8, min: u8, sec: u8) -> u64 {
     const DAYS_BEFORE_MONTH: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let y = year as u32;
     let m = month as usize;
-    if y < 1970 || m == 0 || m > 12 {
+    let days_in_month = |year: u32, month: usize| -> u8 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+            2 => 28,
+            _ => 0,
+        }
+    };
+    if y < 1970
+        || m == 0
+        || m > 12
+        || day == 0
+        || day > days_in_month(y, m)
+        || hour > 23
+        || min > 59
+        || sec > 59
+    {
         return 0;
     }
     let leap_years = (y - 1 - 1968) / 4 - (y - 1 - 1900) / 100 + (y - 1 - 1600) / 400;
@@ -198,6 +217,22 @@ pub fn datetime_to_unix_secs(year: u16, month: u8, day: u8, hour: u8, min: u8, s
     let total_days = days_from_years + DAYS_BEFORE_MONTH[m - 1] + leap_day + (day as u32 - 1);
     (total_days as u64) * 86400 + (hour as u64) * 3600 + (min as u64) * 60 + (sec as u64)
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TotpAccountError {
+    EmptySecret,
+    UnsupportedDigits,
+    InvalidPeriod,
+    IssuerTooLong,
+    LabelTooLong,
+    SecretTooLong,
+    AccountLimitReached,
+}
+
+pub const MAX_TOTP_ACCOUNTS: usize = 16;
+pub const MAX_TOTP_ISSUER_LEN: usize = 48;
+pub const MAX_TOTP_LABEL_LEN: usize = 96;
+pub const MAX_TOTP_SECRET_LEN: usize = 64;
 
 // =========================================================================
 // 2. 2FA Account Models & Storage
@@ -223,6 +258,42 @@ impl TotpAccount {
         }
     }
 
+    /// Construct an account imported from a record or companion payload.
+    /// Reject invalid timing parameters before they reach rendering/codegen.
+    pub fn try_from_secret(
+        issuer: String,
+        label: String,
+        secret: Vec<u8>,
+        digits: u8,
+        period: u8,
+    ) -> Result<Self, TotpAccountError> {
+        if secret.is_empty() {
+            return Err(TotpAccountError::EmptySecret);
+        }
+        if !matches!(digits, 6 | 7 | 8) {
+            return Err(TotpAccountError::UnsupportedDigits);
+        }
+        if period == 0 {
+            return Err(TotpAccountError::InvalidPeriod);
+        }
+        if issuer.len() > MAX_TOTP_ISSUER_LEN {
+            return Err(TotpAccountError::IssuerTooLong);
+        }
+        if label.len() > MAX_TOTP_LABEL_LEN {
+            return Err(TotpAccountError::LabelTooLong);
+        }
+        if secret.len() > MAX_TOTP_SECRET_LEN {
+            return Err(TotpAccountError::SecretTooLong);
+        }
+        Ok(Self {
+            issuer,
+            label,
+            secret,
+            digits,
+            period,
+        })
+    }
+
     #[inline]
     pub fn compute_code(&self, unix_secs: u64) -> u32 {
         totp(
@@ -245,7 +316,7 @@ impl TotpAccount {
 
     #[inline]
     pub fn remaining_seconds(&self, unix_secs: u64) -> u8 {
-        let p = self.period as u64;
+        let p = self.period.max(1) as u64;
         let rem = p - (unix_secs % p);
         rem as u8
     }
@@ -286,6 +357,21 @@ impl AuthenticatorApp {
         };
         app.load_default_sample_accounts();
         app
+    }
+
+    pub fn account_capacity(&self) -> usize {
+        self.accounts.capacity()
+    }
+
+    /// Validated ingress for imported accounts. Existing account storage is
+    /// retained for compatibility, but untrusted import paths cannot grow it
+    /// past this fixed product limit.
+    pub fn try_add_account(&mut self, account: TotpAccount) -> Result<(), TotpAccountError> {
+        if self.accounts.len() >= MAX_TOTP_ACCOUNTS {
+            return Err(TotpAccountError::AccountLimitReached);
+        }
+        self.accounts.push(account);
+        Ok(())
     }
 
     pub fn load_default_sample_accounts(&mut self) {
@@ -726,6 +812,17 @@ mod tests {
         assert_eq!(datetime_to_unix_secs(1970, 1, 1, 0, 0, 0), 0);
         assert_eq!(datetime_to_unix_secs(2000, 1, 1, 0, 0, 0), 946684800);
         assert_eq!(datetime_to_unix_secs(2024, 2, 29, 12, 0, 0), 1709208000);
+        assert_eq!(datetime_to_unix_secs(2023, 2, 29, 0, 0, 0), 0);
+        assert_eq!(datetime_to_unix_secs(2024, 1, 1, 24, 0, 0), 0);
+    }
+
+    #[test]
+    fn imported_accounts_reject_invalid_timing_and_total_helpers_do_not_panic() {
+        assert_eq!(
+            TotpAccount::try_from_secret(String::from("x"), String::from("y"), vec![1], 6, 0),
+            Err(TotpAccountError::InvalidPeriod),
+        );
+        assert_eq!(totp(b"secret", 123, 0, 6), totp(b"secret", 123, 1, 6));
     }
 
     #[test]

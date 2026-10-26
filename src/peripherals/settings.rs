@@ -36,12 +36,20 @@ use esp_storage::FlashStorage;
 const MAGIC: [u8; 4] = *b"WCH1";
 const VERSION: u32 = 1;
 
-const SLOT_A: u32 = 0xB000;
-const SLOT_B: u32 = 0xC000;
-const SECTOR_SIZE: u32 = 4096;
+use crate::peripherals::flash_layout::{SETTINGS_A, SETTINGS_B};
+const SLOT_A: u32 = SETTINGS_A.start;
+const SLOT_B: u32 = SETTINGS_B.start;
+const SECTOR_SIZE: u32 = SETTINGS_A.len;
 const BLOB_OFFSET: usize = 12;
 const BLOB_LEN: usize = 44;
 const HEADER_LEN: usize = 12; // magic(4) + version(4) + crc(4)
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsStorageError {
+    Erase,
+    Write,
+    VerifyFailed,
+}
 
 // ── CRC32 (no-alloc, no external crate) ────────────────────────────────────
 
@@ -208,53 +216,69 @@ pub fn load_settings() -> WatchSettings {
 }
 
 #[cfg(target_arch = "xtensa")]
-fn restore_from_backup(storage: &mut FlashStorage, s: WatchSettings) -> Result<(), ()> {
+fn restore_from_backup(
+    storage: &mut FlashStorage,
+    s: WatchSettings,
+) -> Result<(), SettingsStorageError> {
     let sector = encode_sector(s);
     storage
         .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
-        .map_err(|_| ())?;
-    storage.write(SLOT_A, sector.as_ref()).map_err(|_| ())?;
-    Ok(())
+        .map_err(|_| SettingsStorageError::Erase)?;
+    storage
+        .write(SLOT_A, sector.as_ref())
+        .map_err(|_| SettingsStorageError::Write)?;
+    if try_read_slot(storage, SLOT_A) == Some(s) {
+        Ok(())
+    } else {
+        Err(SettingsStorageError::VerifyFailed)
+    }
 }
 
 /// Persist settings atomically using the two-slot scheme.
 ///
 /// Returns `Ok(())` on success. On error the previous slot A remains intact.
 #[cfg(target_arch = "xtensa")]
-pub fn save_settings(settings: WatchSettings) -> Result<(), ()> {
+pub fn save_settings(settings: WatchSettings) -> Result<(), SettingsStorageError> {
     let mut storage = FlashStorage::new();
     let sector = encode_sector(settings);
 
     // Step 1: Write to slot B (staging)
     storage
         .erase(SLOT_B, SLOT_B + SECTOR_SIZE)
-        .map_err(|_| ())?;
-    storage.write(SLOT_B, sector.as_ref()).map_err(|_| ())?;
+        .map_err(|_| SettingsStorageError::Erase)?;
+    storage
+        .write(SLOT_B, sector.as_ref())
+        .map_err(|_| SettingsStorageError::Write)?;
 
     // Step 2: Verify slot B read-back
     if try_read_slot(&mut storage, SLOT_B) != Some(settings) {
-        return Err(());
+        return Err(SettingsStorageError::VerifyFailed);
     }
 
     // Step 3: Promote to slot A
     storage
         .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
-        .map_err(|_| ())?;
-    storage.write(SLOT_A, sector.as_ref()).map_err(|_| ())?;
-
-    Ok(())
+        .map_err(|_| SettingsStorageError::Erase)?;
+    storage
+        .write(SLOT_A, sector.as_ref())
+        .map_err(|_| SettingsStorageError::Write)?;
+    if try_read_slot(&mut storage, SLOT_A) == Some(settings) {
+        Ok(())
+    } else {
+        Err(SettingsStorageError::VerifyFailed)
+    }
 }
 
 /// Erase both slots (factory reset of settings).
 #[cfg(target_arch = "xtensa")]
-pub fn erase_settings() -> Result<(), ()> {
+pub fn erase_settings() -> Result<(), SettingsStorageError> {
     let mut storage = FlashStorage::new();
     storage
         .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
-        .map_err(|_| ())?;
+        .map_err(|_| SettingsStorageError::Erase)?;
     storage
         .erase(SLOT_B, SLOT_B + SECTOR_SIZE)
-        .map_err(|_| ())?;
+        .map_err(|_| SettingsStorageError::Erase)?;
     Ok(())
 }
 

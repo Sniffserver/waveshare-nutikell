@@ -7,7 +7,7 @@
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
+use heapless::{String as FixedString, Vec as FixedVec};
 
 use embedded_graphics::geometry::Point as EgPoint;
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_8X13, FONT_9X18_BOLD};
@@ -22,6 +22,8 @@ use crate::peripherals::touch::{SwipeDirection, TouchPoint};
 
 pub const SCREEN_W: i32 = 410;
 pub const SCREEN_H: i32 = 502;
+pub const MAX_TRACKS: usize = 8;
+pub const MAX_TRACK_TEXT: usize = 64;
 
 /// Vibrant SoundCloud Brand Orange (#FF5500)
 pub const COLOR_SOUNDCLOUD: Rgb565 = Rgb565::new(31, 21, 0);
@@ -92,25 +94,48 @@ pub enum MediaCommand {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackInfo {
-    pub title: String,
-    pub artist: String,
-    pub album: String,
+    pub title: FixedString<MAX_TRACK_TEXT>,
+    pub artist: FixedString<MAX_TRACK_TEXT>,
+    pub album: FixedString<MAX_TRACK_TEXT>,
     pub duration_secs: u32,
     pub position_secs: u32,
     pub in_playlist: bool,
 }
 
 impl TrackInfo {
-    pub fn new(title: &str, artist: &str, album: &str, duration_secs: u32) -> Self {
-        Self {
-            title: String::from(title),
-            artist: String::from(artist),
-            album: String::from(album),
+    pub fn try_new(
+        title: &str,
+        artist: &str,
+        album: &str,
+        duration_secs: u32,
+    ) -> Result<Self, MediaDataError> {
+        let mut title_out = FixedString::new();
+        let mut artist_out = FixedString::new();
+        let mut album_out = FixedString::new();
+        title_out
+            .push_str(title)
+            .map_err(|_| MediaDataError::TextTooLong)?;
+        artist_out
+            .push_str(artist)
+            .map_err(|_| MediaDataError::TextTooLong)?;
+        album_out
+            .push_str(album)
+            .map_err(|_| MediaDataError::TextTooLong)?;
+        Ok(Self {
+            title: title_out,
+            artist: artist_out,
+            album: album_out,
             duration_secs,
             position_secs: 0,
             in_playlist: false,
-        }
+        })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaDataError {
+    TextTooLong,
+    CatalogFull,
 }
 
 /// Events returned to the main event loop
@@ -118,14 +143,14 @@ impl TrackInfo {
 pub enum MediaAction {
     None,
     SendCommand(MediaCommand),
-    AddToPlaylist(MediaSource, String), // Source, Track Title
+    AddToPlaylist(MediaSource, FixedString<MAX_TRACK_TEXT>), // Source, Track Title
 }
 
 pub struct MediaController {
     pub source: MediaSource,
     pub state: PlaybackState,
     pub volume_pct: u8, // 0..100
-    pub tracks: Vec<TrackInfo>,
+    pub tracks: FixedVec<TrackInfo, MAX_TRACKS>,
     pub current_track: usize,
     pub toast_timer_ms: u32,
     pub anim_phase: u8,
@@ -135,31 +160,23 @@ pub struct MediaController {
 
 impl MediaController {
     pub fn new() -> Self {
-        let mut tracks = Vec::new();
-        tracks.push(TrackInfo::new(
-            "Strobe (Club Edit)",
-            "deadmau5",
-            "mau5trap Chill",
-            355,
-        ));
-        tracks.push(TrackInfo::new(
-            "Sunset Lover",
-            "Petit Biscuit",
-            "SoundCloud Wave",
-            237,
-        ));
-        tracks.push(TrackInfo::new(
-            "Resonance",
-            "HOME",
-            "Synthwave Essentials",
-            212,
-        ));
-        tracks.push(TrackInfo::new(
-            "Midnight City",
-            "M83",
-            "Hurry Up, We Are Dreaming",
-            243,
-        ));
+        let mut tracks = FixedVec::new();
+        tracks.push(
+            TrackInfo::try_new("Strobe (Club Edit)", "deadmau5", "mau5trap Chill", 355)
+                .expect("built-in track fits"),
+        );
+        tracks.push(
+            TrackInfo::try_new("Sunset Lover", "Petit Biscuit", "SoundCloud Wave", 237)
+                .expect("built-in track fits"),
+        );
+        tracks.push(
+            TrackInfo::try_new("Resonance", "HOME", "Synthwave Essentials", 212)
+                .expect("built-in track fits"),
+        );
+        tracks.push(
+            TrackInfo::try_new("Midnight City", "M83", "Hurry Up, We Are Dreaming", 243)
+                .expect("built-in track fits"),
+        );
 
         Self {
             source: MediaSource::SoundCloud,
@@ -289,7 +306,7 @@ impl MediaController {
             let track_title = self
                 .active_track()
                 .map(|t| t.title.clone())
-                .unwrap_or_else(|| String::from("Current Track"));
+                .unwrap_or_else(|| FixedString::try_from("Current Track").unwrap());
 
             if let Some(t) = self.active_track_mut() {
                 t.in_playlist = true;

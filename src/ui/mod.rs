@@ -5,4 +5,3 @@ pub mod power_page;
 pub mod segments;
 pub mod t9_keyboard;
 pub mod watchface;
-pub use notification::{Notification, NotificationManager, Urgency};

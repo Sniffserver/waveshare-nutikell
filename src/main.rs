@@ -79,7 +79,6 @@ use crate::apps::flappy::FlappyGame;
 use crate::apps::game2048::Game2048;
 use crate::apps::maze::MazeGame;
 use crate::apps::media_controller::{MediaAction, MediaCommand, MediaController};
-use crate::apps::mp3player::Mp3Player;
 use crate::apps::settings::SettingsApp;
 use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::snake::SnakeGame;
@@ -92,19 +91,19 @@ use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::active_work::{
-    calendar_to_unix, clear_active_session, load_active_session, save_active_session, session_id,
+    calendar_to_unix, clear_active_session, load_active_session, save_active_session,
     ActiveWorkSession,
 };
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::captive::run_ap_services;
-use crate::peripherals::companion_sync::RamSnapshotStore;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
 use crate::peripherals::session_log::{
-    append_session, contains_session_id, session_log_health, LogSeverity, SessionRecord,
+    append_session, contains_session_id, next_session_id, session_log_health, LogSeverity,
+    SessionRecord,
 };
 use crate::peripherals::settings::{load_settings, save_settings};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
@@ -158,21 +157,33 @@ async fn ntp_sync(
     {
         Ok(Ok((len, addr))) if len >= 48 => {
             println!("[NTP] response: {} bytes from {:?}", len, addr);
+            // Reject unsynchronised/invalid server replies before touching the
+            // RTC. LI=3 means alarm, server mode is 4, and stratum 0/16 is
+            // unsynchronised/reserved.
+            let li = response[0] >> 6;
+            let version = (response[0] >> 3) & 0x07;
+            let mode = response[0] & 0x07;
+            let stratum = response[1];
+            if li == 3 || !(3..=4).contains(&version) || mode != 4 || !(1..=15).contains(&stratum) {
+                println!(
+                    "[NTP] rejected invalid server reply li={} version={} mode={} stratum={}",
+                    li, version, mode, stratum
+                );
+                return Err(());
+            }
             // Parse NTP timestamp (bytes 40-43 = seconds since 1900-01-01)
             let ntp_secs =
                 u32::from_be_bytes([response[40], response[41], response[42], response[43]]);
-            // Convert NTP epoch (1900) to Unix epoch (1970): subtract 70 years in seconds
-            let unix_secs = ntp_secs.wrapping_sub(2_208_988_800);
-            // Convert to hours/minutes/seconds (UTC+2 for France)
-            let utc_offset = 2 * 3600; // CEST (summer time)
-            let local_secs = unix_secs + utc_offset;
-            let time_of_day = local_secs % 86400;
+            // Convert epochs with checked arithmetic. Time-zone presentation is
+            // a UI/settings concern; RTC is kept in UTC to avoid hard-coded DST.
+            let unix_secs = ntp_secs.checked_sub(2_208_988_800).ok_or(())?;
+            let time_of_day = unix_secs % 86400;
             let hours = (time_of_day / 3600) as u8;
             let minutes = ((time_of_day % 3600) / 60) as u8;
             let seconds = (time_of_day % 60) as u8;
 
             // Calculate date (simplified: days since epoch)
-            let total_days = (local_secs / 86400) as i32;
+            let total_days = (unix_secs / 86400) as i32;
             // Simple date from days since 1970-01-01
             let (year, month, day) = days_to_date(total_days);
 
@@ -181,7 +192,11 @@ async fn ntp_sync(
                 hours, minutes, seconds, day, month, year
             );
 
-            // Set RTC
+            if !(2000..=2255).contains(&year) {
+                println!("[NTP] rejected RTC-unrepresentable year {}", year);
+                return Err(());
+            }
+            // Set RTC only after all validity checks pass.
             let dt = crate::peripherals::rtc::DateTime::new(
                 (year - 2000) as u8,
                 month as u8,
@@ -190,8 +205,7 @@ async fn ntp_sync(
                 minutes,
                 seconds,
             );
-            let _ = rtc.set_time(&dt);
-            Ok(())
+            rtc.set_time(&dt).map_err(|_| ())
         }
         Ok(Ok((len, addr))) => {
             println!("[NTP] short response: {} bytes from {:?}", len, addr);
@@ -311,12 +325,6 @@ async fn main(_spawner: Spawner) {
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
     log_memory("init");
 
-    // The normalized companion cache lives in static memory, never in the
-    // Embassy main-task frame. It is RAM-only until the partition layout
-    // explicitly reserves a durable snapshot region.
-    static SYNC_CACHE: StaticCell<RamSnapshotStore> = StaticCell::new();
-    let _sync_cache: &'static mut RamSnapshotStore = SYNC_CACHE.init(RamSnapshotStore::new());
-
     // Embassy timer
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);
@@ -329,7 +337,7 @@ async fn main(_spawner: Spawner) {
     // === I2C Bus ===
     let i2c = I2c::new(
         peripherals.I2C0,
-        I2cConfig::default().with_frequency(Rate::from_khz(100)), // DEBUG: 100 kHz
+        I2cConfig::default().with_frequency(Rate::from_hz(crate::board::I2C_FREQ_HZ)),
     )
     .expect("I2C failed")
     .with_sda(peripherals.GPIO15)
@@ -455,7 +463,6 @@ async fn main(_spawner: Spawner) {
     let sd_spi_dev = ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
     let mut sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
     let mut _sd_ok = false;
-    let mut mp3_files: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
     match sd_card.num_bytes() {
         Ok(size) => {
             println!("[SD] Card {}MB", size / 1024 / 1024);
@@ -474,36 +481,36 @@ async fn main(_spawner: Spawner) {
                     if let Ok(root_dir) = volume_mgr.open_root_dir(volume) {
                         if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "MP3") {
                             println!("[SD] Found /MP3/ folder");
+                            let mut file_count = 0u16;
                             let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
                                 if !entry.attributes.is_directory() {
                                     let name = core::str::from_utf8(&entry.name.base_name())
                                         .unwrap_or("?");
                                     let ext =
                                         core::str::from_utf8(&entry.name.extension()).unwrap_or("");
-                                    let full = alloc::format!("{}.{}", name.trim(), ext.trim());
-                                    println!("[SD]   {}", full);
-                                    mp3_files.push(full);
+                                    println!("[SD]   {}.{}", name.trim(), ext.trim());
+                                    file_count = file_count.saturating_add(1);
                                 }
                             });
-                            println!("[SD] {} files found", mp3_files.len());
+                            println!("[SD] {} files found", file_count);
                             let _ = volume_mgr.close_dir(mp3_dir);
                             _sd_ok = true;
                         } else {
                             // Try lowercase
                             if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "mp3") {
                                 println!("[SD] Found /mp3/ folder");
+                                let mut file_count = 0u16;
                                 let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
                                     if !entry.attributes.is_directory() {
                                         let name = core::str::from_utf8(&entry.name.base_name())
                                             .unwrap_or("?");
                                         let ext = core::str::from_utf8(&entry.name.extension())
                                             .unwrap_or("");
-                                        let full = alloc::format!("{}.{}", name.trim(), ext.trim());
-                                        println!("[SD]   {}", full);
-                                        mp3_files.push(full);
+                                        println!("[SD]   {}.{}", name.trim(), ext.trim());
+                                        file_count = file_count.saturating_add(1);
                                     }
                                 });
-                                println!("[SD] {} files found", mp3_files.len());
+                                println!("[SD] {} files found", file_count);
                                 let _ = volume_mgr.close_dir(mp3_dir);
                                 _sd_ok = true;
                             } else {
@@ -553,21 +560,26 @@ async fn main(_spawner: Spawner) {
     let i2s_periph = I2s::new(peripherals.I2S0, peripherals.DMA_CH1, i2s_config)
         .expect("I2S failed")
         .with_mclk(peripherals.GPIO16);
-    static mut I2S_TX_DESC: [DmaDescriptor; 8] = [DmaDescriptor::EMPTY; 8];
+    // StaticCell gives the DMA driver unique, `'static` ownership without
+    // manufacturing references to `static mut` storage.
+    static I2S_TX_DESC: StaticCell<[DmaDescriptor; 8]> = StaticCell::new();
+    let i2s_tx_desc = I2S_TX_DESC.init([DmaDescriptor::EMPTY; 8]);
     let mut i2s_tx = i2s_periph
         .i2s_tx
         .with_bclk(peripherals.GPIO41)
         .with_ws(peripherals.GPIO45)
         .with_dout(peripherals.GPIO40)
-        .build(unsafe { &mut I2S_TX_DESC });
+        .build(i2s_tx_desc);
 
     // Pre-generate beep sound (800Hz, 50ms, stereo 16-bit @ 16kHz = 3200 bytes)
-    static mut BEEP_BUF: [u8; 4000] = [0u8; 4000];
-    let beep_len = fill_beep_buffer(unsafe { &mut BEEP_BUF }, 800, 16000, 50);
+    static BEEP_BUF: StaticCell<[u8; 4000]> = StaticCell::new();
+    let beep_buf = BEEP_BUF.init([0u8; 4000]);
+    let beep_len = fill_beep_buffer(beep_buf, 800, 16000, 50);
     println!("[AUDIO] I2S OK ({} bytes beep)", beep_len);
 
-    static mut CHIME_BUF: [u8; 4000] = [0u8; 4000];
-    let chime_len = fill_chime_buffer(unsafe { &mut CHIME_BUF }, 16000);
+    static CHIME_BUF: StaticCell<[u8; 4000]> = StaticCell::new();
+    let chime_buf = CHIME_BUF.init([0u8; 4000]);
+    let chime_len = fill_chime_buffer(chime_buf, 16000);
     println!("[AUDIO] Chime OK ({} bytes chime)", chime_len);
 
     // === WiFi init (esp-radio) — RADIO STAYS OFF AT BOOT ===
@@ -623,6 +635,7 @@ async fn main(_spawner: Spawner) {
     // Load persistent watch settings (hourly rate, display prefs, feature flags).
     // Falls back to defaults if flash is blank or CRC fails (first boot).
     let mut watch_settings = load_settings();
+    let mut settings_dirty_since: Option<Instant> = None;
     println!(
         "[SETTINGS] rate={}c/h timeout={}s ble={} wifi={}",
         watch_settings.hourly_rate_cents,
@@ -787,6 +800,7 @@ async fn main(_spawner: Spawner) {
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::with_rate(watch_settings.hourly_rate_cents);
     let mut active_session_persisted = false;
+    let mut active_session_id: Option<u64> = None;
     let mut authenticator_app = AuthenticatorApp::new();
     log_memory("before-analyzer");
     println!(
@@ -838,6 +852,15 @@ async fn main(_spawner: Spawner) {
     let pixel_count = board::LCD_WIDTH as usize * board::LCD_HEIGHT as usize;
     let mut snap_current: Vec<u16> = vec![0u16; pixel_count];
     let mut snap_target: Vec<u16> = vec![0u16; pixel_count];
+    println!(
+        "[MEM:UI] framebuffer={}B snapshots={}B qspi_scratch={}B ble_analyzer={}B notif_history_cap={} auth_accounts_cap={}",
+        fb.allocated_bytes(),
+        (snap_current.capacity() + snap_target.capacity()) * core::mem::size_of::<u16>(),
+        display.bus_mut().scratch_capacity_bytes(),
+        core::mem::size_of_val(&*ble_analyzer_app),
+        notification_mgr.history_capacity(),
+        authenticator_app.account_capacity(),
+    );
 
     // Initial render
     if let Ok(bat) = power.read_battery() {
@@ -868,21 +891,25 @@ async fn main(_spawner: Spawner) {
                 let _ = clear_active_session();
                 println!("[WORK] reconciled completed session after interrupted stop");
             } else {
-                let now_unix = calendar_to_unix(
+                if let Some(now_unix) = calendar_to_unix(
                     (2000 + dt.year as u16, dt.month, dt.day),
                     (dt.hours, dt.minutes, dt.seconds),
-                );
-                let elapsed_secs = now_unix.saturating_sub(active.start_unix).max(0) as u32;
-                work_tracker.restore_active_session(
-                    crate::apps::work_tracker::WorkSession::new(
-                        active.start_date_ymd,
-                        active.start_time_hms,
-                        active.hourly_rate_cents,
-                    ),
-                    elapsed_secs,
-                );
-                active_session_persisted = true;
-                println!("[WORK] restored active session ({} seconds)", elapsed_secs);
+                ) {
+                    let elapsed_secs = now_unix.saturating_sub(active.start_unix).max(0) as u32;
+                    work_tracker.restore_active_session(
+                        crate::apps::work_tracker::WorkSession::new(
+                            active.start_date_ymd,
+                            active.start_time_hms,
+                            active.hourly_rate_cents,
+                        ),
+                        elapsed_secs,
+                    );
+                    active_session_persisted = true;
+                    active_session_id = Some(active.session_id);
+                    println!("[WORK] restored active session ({} seconds)", elapsed_secs);
+                } else {
+                    println!("[WORK] invalid RTC date; active session retained for recovery");
+                }
             }
         }
     }
@@ -1419,7 +1446,7 @@ async fn main(_spawner: Spawner) {
             let _ = audio_codec.unmute();
             delay.delay_millis(2);
             pa_en.set_high();
-            if let Ok(transfer) = i2s_tx.write_dma(unsafe { &CHIME_BUF }) {
+            if let Ok(transfer) = i2s_tx.write_dma(&*chime_buf) {
                 let _ = transfer.wait();
             }
             pa_en.set_low();
@@ -1874,7 +1901,7 @@ async fn main(_spawner: Spawner) {
                                 let _ = audio_codec.unmute();
                                 delay.delay_millis(2); // let codec stabilize before enabling amp
                                 pa_en.set_high();
-                                if let Ok(transfer) = i2s_tx.write_dma(unsafe { &BEEP_BUF }) {
+                                if let Ok(transfer) = i2s_tx.write_dma(&*beep_buf) {
                                     let _ = transfer.wait();
                                 }
                                 // Lower amp FIRST, then mute codec to avoid pop
@@ -2213,36 +2240,51 @@ async fn main(_spawner: Spawner) {
                 }
                 let res = work_tracker.update(&input);
 
-                // Persist a changed default rate immediately. The active
-                // session retains the rate it started with, so this is safe
-                // to do while work is in progress.
+                // Coalesce rate edits: each settings commit writes two flash
+                // sectors, while the active session keeps its original rate.
                 if watch_settings.hourly_rate_cents != work_tracker.hourly_rate_cents {
                     watch_settings.hourly_rate_cents = work_tracker.hourly_rate_cents;
-                    if save_settings(watch_settings).is_err() {
-                        println!("[SETTINGS] failed to save hourly rate");
-                    }
+                    settings_dirty_since = Some(now);
                 }
 
                 // A clock-in is only recoverable after this CRC-protected
                 // record verifies. Keep retrying on transient flash failure.
                 if !active_session_persisted {
                     if let Some(session) = work_tracker.active_session {
+                        let Some(start_unix) =
+                            calendar_to_unix(session.start_date_ymd, session.start_time_hms)
+                        else {
+                            println!("[WORK] invalid session date; refusing active-session write");
+                            continue;
+                        };
+                        let session_id = match active_session_id {
+                            Some(id) => id,
+                            None => match next_session_id() {
+                                Ok(id) => {
+                                    active_session_id = Some(id);
+                                    id
+                                }
+                                Err(error) => {
+                                    println!(
+                                        "[WORK] cannot allocate session sequence: {:?}",
+                                        error
+                                    );
+                                    continue;
+                                }
+                            },
+                        };
                         let active = ActiveWorkSession {
-                            start_unix: calendar_to_unix(
-                                session.start_date_ymd,
-                                session.start_time_hms,
-                            ),
-                            session_id: session_id(
-                                calendar_to_unix(session.start_date_ymd, session.start_time_hms),
-                                session.hourly_rate_cents,
-                            ),
+                            start_unix,
+                            session_id,
                             start_date_ymd: session.start_date_ymd,
                             start_time_hms: session.start_time_hms,
                             hourly_rate_cents: session.hourly_rate_cents,
                         };
                         match save_active_session(active) {
                             Ok(()) => active_session_persisted = true,
-                            Err(()) => println!("[WORK] failed to persist active session"),
+                            Err(error) => {
+                                println!("[WORK] failed to persist active session: {:?}", error)
+                            }
                         }
                     }
                 }
@@ -2254,11 +2296,18 @@ async fn main(_spawner: Spawner) {
                 if let Some(session) = work_tracker.pending_completed_session() {
                     let (year, month, day) = session.start_date_ymd;
                     let (hour, minute, second) = session.start_time_hms;
+                    let Some(_start_unix) =
+                        calendar_to_unix(session.start_date_ymd, session.start_time_hms)
+                    else {
+                        println!("[WORK] invalid session date; completed session retained in RAM");
+                        continue;
+                    };
+                    let Some(session_id) = active_session_id else {
+                        println!("[WORK] completed session has no durable sequence; retaining it");
+                        continue;
+                    };
                     let record = SessionRecord {
-                        session_id: session_id(
-                            calendar_to_unix(session.start_date_ymd, session.start_time_hms),
-                            session.hourly_rate_cents,
-                        ),
+                        session_id,
                         year,
                         month,
                         day,
@@ -2279,6 +2328,7 @@ async fn main(_spawner: Spawner) {
                                 println!("[WORK] saved session but could not clear recovery state");
                             }
                             active_session_persisted = false;
+                            active_session_id = None;
                             work_tracker.confirm_completed_session_saved();
                             let body = alloc::format!(
                                 "{}h {:02}m — ${}.{:02}",
@@ -2296,8 +2346,8 @@ async fn main(_spawner: Spawner) {
                                 Urgency::Normal,
                             ));
                         }
-                        Err(()) => {
-                            println!("[WORK] failed to persist completed session");
+                        Err(error) => {
+                            println!("[WORK] failed to persist completed session: {:?}", error);
                             notification_mgr.push(Notification::new(
                                 now.as_millis() as u32,
                                 "Work Tracker",
@@ -2309,13 +2359,15 @@ async fn main(_spawner: Spawner) {
                         }
                     }
                 }
-                work_tracker.render(&mut fb);
-                if notification_mgr.is_visible() {
-                    notification_mgr.render(&mut fb);
-                }
-                if now >= next_watchface_flush {
+                let work_dirty =
+                    tap_event || swipe_event.is_some() || notification_mgr.is_visible();
+                if work_dirty || now >= next_watchface_flush {
+                    work_tracker.render(&mut fb);
+                    if notification_mgr.is_visible() {
+                        notification_mgr.render(&mut fb);
+                    }
                     fb.flush_vsync(&mut display, &te_pin);
-                    next_watchface_flush = now + Duration::from_millis(100);
+                    next_watchface_flush = now + Duration::from_secs(1);
                 }
                 if let AppResult::Exit = res {
                     app_state = AppState::Launcher;
@@ -2343,13 +2395,15 @@ async fn main(_spawner: Spawner) {
                     dt_ms: dt_ms.max(1),
                 };
                 let res = authenticator_app.update(&input);
-                authenticator_app.render(&mut fb);
-                if notification_mgr.is_visible() {
-                    notification_mgr.render(&mut fb);
-                }
-                if now >= next_watchface_flush {
+                let authenticator_dirty =
+                    tap_event || swipe_event.is_some() || notification_mgr.is_visible();
+                if authenticator_dirty || now >= next_watchface_flush {
+                    authenticator_app.render(&mut fb);
+                    if notification_mgr.is_visible() {
+                        notification_mgr.render(&mut fb);
+                    }
                     fb.flush_vsync(&mut display, &te_pin);
-                    next_watchface_flush = now + Duration::from_millis(100);
+                    next_watchface_flush = now + Duration::from_secs(1);
                 }
                 if let AppResult::Exit = res {
                     app_state = AppState::Launcher;
@@ -2390,9 +2444,18 @@ async fn main(_spawner: Spawner) {
                     Timer::after(Duration::from_millis(200)).await;
                 }
             }
+        }
 
-            _ => {
-                app_state = AppState::Watchface;
+        // Save after one quiet second. On failure the dual-slot staging copy
+        // remains recoverable and this state stays dirty for a later retry.
+        if let Some(changed_at) = settings_dirty_since {
+            if (now - changed_at).as_millis() >= 1_000 {
+                match save_settings(watch_settings) {
+                    Ok(()) => settings_dirty_since = None,
+                    Err(error) => {
+                        println!("[SETTINGS] deferred save failed ({:?}); will retry", error)
+                    }
+                }
             }
         }
     }

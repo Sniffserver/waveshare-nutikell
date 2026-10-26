@@ -1,7 +1,80 @@
 // Comprehensive host-side test suite for sbie-watch 5-layer architecture.
 // Uses embedded-hal-mock to test real I2C driver logic on host x86_64 without hardware.
 
+extern crate alloc;
+
 use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
+
+// Reuse the production flash contract on the host. This deliberately has no
+// ESP HAL dependency, so layout regressions are caught before flashing.
+#[path = "../../../src/peripherals/flash_layout.rs"]
+mod flash_layout;
+
+mod peripherals {
+    pub mod flash_layout {
+        pub use crate::flash_layout::*;
+    }
+}
+#[path = "../../../src/peripherals/active_work.rs"]
+mod active_work;
+#[path = "../../../src/peripherals/session_log.rs"]
+mod session_log;
+
+#[derive(Clone)]
+struct RecoveryFakeFlash {
+    bytes: Vec<u8>,
+    fail_at: Option<usize>,
+    operations: usize,
+}
+
+impl RecoveryFakeFlash {
+    fn new() -> Self {
+        Self {
+            bytes: vec![0xFF; 0x20_000],
+            fail_at: None,
+            operations: 0,
+        }
+    }
+    fn maybe_fail(&mut self) -> Result<(), ()> {
+        self.operations += 1;
+        if self.fail_at == Some(self.operations) {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl active_work::ActiveWorkFlash for RecoveryFakeFlash {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()> {
+        self.maybe_fail()?;
+        let start = offset as usize;
+        bytes.copy_from_slice(&self.bytes[start..start + bytes.len()]);
+        Ok(())
+    }
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
+        self.maybe_fail()?;
+        let start = offset as usize;
+        for (index, value) in bytes.iter().enumerate() {
+            self.bytes[start + index] &= *value;
+        }
+        Ok(())
+    }
+    fn erase(&mut self, from: u32, to: u32) -> Result<(), ()> {
+        self.maybe_fail()?;
+        self.bytes[from as usize..to as usize].fill(0xFF);
+        Ok(())
+    }
+}
+
+impl session_log::SessionLogFlash for RecoveryFakeFlash {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()> {
+        active_work::ActiveWorkFlash::read(self, offset, bytes)
+    }
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
+        active_work::ActiveWorkFlash::write(self, offset, bytes)
+    }
+}
 
 // ── 1. QMI8658 Driver & Logic ──────────────────────────────────────────────
 
@@ -33,13 +106,15 @@ impl<I: embedded_hal::i2c::I2c> Qmi8658Imu<I> {
 
     pub fn read_chip_id(&mut self) -> Result<u8, I::Error> {
         let mut buf = [0u8; 1];
-        self.i2c.write_read(QMI8658_ADDR, &[REG_WHO_AM_I], &mut buf)?;
+        self.i2c
+            .write_read(QMI8658_ADDR, &[REG_WHO_AM_I], &mut buf)?;
         Ok(buf[0])
     }
 
     pub fn init_accel_only(&mut self) -> Result<bool, I::Error> {
         let mut buf = [0u8; 1];
-        self.i2c.write_read(QMI8658_ADDR, &[REG_WHO_AM_I], &mut buf)?;
+        self.i2c
+            .write_read(QMI8658_ADDR, &[REG_WHO_AM_I], &mut buf)?;
         if buf[0] != 0x05 {
             return Ok(false);
         }
@@ -96,28 +171,33 @@ impl<I: embedded_hal::i2c::I2c> Axp2101Power<I> {
     pub fn get_battery_voltage(&mut self) -> Result<u16, I::Error> {
         let mut h = [0u8; 1];
         let mut l = [0u8; 1];
-        self.i2c.write_read(AXP2101_ADDR, &[REG_AXP_VBAT_H], &mut h)?;
-        self.i2c.write_read(AXP2101_ADDR, &[REG_AXP_VBAT_L], &mut l)?;
+        self.i2c
+            .write_read(AXP2101_ADDR, &[REG_AXP_VBAT_H], &mut h)?;
+        self.i2c
+            .write_read(AXP2101_ADDR, &[REG_AXP_VBAT_L], &mut l)?;
         let raw = ((h[0] as u16) << 8) | (l[0] as u16);
         Ok(raw & 0x3FFF)
     }
 
     pub fn get_battery_percent(&mut self) -> Result<u8, I::Error> {
         let mut p = [0u8; 1];
-        self.i2c.write_read(AXP2101_ADDR, &[REG_AXP_BAT_PERCENT], &mut p)?;
+        self.i2c
+            .write_read(AXP2101_ADDR, &[REG_AXP_BAT_PERCENT], &mut p)?;
         Ok(p[0])
     }
 
     pub fn is_charging(&mut self) -> Result<bool, I::Error> {
         let mut st = [0u8; 1];
-        self.i2c.write_read(AXP2101_ADDR, &[REG_AXP_CHG_STATUS], &mut st)?;
+        self.i2c
+            .write_read(AXP2101_ADDR, &[REG_AXP_CHG_STATUS], &mut st)?;
         let chg = (st[0] >> 5) & 0x07;
         Ok(chg >= 1 && chg <= 3)
     }
 
     pub fn is_vbus_in(&mut self) -> Result<bool, I::Error> {
         let mut st = [0u8; 1];
-        self.i2c.write_read(AXP2101_ADDR, &[REG_AXP_STATUS1], &mut st)?;
+        self.i2c
+            .write_read(AXP2101_ADDR, &[REG_AXP_STATUS1], &mut st)?;
         Ok((st[0] & 0x20) != 0)
     }
 
@@ -216,11 +296,7 @@ impl PowerPolicy {
     }
 }
 
-pub fn can_enter_light_sleep(
-    mode: PowerMode,
-    screen_is_dimmed: bool,
-    ble_connected: bool,
-) -> bool {
+pub fn can_enter_light_sleep(mode: PowerMode, screen_is_dimmed: bool, ble_connected: bool) -> bool {
     matches!(mode, PowerMode::Idle | PowerMode::Paused) && screen_is_dimmed && !ble_connected
 }
 
@@ -347,15 +423,26 @@ impl SimpleAppState {
     }
 }
 
-
 // ── 6. Step Detector Logic ────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MotionState { Still, Walking, Active }
-impl Default for MotionState { fn default() -> Self { MotionState::Still } }
+pub enum MotionState {
+    Still,
+    Walking,
+    Active,
+}
+impl Default for MotionState {
+    fn default() -> Self {
+        MotionState::Still
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PeakState { Waiting, Rising, AboveThreshold }
+enum PeakState {
+    Waiting,
+    Rising,
+    AboveThreshold,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct StepConfig {
@@ -367,36 +454,71 @@ pub struct StepConfig {
 }
 impl Default for StepConfig {
     fn default() -> Self {
-        Self { threshold_low: 0.07, threshold_high: 0.14, min_step_interval_ms: 280, gravity_alpha: 0.04, signal_alpha: 0.20 }
+        Self {
+            threshold_low: 0.07,
+            threshold_high: 0.14,
+            min_step_interval_ms: 280,
+            gravity_alpha: 0.04,
+            signal_alpha: 0.20,
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AccelSample { pub x_g: f32, pub y_g: f32, pub z_g: f32 }
+pub struct AccelSample {
+    pub x_g: f32,
+    pub y_g: f32,
+    pub z_g: f32,
+}
 impl AccelSample {
     pub fn magnitude(self) -> f32 {
-        libm::sqrtf(self.x_g*self.x_g + self.y_g*self.y_g + self.z_g*self.z_g)
+        libm::sqrtf(self.x_g * self.x_g + self.y_g * self.y_g + self.z_g * self.z_g)
     }
 }
 
 pub struct StepDetector {
-    steps: u32, gravity: f32, dynamic: f32, previous_dynamic: f32,
-    state: PeakState, last_step_ms: u64, config: StepConfig,
+    steps: u32,
+    gravity: f32,
+    dynamic: f32,
+    previous_dynamic: f32,
+    state: PeakState,
+    last_step_ms: u64,
+    config: StepConfig,
 }
 impl StepDetector {
     pub fn new(config: StepConfig) -> Self {
-        Self { steps: 0, gravity: 1.0, dynamic: 0.0, previous_dynamic: 0.0, state: PeakState::Waiting, last_step_ms: 0, config }
+        Self {
+            steps: 0,
+            gravity: 1.0,
+            dynamic: 0.0,
+            previous_dynamic: 0.0,
+            state: PeakState::Waiting,
+            last_step_ms: 0,
+            config,
+        }
     }
-    pub fn steps(&self) -> u32 { self.steps }
-    pub fn dynamic_signal(&self) -> f32 { self.dynamic }
+    pub fn steps(&self) -> u32 {
+        self.steps
+    }
+    pub fn dynamic_signal(&self) -> f32 {
+        self.dynamic
+    }
     pub fn motion_state(&self) -> MotionState {
-        if self.dynamic < self.config.threshold_low { MotionState::Still }
-        else if self.dynamic < 0.35 { MotionState::Walking }
-        else { MotionState::Active }
+        if self.dynamic < self.config.threshold_low {
+            MotionState::Still
+        } else if self.dynamic < 0.35 {
+            MotionState::Walking
+        } else {
+            MotionState::Active
+        }
     }
     pub fn reset(&mut self) {
-        self.steps = 0; self.gravity = 1.0; self.dynamic = 0.0;
-        self.previous_dynamic = 0.0; self.state = PeakState::Waiting; self.last_step_ms = 0;
+        self.steps = 0;
+        self.gravity = 1.0;
+        self.dynamic = 0.0;
+        self.previous_dynamic = 0.0;
+        self.state = PeakState::Waiting;
+        self.last_step_ms = 0;
     }
     pub fn update(&mut self, s: AccelSample, now_ms: u64) -> bool {
         let mag = s.magnitude();
@@ -405,15 +527,22 @@ impl StepDetector {
         let raw = libm::fabsf(mag - self.gravity);
         let sa = self.config.signal_alpha;
         self.dynamic = self.dynamic * (1.0 - sa) + raw * sa;
-        let rising  = self.dynamic > self.previous_dynamic;
+        let rising = self.dynamic > self.previous_dynamic;
         let falling = self.dynamic < self.previous_dynamic;
-        let enough  = now_ms.saturating_sub(self.last_step_ms) >= self.config.min_step_interval_ms;
+        let enough = now_ms.saturating_sub(self.last_step_ms) >= self.config.min_step_interval_ms;
         let mut det = false;
         match self.state {
-            PeakState::Waiting => { if rising && self.dynamic >= self.config.threshold_low { self.state = PeakState::Rising; } }
-            PeakState::Rising  => {
-                if self.dynamic >= self.config.threshold_high { self.state = PeakState::AboveThreshold; }
-                else if falling { self.state = PeakState::Waiting; }
+            PeakState::Waiting => {
+                if rising && self.dynamic >= self.config.threshold_low {
+                    self.state = PeakState::Rising;
+                }
+            }
+            PeakState::Rising => {
+                if self.dynamic >= self.config.threshold_high {
+                    self.state = PeakState::AboveThreshold;
+                } else if falling {
+                    self.state = PeakState::Waiting;
+                }
             }
             PeakState::AboveThreshold => {
                 if falling && enough {
@@ -428,7 +557,11 @@ impl StepDetector {
         det
     }
 }
-impl Default for StepDetector { fn default() -> Self { Self::new(StepConfig::default()) } }
+impl Default for StepDetector {
+    fn default() -> Self {
+        Self::new(StepConfig::default())
+    }
+}
 
 fn main() {}
 
@@ -438,25 +571,173 @@ fn main() {}
 mod tests {
     use super::*;
 
-    // ── QMI8658 I2C Mock Tests ─────────────────────────────────────────────
+    fn active(sequence: u64) -> active_work::ActiveWorkSession {
+        active_work::ActiveWorkSession {
+            session_id: sequence,
+            start_unix: 1_700_000_000 + sequence as i64,
+            start_date_ymd: (2026, 10, 26),
+            start_time_hms: (9, 0, 0),
+            hourly_rate_cents: 5_000,
+        }
+    }
 
+    fn session(sequence: u64) -> session_log::SessionRecord {
+        session_log::SessionRecord {
+            session_id: sequence,
+            year: 2026,
+            month: 10,
+            day: 26,
+            hour: 9,
+            minute: 0,
+            second: 0,
+            elapsed_secs: 60,
+            break_secs: 0,
+            hourly_rate_cents: 5_000,
+            earned_cents: 83,
+        }
+    }
+
+    #[test]
+    fn work_log_corrupt_header_refuses_append_without_mutation() {
+        let mut flash = RecoveryFakeFlash::new();
+        let offset = flash_layout::WORK_LOG.start as usize;
+        flash.bytes[offset..offset + 12].fill(0xFF);
+        flash.bytes[offset] = b'X';
+        let before = flash.bytes.clone();
+        assert_eq!(
+            session_log::append_session_to(&mut flash, &session(1)),
+            Err(session_log::SessionLogError::CorruptHeader)
+        );
+        assert_eq!(flash.bytes, before);
+    }
+
+    #[test]
+    fn work_log_failure_at_each_append_step_never_reports_success_without_record() {
+        // Empty log: header read, header write/readback, record scan, payload,
+        // commit, and record readback are all independently injectable.
+        for failing_operation in 1..=7 {
+            let mut flash = RecoveryFakeFlash::new();
+            flash.fail_at = Some(failing_operation);
+            let result = session_log::append_session_to(&mut flash, &session(1));
+            if result.is_err() {
+                flash.fail_at = None;
+                // A failed readback can follow a physical commit; all other
+                // failures leave an absent/invalid record. In either case no
+                // failure is reported as success and no earlier data exists.
+                let record_offset = (flash_layout::WORK_LOG.start + 12) as usize;
+                let committed = flash.bytes[record_offset..record_offset + 4]
+                    .iter()
+                    .any(|&byte| byte != 0xFF);
+                assert!(result != Ok(()));
+                if !committed {
+                    assert!(
+                        flash.bytes[record_offset..record_offset + 48]
+                            .iter()
+                            .all(|&byte| byte == 0xFF)
+                            || result.is_err()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_recovery_uses_monotonic_sequence_not_timestamp_or_rate() {
+        let mut flash = RecoveryFakeFlash::new();
+        active_work::save_active_session_to(&mut flash, active(41)).unwrap();
+        active_work::save_active_session_to(&mut flash, active(42)).unwrap();
+        assert_eq!(
+            active_work::load_active_session_from(&mut flash).unwrap(),
+            Some(active(42))
+        );
+    }
+
+    #[test]
+    fn active_write_failures_never_replace_last_known_good_record() {
+        // Initial save takes: two slot reads, payload write, commit write, readback.
+        // Exercise every later write/readback failure while a valid old record exists.
+        for failing_operation in 1..=5 {
+            let mut flash = RecoveryFakeFlash::new();
+            active_work::save_active_session_to(&mut flash, active(1)).unwrap();
+            flash.operations = 0;
+            flash.fail_at = Some(failing_operation);
+            let result = active_work::save_active_session_to(&mut flash, active(2));
+            if result.is_err() {
+                flash.fail_at = None;
+                // A failed final readback may have committed the new record
+                // physically, but it never destroys the prior peer record.
+                // Boot can safely recover either fully CRC-valid record.
+                assert!(
+                    matches!(
+                        active_work::load_active_session_from(&mut flash).unwrap(),
+                        Some(found) if found == active(1) || found == active(2)
+                    ),
+                    "failure at operation {failing_operation}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn active_clear_erase_failure_preserves_record_and_successful_clear_removes_it() {
+        let mut flash = RecoveryFakeFlash::new();
+        active_work::save_active_session_to(&mut flash, active(7)).unwrap();
+        flash.operations = 0;
+        flash.fail_at = Some(1);
+        assert!(active_work::clear_active_session_from(&mut flash).is_err());
+        flash.fail_at = None;
+        assert_eq!(
+            active_work::load_active_session_from(&mut flash).unwrap(),
+            Some(active(7))
+        );
+        active_work::clear_active_session_from(&mut flash).unwrap();
+        assert_eq!(
+            active_work::load_active_session_from(&mut flash).unwrap(),
+            None
+        );
+    }
+    use super::flash_layout::{FlashRegion, ACTIVE_WORK, CREDENTIALS, REGIONS, SECTOR_SIZE};
+
+    // ── QMI8658 I2C Mock Tests ─────────────────────────────────────────────
 
     // ── StepDetector Tests ─────────────────────────────────────────────────
 
-    fn z(m: f32) -> AccelSample { AccelSample { x_g: 0.0, y_g: 0.0, z_g: m } }
+    fn z(m: f32) -> AccelSample {
+        AccelSample {
+            x_g: 0.0,
+            y_g: 0.0,
+            z_g: m,
+        }
+    }
     fn warmup(d: &mut StepDetector, mag: f32, now: &mut u64) {
-        for _ in 0..200 { d.update(z(mag), *now); *now += 32; }
+        for _ in 0..200 {
+            d.update(z(mag), *now);
+            *now += 32;
+        }
     }
     fn inject_peak(d: &mut StepDetector, now: &mut u64) -> bool {
-        let env: &[f32] = &[1.00, 1.02, 1.05, 1.10, 1.18, 1.28, 1.38, 1.38, 1.38, 1.30, 1.20, 1.10, 1.03, 1.00, 1.00];
+        let env: &[f32] = &[
+            1.00, 1.02, 1.05, 1.10, 1.18, 1.28, 1.38, 1.38, 1.38, 1.30, 1.20, 1.10, 1.03, 1.00,
+            1.00,
+        ];
         let mut det = false;
-        for &m in env { if d.update(z(m), *now) { det = true; } *now += 32; }
+        for &m in env {
+            if d.update(z(m), *now) {
+                det = true;
+            }
+            *now += 32;
+        }
         det
     }
     fn inject_fast_peak(d: &mut StepDetector, now: &mut u64) -> bool {
         let env: &[f32] = &[1.00, 1.20, 1.38, 1.38, 1.20, 1.00];
         let mut det = false;
-        for &m in env { if d.update(z(m), *now) { det = true; } *now += 16; }
+        for &m in env {
+            if d.update(z(m), *now) {
+                det = true;
+            }
+            *now += 16;
+        }
         det
     }
 
@@ -479,20 +760,29 @@ mod tests {
 
     #[test]
     fn step_detector_rejects_sub_threshold() {
-        let mut d = StepDetector::new(StepConfig { threshold_low: 0.10, threshold_high: 0.20, min_step_interval_ms: 320, gravity_alpha: 0.04, signal_alpha: 0.20 });
+        let mut d = StepDetector::new(StepConfig {
+            threshold_low: 0.10,
+            threshold_high: 0.20,
+            min_step_interval_ms: 320,
+            gravity_alpha: 0.04,
+            signal_alpha: 0.20,
+        });
         let mut now = 0u64;
         warmup(&mut d, 1.0, &mut now);
         for &m in &[1.00_f32, 1.03, 1.08, 1.12, 1.08, 1.03, 1.00] {
-            d.update(z(m), now); now += 32;
+            d.update(z(m), now);
+            now += 32;
         }
         assert_eq!(d.steps(), 0);
     }
 
     #[test]
     fn qmi_who_am_i_is_valid() {
-        let expectations = [
-            I2cTransaction::write_read(QMI8658_ADDR, vec![REG_WHO_AM_I], vec![0x05]),
-        ];
+        let expectations = [I2cTransaction::write_read(
+            QMI8658_ADDR,
+            vec![REG_WHO_AM_I],
+            vec![0x05],
+        )];
         let i2c = I2cMock::new(&expectations);
         let mut imu = Qmi8658Imu::new(i2c);
         let id = imu.read_chip_id().unwrap();
@@ -504,8 +794,8 @@ mod tests {
     fn qmi_read_accel_reads_six_bytes_and_scales() {
         // In ±8g scale (8/32768 = 1/4096 g/LSB):
         // 0x1000 = 4096 LSB => exactly 1.0 g
-        let raw_x: i16 = 4096;  // 1.0 g
-        let raw_y: i16 = 0;     // 0.0 g
+        let raw_x: i16 = 4096; // 1.0 g
+        let raw_y: i16 = 0; // 0.0 g
         let raw_z: i16 = -4096; // -1.0 g
 
         let mut data = Vec::new();
@@ -513,9 +803,11 @@ mod tests {
         data.extend_from_slice(&raw_y.to_le_bytes());
         data.extend_from_slice(&raw_z.to_le_bytes());
 
-        let expectations = [
-            I2cTransaction::write_read(QMI8658_ADDR, vec![REG_AX_L], data),
-        ];
+        let expectations = [I2cTransaction::write_read(
+            QMI8658_ADDR,
+            vec![REG_AX_L],
+            data,
+        )];
         let i2c = I2cMock::new(&expectations);
         let mut imu = Qmi8658Imu::new(i2c);
         let (x, y, z) = imu.read_accel().unwrap();
@@ -672,5 +964,57 @@ mod tests {
         let all = DirtyRegions::all();
         assert!(all.any());
         assert!(all.status && all.battery && all.controls);
+    }
+
+    struct FakeFlash {
+        bytes: [u8; 0x6000],
+    }
+
+    impl FakeFlash {
+        fn new() -> Self {
+            Self {
+                bytes: [0xff; 0x6000],
+            }
+        }
+
+        fn index(region: FlashRegion) -> core::ops::Range<usize> {
+            let start = (region.start - CREDENTIALS.start) as usize;
+            start..start + region.len as usize
+        }
+
+        fn erase_region(&mut self, region: FlashRegion) -> Result<(), ()> {
+            if !REGIONS.contains(&region) || !region.is_sector_aligned() {
+                return Err(());
+            }
+            self.bytes[Self::index(region)].fill(0xff);
+            Ok(())
+        }
+
+        fn write_region(&mut self, region: FlashRegion, data: &[u8]) -> Result<(), ()> {
+            if !REGIONS.contains(&region) || data.len() > region.len as usize {
+                return Err(());
+            }
+            let range = Self::index(region);
+            self.bytes[range.start..range.start + data.len()].copy_from_slice(data);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn flash_contract_rejects_out_of_region_writes_and_preserves_neighbors() {
+        let mut flash = FakeFlash::new();
+        flash.write_region(CREDENTIALS, b"SBIE").unwrap();
+        flash.erase_region(ACTIVE_WORK).unwrap();
+        assert_eq!(&flash.bytes[..4], b"SBIE");
+        assert!(flash
+            .write_region(
+                FlashRegion {
+                    name: "invalid",
+                    start: 0xf000,
+                    len: SECTOR_SIZE
+                },
+                b"x"
+            )
+            .is_err());
     }
 }

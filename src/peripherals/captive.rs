@@ -148,14 +148,10 @@ pub async fn run_dns_server(stack: Stack<'static>) {
         resp[8..10].copy_from_slice(&[0x00, 0x00]);
         resp[10..12].copy_from_slice(&[0x00, 0x00]);
 
-        // Find query name end
-        let mut q_end = 12;
-        while q_end < n && buf[q_end] != 0 {
-            q_end += 1 + (buf[q_end] as usize);
-        }
-        q_end += 1; // null byte
-        q_end += 4; // QTYPE (2) + QCLASS (2)
-        if q_end > n || q_end + 16 > resp.len() {
+        let Some(q_end) = dns_question_end(&buf[..n]) else {
+            continue;
+        };
+        if q_end + 16 > resp.len() {
             continue;
         }
 
@@ -249,13 +245,20 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
     if req_slice.starts_with(b"POST /save") {
         let body = extract_body(req_slice);
         match parse_form_creds(body) {
-            Some(creds) => {
-                println!("[HTTP] Saving credentials for SSID: {}", creds.ssid_str());
-                send_response(&mut socket, "200 OK", OK_BODY).await;
-                socket.close();
-                let _ = write_credentials(&creds);
-                ServeResult::CredentialsSaved(creds)
-            }
+            Some(creds) => match write_credentials(&creds) {
+                Ok(()) => {
+                    println!("[HTTP] Saving credentials for SSID: {}", creds.ssid_str());
+                    send_response(&mut socket, "200 OK", OK_BODY).await;
+                    socket.close();
+                    ServeResult::CredentialsSaved(creds)
+                }
+                Err(error) => {
+                    println!("[HTTP] Credential flash write failed: {:?}", error);
+                    send_response(&mut socket, "503 Service Unavailable", ERR_BODY).await;
+                    socket.close();
+                    ServeResult::Pending
+                }
+            },
             None => {
                 println!("[HTTP] Error: invalid form data");
                 send_response(&mut socket, "400 Bad Request", ERR_BODY).await;
@@ -285,6 +288,58 @@ pub async fn serve_one(stack: Stack<'static>) -> ServeResult {
         send_redirect(&mut socket).await;
         socket.close();
         ServeResult::Pending
+    }
+}
+
+/// Return the exclusive end of a single uncompressed DNS question.
+///
+/// Captive DNS never needs to follow compression pointers. Rejecting them and
+/// every truncated/oversized label keeps untrusted UDP input from reaching an
+/// indexed slice operation without a prior bound check.
+fn dns_question_end(packet: &[u8]) -> Option<usize> {
+    if packet.len() < 12 {
+        return None;
+    }
+    let mut pos = 12usize;
+    loop {
+        let len = *packet.get(pos)?;
+        if len == 0 {
+            pos = pos.checked_add(1)?;
+            break;
+        }
+        // RFC 1035 labels are at most 63 bytes.  Top bits indicate a pointer
+        // or an unsupported extended label and must not be treated as length.
+        if len > 63 {
+            return None;
+        }
+        pos = pos.checked_add(1)?.checked_add(len as usize)?;
+        if pos > packet.len() {
+            return None;
+        }
+    }
+    pos.checked_add(4).filter(|end| *end <= packet.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dns_question_end;
+
+    #[test]
+    fn dns_question_requires_complete_bounded_labels_and_type() {
+        let mut valid = [0u8; 21];
+        valid[12] = 3;
+        valid[13..16].copy_from_slice(b"www");
+        valid[16] = 0;
+        assert_eq!(dns_question_end(&valid), Some(21));
+        assert_eq!(dns_question_end(&valid[..20]), None);
+
+        let mut truncated = [0u8; 14];
+        truncated[12] = 5;
+        assert_eq!(dns_question_end(&truncated), None);
+
+        let mut pointer = [0u8; 18];
+        pointer[12] = 0xc0;
+        assert_eq!(dns_question_end(&pointer), None);
     }
 }
 

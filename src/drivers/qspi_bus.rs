@@ -25,6 +25,10 @@ impl<'d> QspiBus<'d> {
         }
     }
 
+    pub fn scratch_capacity_bytes(&self) -> usize {
+        self.scratch.capacity()
+    }
+
     fn cs_low(&mut self) {
         self.cs.set_low();
     }

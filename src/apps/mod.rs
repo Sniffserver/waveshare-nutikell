@@ -10,7 +10,6 @@ pub mod flappy;
 pub mod game2048;
 pub mod maze;
 pub mod media_controller;
-pub mod mp3player;
 pub mod outdoor_app;
 pub mod settings;
 pub mod smarthome;
@@ -18,13 +17,6 @@ pub mod snake;
 pub mod tetris;
 pub mod wifi_setup;
 pub mod work_tracker;
-
-pub use authenticator::{AuthenticatorApp, TotpAccount};
-
-pub use media_controller::{
-    MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState,
-};
-pub use work_tracker::{ExportState, TrackerState, WorkSession, WorkTracker};
 
 /// Input state passed to apps each frame
 pub struct AppInput {

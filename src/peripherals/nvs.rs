@@ -18,13 +18,15 @@
 // NOTE: FlashStorage::write() erases + rewrites the entire 4KB sector
 // on each call, so writes are safe but moderately expensive (~10ms).
 
+use crate::peripherals::flash_layout::CREDENTIALS;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
 
 /// Flash sector address for our credential storage.
 /// 0x9000 = default IDF NVS partition start; we use the first sector.
 /// If you have a custom partition table, adjust accordingly.
-const CRED_FLASH_OFFSET: u32 = 0x9000;
+const CRED_FLASH_OFFSET: u32 = CREDENTIALS.start;
+const CRED_SECTOR_SIZE: u32 = CREDENTIALS.len;
 
 const MAGIC: [u8; 4] = *b"SBIE";
 
@@ -35,6 +37,14 @@ pub struct StoredCredentials {
     pub ssid_len: usize,
     pub password: [u8; 64],
     pub pass_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialStorageError {
+    InvalidLength,
+    Erase,
+    Write,
+    VerifyFailed,
 }
 
 impl StoredCredentials {
@@ -95,12 +105,18 @@ pub fn read_credentials() -> Option<StoredCredentials> {
 
 /// Write credentials to flash. Erases the sector and rewrites.
 /// Returns Ok(()) on success.
-pub fn write_credentials(creds: &StoredCredentials) -> Result<(), ()> {
+pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStorageError> {
+    if creds.ssid_len == 0
+        || creds.ssid_len > creds.ssid.len()
+        || creds.pass_len > creds.password.len()
+    {
+        return Err(CredentialStorageError::InvalidLength);
+    }
     let mut storage = FlashStorage::new();
 
     // Build the 4096-byte sector buffer (rest stays 0xFF to preserve flash health)
     // We only need 102 bytes but FlashStorage::write erases the whole sector.
-    let mut sector = alloc::boxed::Box::new([0xFFu8; 4096]);
+    let mut sector = alloc::boxed::Box::new([0xFFu8; CRED_SECTOR_SIZE as usize]);
     sector[0..4].copy_from_slice(&MAGIC);
     sector[4] = creds.ssid_len as u8;
     sector[5..5 + creds.ssid_len].copy_from_slice(&creds.ssid[..creds.ssid_len]);
@@ -109,21 +125,31 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), ()> {
 
     // Erase the sector first
     storage
-        .erase(CRED_FLASH_OFFSET, CRED_FLASH_OFFSET + 4096)
-        .map_err(|_| ())?;
+        .erase(CRED_FLASH_OFFSET, CRED_FLASH_OFFSET + CRED_SECTOR_SIZE)
+        .map_err(|_| CredentialStorageError::Erase)?;
 
     // Write the whole sector back (FlashStorage requires word-aligned writes)
     storage
         .write(CRED_FLASH_OFFSET, sector.as_ref())
-        .map_err(|_| ())?;
+        .map_err(|_| CredentialStorageError::Write)?;
 
-    Ok(())
+    match read_credentials() {
+        Some(saved)
+            if saved.ssid_len == creds.ssid_len
+                && saved.pass_len == creds.pass_len
+                && saved.ssid[..saved.ssid_len] == creds.ssid[..creds.ssid_len]
+                && saved.password[..saved.pass_len] == creds.password[..creds.pass_len] =>
+        {
+            Ok(())
+        }
+        _ => Err(CredentialStorageError::VerifyFailed),
+    }
 }
 
 /// Erase credentials (reset to factory state).
-pub fn erase_credentials() -> Result<(), ()> {
+pub fn erase_credentials() -> Result<(), CredentialStorageError> {
     let mut storage = FlashStorage::new();
     storage
-        .erase(CRED_FLASH_OFFSET, CRED_FLASH_OFFSET + 4096)
-        .map_err(|_| ())
+        .erase(CRED_FLASH_OFFSET, CRED_FLASH_OFFSET + CRED_SECTOR_SIZE)
+        .map_err(|_| CredentialStorageError::Erase)
 }

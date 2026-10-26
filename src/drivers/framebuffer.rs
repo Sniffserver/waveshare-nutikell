@@ -32,6 +32,10 @@ impl Framebuffer {
         Self { buf }
     }
 
+    pub fn allocated_bytes(&self) -> usize {
+        self.buf.capacity() * core::mem::size_of::<u16>()
+    }
+
     /// Clear the entire framebuffer with a color.
     pub fn clear_color(&mut self, color: Rgb565) {
         let raw = RawU16::from(color).into_inner();

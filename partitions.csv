@@ -1,0 +1,7 @@
+# Name,     Type, SubType, Offset,   Size,     Flags
+# Keep all application-owned records in this explicit NVS data partition.
+# The application image starts at 0x10000; do not allocate records outside
+# 0x9000..0xEFFF without changing this file and flash_layout.rs together.
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xF000,   0x1000,
+factory,    app,  factory, 0x10000,  0x1F0000,

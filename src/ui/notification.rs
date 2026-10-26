@@ -95,6 +95,10 @@ impl NotificationManager {
         }
     }
 
+    pub fn history_capacity(&self) -> usize {
+        self.history.capacity()
+    }
+
     /// Pushes a new incoming notification, triggers slide-in and chime
     pub fn push(&mut self, notif: Notification) {
         if notif.urgency != Urgency::Silent {

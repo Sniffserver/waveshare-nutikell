@@ -35,14 +35,46 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 #[cfg(target_arch = "xtensa")]
 use esp_storage::FlashStorage;
 
-const LOG_OFFSET: u32 = 0xD000;
-const SECTOR_SIZE: u32 = 4096;
+use crate::peripherals::flash_layout::WORK_LOG;
+const LOG_OFFSET: u32 = WORK_LOG.start;
+const SECTOR_SIZE: u32 = WORK_LOG.len;
 const HEADER_SIZE: usize = 12;
 const RECORD_SIZE: usize = 48;
 pub const MAX_SESSION_RECORDS: usize = (SECTOR_SIZE as usize - HEADER_SIZE) / RECORD_SIZE; // = 85
 pub const LOG_FORMAT_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"WLOG";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionLogError {
+    Io,
+    CorruptHeader,
+    Full,
+    VerifyFailed,
+}
+
+/// Bounded flash adapter for append and host fault-injection tests.
+pub trait SessionLogFlash {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()>;
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogHeaderState {
+    Empty,
+    Valid,
+    Corrupt,
+}
+
+fn classify_header(header: &[u8; HEADER_SIZE]) -> LogHeaderState {
+    if header.iter().all(|&byte| byte == 0xFF) {
+        LogHeaderState::Empty
+    } else if header[..4] == MAGIC {
+        LogHeaderState::Valid
+    } else {
+        LogHeaderState::Corrupt
+    }
+}
 
 // ── CRC32 (same algorithm as settings.rs, copy-free) ────────────────────────
 
@@ -157,6 +189,7 @@ pub enum LogSeverity {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionLogHealth {
+    pub header_state: LogHeaderState,
     pub valid_records: u16,
     pub corrupt_records: u16,
     pub free_records: u16,
@@ -175,13 +208,22 @@ pub struct SessionLogHealth {
 
 impl SessionLogHealth {
     pub fn severity(&self) -> LogSeverity {
-        if self.corrupt_records > 0 || self.tail_state != TailState::Ok {
+        if self.header_state == LogHeaderState::Corrupt
+            || self.corrupt_records > 0
+            || self.tail_state != TailState::Ok
+        {
             LogSeverity::Error
         } else if self.duplicate_session_ids > 0 {
             LogSeverity::Warning
         } else {
             LogSeverity::Ok
         }
+    }
+}
+
+impl Default for LogHeaderState {
+    fn default() -> Self {
+        Self::Empty
     }
 }
 
@@ -195,14 +237,14 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
     let mut out = alloc::vec::Vec::new();
 
     let mut magic = [0u8; 4];
-    if storage.read(LOG_OFFSET, &mut magic).is_err() || magic != MAGIC {
+    if ReadNorFlash::read(&mut storage, LOG_OFFSET, &mut magic).is_err() || magic != MAGIC {
         return out;
     }
 
     for slot in 0..MAX_SESSION_RECORDS {
         let offset = LOG_OFFSET + SessionRecord::record_offset(slot);
         let mut raw = [0u8; RECORD_SIZE];
-        if storage.read(offset, &mut raw).is_err() {
+        if ReadNorFlash::read(&mut storage, offset, &mut raw).is_err() {
             continue;
         }
         if let Some(rec) = SessionRecord::from_raw(&raw) {
@@ -212,12 +254,42 @@ pub fn read_all_sessions() -> alloc::vec::Vec<SessionRecord> {
     out
 }
 
+/// Checked reader for export/repair tools. Unlike the compatibility helper it
+/// reports a damaged header instead of making a corrupt sector look empty.
+#[cfg(target_arch = "xtensa")]
+pub fn read_all_sessions_checked() -> Result<alloc::vec::Vec<SessionRecord>, SessionLogError> {
+    let mut storage = FlashStorage::new();
+    let mut header = [0u8; HEADER_SIZE];
+    ReadNorFlash::read(&mut storage, LOG_OFFSET, &mut header).map_err(|_| SessionLogError::Io)?;
+    if classify_header(&header) == LogHeaderState::Empty {
+        return Ok(alloc::vec::Vec::new());
+    }
+    if classify_header(&header) == LogHeaderState::Corrupt {
+        return Err(SessionLogError::CorruptHeader);
+    }
+    Ok(read_all_sessions())
+}
+
 /// Returns true when a previously committed session has the supplied ID.
 /// Used at boot to reconcile a power failure between log commit and clearing
 /// the active-session recovery record.
 #[cfg(target_arch = "xtensa")]
 pub fn contains_session_id(session_id: u64) -> bool {
     has_session_id(&read_all_sessions(), session_id)
+}
+
+/// Allocate the next persisted sequence from completed records. This refuses
+/// to proceed if the header is corrupt, preventing accidental ID reuse.
+#[cfg(target_arch = "xtensa")]
+pub fn next_session_id() -> Result<u64, SessionLogError> {
+    let records = read_all_sessions_checked()?;
+    records
+        .iter()
+        .map(|record| record.session_id)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(SessionLogError::Full)
 }
 
 fn has_session_id(records: &[SessionRecord], session_id: u64) -> bool {
@@ -253,15 +325,28 @@ pub fn session_log_health() -> SessionLogHealth {
     let mut seen_len = 0usize;
     let mut last_occupied_valid = None;
     let mut magic = [0u8; 4];
-    if storage.read(LOG_OFFSET, &mut magic).is_err() || magic != MAGIC {
+    if ReadNorFlash::read(&mut storage, LOG_OFFSET, &mut magic).is_err() {
+        health.header_state = LogHeaderState::Corrupt;
+        return health;
+    }
+    if magic.iter().all(|&byte| byte == 0xFF) {
+        health.header_state = LogHeaderState::Empty;
         health.free_records = MAX_SESSION_RECORDS as u16;
         return health;
     }
+    if magic != MAGIC {
+        health.header_state = LogHeaderState::Corrupt;
+        return health;
+    }
+    health.header_state = LogHeaderState::Valid;
     for slot in 0..MAX_SESSION_RECORDS {
         let mut raw = [0u8; RECORD_SIZE];
-        if storage
-            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
-            .is_err()
+        if ReadNorFlash::read(
+            &mut storage,
+            LOG_OFFSET + SessionRecord::record_offset(slot),
+            &mut raw,
+        )
+        .is_err()
         {
             health.corrupt_records = health.corrupt_records.saturating_add(1);
             last_occupied_valid = Some(false);
@@ -310,16 +395,28 @@ pub fn session_log_health() -> SessionLogHealth {
 ///
 /// The normal path writes exactly one 48-byte record. A full log returns an
 /// error rather than silently discarding billing history.
-#[cfg(target_arch = "xtensa")]
-pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
-    let mut storage = FlashStorage::new();
-    let mut magic = [0u8; 4];
-    let initialized = storage.read(LOG_OFFSET, &mut magic).is_ok() && magic == MAGIC;
-    if !initialized {
+pub fn append_session_to<F: SessionLogFlash>(
+    storage: &mut F,
+    rec: &SessionRecord,
+) -> Result<(), SessionLogError> {
+    let mut header = [0u8; HEADER_SIZE];
+    storage
+        .read(LOG_OFFSET, &mut header)
+        .map_err(|_| SessionLogError::Io)?;
+    if classify_header(&header) == LogHeaderState::Empty {
+        // A truly erased sector can be initialized without erasing it again.
         storage
-            .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
-            .map_err(|_| ())?;
-        storage.write(LOG_OFFSET, &MAGIC).map_err(|_| ())?;
+            .write(LOG_OFFSET, &MAGIC)
+            .map_err(|_| SessionLogError::Io)?;
+        let mut verify = [0u8; 4];
+        storage
+            .read(LOG_OFFSET, &mut verify)
+            .map_err(|_| SessionLogError::Io)?;
+        if verify != MAGIC {
+            return Err(SessionLogError::VerifyFailed);
+        }
+    } else if header[..4] != MAGIC {
+        return Err(SessionLogError::CorruptHeader);
     }
 
     let mut free_slot = None;
@@ -327,22 +424,49 @@ pub fn append_session(rec: &SessionRecord) -> Result<(), ()> {
         let mut raw = [0u8; RECORD_SIZE];
         storage
             .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
-            .map_err(|_| ())?;
+            .map_err(|_| SessionLogError::Io)?;
         if raw.iter().all(|&byte| byte == 0xFF) {
             free_slot = Some(slot);
             break;
         }
     }
 
-    let slot = free_slot.ok_or(())?;
+    let slot = free_slot.ok_or(SessionLogError::Full)?;
     let raw = rec.to_raw();
     let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
     // Commit marker (CRC) comes last. An interrupted payload write is
     // ignored by read_all_sessions because it cannot pass the CRC.
-    storage.write(record_off + 4, &raw[4..]).map_err(|_| ())?;
-    storage.write(record_off, &raw[0..4]).map_err(|_| ())?;
+    storage
+        .write(record_off + 4, &raw[4..])
+        .map_err(|_| SessionLogError::Io)?;
+    storage
+        .write(record_off, &raw[0..4])
+        .map_err(|_| SessionLogError::Io)?;
+    let mut verify = [0u8; RECORD_SIZE];
+    storage
+        .read(record_off, &mut verify)
+        .map_err(|_| SessionLogError::Io)?;
+    if SessionRecord::from_raw(&verify) == Some(*rec) {
+        Ok(())
+    } else {
+        Err(SessionLogError::VerifyFailed)
+    }
+}
 
-    Ok(())
+#[cfg(target_arch = "xtensa")]
+impl SessionLogFlash for FlashStorage {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()> {
+        ReadNorFlash::read(self, offset, bytes).map_err(|_| ())
+    }
+
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
+        NorFlash::write(self, offset, bytes).map_err(|_| ())
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn append_session(rec: &SessionRecord) -> Result<(), SessionLogError> {
+    append_session_to(&mut FlashStorage::new(), rec)
 }
 
 /// Format all sessions as a CSV string.
@@ -379,11 +503,18 @@ pub fn sessions_to_csv(sessions: &[SessionRecord]) -> alloc::string::String {
 
 /// Erase the entire session log (factory reset).
 #[cfg(target_arch = "xtensa")]
-pub fn erase_session_log() -> Result<(), ()> {
+pub fn erase_session_log() -> Result<(), SessionLogError> {
     let mut storage = FlashStorage::new();
     storage
         .erase(LOG_OFFSET, LOG_OFFSET + SECTOR_SIZE)
-        .map_err(|_| ())
+        .map_err(|_| SessionLogError::Io)
+}
+
+/// Explicit, destructive repair operation for a sector previously reported as
+/// `CorruptHeader`. It is intentionally never called by append/recovery paths.
+#[cfg(target_arch = "xtensa")]
+pub fn repair_session_log() -> Result<(), SessionLogError> {
+    erase_session_log()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -422,6 +553,14 @@ mod tests {
         let mut raw = s.to_raw();
         raw[12] ^= 0xFF; // corrupt elapsed_secs
         assert!(SessionRecord::from_raw(&raw).is_none());
+    }
+
+    #[test]
+    fn corrupt_header_is_not_empty() {
+        let mut header = [0xFF; HEADER_SIZE];
+        header[0] = b'X';
+        assert_eq!(classify_header(&header), LogHeaderState::Corrupt);
+        assert_eq!(classify_header(&[0xFF; HEADER_SIZE]), LogHeaderState::Empty);
     }
 
     #[test]

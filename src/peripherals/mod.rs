@@ -4,6 +4,7 @@ pub mod ble;
 pub mod captive;
 pub mod companion_sync;
 pub mod cpu_clock;
+pub mod flash_layout;
 pub mod http;
 pub mod imu;
 pub mod nvs;
