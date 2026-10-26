@@ -670,4 +670,132 @@ mod tests {
         };
         assert_eq!(error.severity(), LogSeverity::Error);
     }
+
+    // ── FakeFlash for fault-injection tests ──────────────────────────────────
+
+    struct FakeFlash {
+        data: [u8; 4096],
+        fail_read: bool,
+        fail_write: bool,
+        write_fail_at: Option<usize>,
+        write_call_count: usize,
+    }
+
+    impl FakeFlash {
+        fn new() -> Self {
+            Self {
+                data: [0xFF; 4096],
+                fail_read: false,
+                fail_write: false,
+                write_fail_at: None,
+                write_call_count: 0,
+            }
+        }
+
+        fn with_read_failure(mut self) -> Self {
+            self.fail_read = true;
+            self
+        }
+
+        fn with_write_failure(mut self) -> Self {
+            self.fail_write = true;
+            self
+        }
+
+        fn with_write_fail_at(mut self, n: usize) -> Self {
+            self.write_fail_at = Some(n);
+            self
+        }
+
+        fn snapshot(&self) -> [u8; 4096] {
+            self.data
+        }
+
+        fn assert_unchanged(&self, before: &[u8; 4096]) {
+            assert_eq!(&self.data, before);
+        }
+    }
+
+    impl SessionLogFlash for FakeFlash {
+        fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()> {
+            if self.fail_read {
+                return Err(());
+            }
+            let start = offset as usize;
+            let end = start + bytes.len();
+            bytes.copy_from_slice(&self.data[start..end]);
+            Ok(())
+        }
+
+        fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
+            self.write_call_count += 1;
+            if let Some(fail_at) = self.write_fail_at {
+                if self.write_call_count == fail_at {
+                    return Err(());
+                }
+            }
+            if self.fail_write {
+                return Err(());
+            }
+            let start = offset as usize;
+            let end = start + bytes.len();
+            self.data[start..end].copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    fn test_record(session_id: u64, elapsed_secs: u32, hourly_rate_cents: u32) -> SessionRecord {
+        SessionRecord {
+            session_id,
+            year: 2026,
+            month: 10,
+            day: 24,
+            hour: 9,
+            minute: 0,
+            second: 0,
+            elapsed_secs,
+            break_secs: 0,
+            hourly_rate_cents,
+            earned_cents: ((elapsed_secs as u64 * hourly_rate_cents as u64) / 3600) as u32,
+        }
+    }
+
+    #[test]
+    fn same_id_different_payload_returns_duplicate_mismatch() {
+        let mut flash = FakeFlash::new();
+
+        let original = test_record(0xA1B2C3D4E5F60708, 3_600, 50_000);
+
+        append_session_to(&mut flash, &original)
+            .expect("first append should succeed");
+
+        let mut conflicting = original;
+        conflicting.elapsed_secs = 7_200;
+        conflicting.earned_cents = 100_000;
+
+        let result = append_session_to(&mut flash, &conflicting);
+
+        assert_eq!(
+            result,
+            Err(SessionLogError::DuplicateIdMismatch),
+            "same session_id with different payload must not be appended"
+        );
+
+        let mut valid_count = 0;
+        for slot in 0..MAX_SESSION_RECORDS {
+            let mut raw = [0u8; RECORD_SIZE];
+            flash
+                .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+                .expect("record read should succeed");
+
+            if SessionRecord::from_raw(&raw).is_some() {
+                valid_count += 1;
+            }
+        }
+
+        assert_eq!(
+            valid_count, 1,
+            "conflicting duplicate must not create a second valid record"
+        );
+    }
 }
