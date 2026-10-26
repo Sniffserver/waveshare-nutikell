@@ -214,8 +214,6 @@ pub fn clear_active_session() -> Result<(), ActiveWorkError> {
 // V4 A/B format — new record layout for independent sectors
 // ============================================================================
 
-use crate::peripherals::flash_layout::{ACTIVE_WORK_A, ACTIVE_WORK_B};
-
 /// V4 record length: 64 bytes
 pub const V4_RECORD_LEN: usize = 64;
 
@@ -258,19 +256,44 @@ pub enum V4RecordClass {
     Corrupt,
 }
 
-/// Offset of the slot_state byte in the V4 record
-const V4_STATE_OFFSET: usize = 5;
+const V4_MAGIC_OFFSET: usize = 0;
+const V4_MAGIC_LEN: usize = 4;
+const V4_VERSION_OFFSET: usize = V4_MAGIC_OFFSET + V4_MAGIC_LEN;
+const V4_STATE_OFFSET: usize = V4_VERSION_OFFSET + 1;
+const V4_PREFIX_RESERVED_OFFSET: usize = V4_STATE_OFFSET + 1;
+const V4_PREFIX_RESERVED_LEN: usize = 2;
+const V4_SEQUENCE_OFFSET: usize = V4_PREFIX_RESERVED_OFFSET + V4_PREFIX_RESERVED_LEN;
+const V4_SEQUENCE_LEN: usize = 8;
+const V4_SESSION_ID_OFFSET: usize = V4_SEQUENCE_OFFSET + V4_SEQUENCE_LEN;
+const V4_SESSION_ID_LEN: usize = 8;
+const V4_START_UNIX_OFFSET: usize = V4_SESSION_ID_OFFSET + V4_SESSION_ID_LEN;
+const V4_START_UNIX_LEN: usize = 8;
+const V4_START_DATE_YEAR_OFFSET: usize = V4_START_UNIX_OFFSET + V4_START_UNIX_LEN;
+const V4_START_DATE_YEAR_LEN: usize = 2;
+const V4_START_DATE_MONTH_OFFSET: usize = V4_START_DATE_YEAR_OFFSET + V4_START_DATE_YEAR_LEN;
+const V4_START_DATE_DAY_OFFSET: usize = V4_START_DATE_MONTH_OFFSET + 1;
+const V4_START_TIME_HOUR_OFFSET: usize = V4_START_DATE_DAY_OFFSET + 1;
+const V4_START_TIME_MINUTE_OFFSET: usize = V4_START_TIME_HOUR_OFFSET + 1;
+const V4_START_TIME_SECOND_OFFSET: usize = V4_START_TIME_MINUTE_OFFSET + 1;
+const V4_PAYLOAD_RESERVED_OFFSET: usize = V4_START_TIME_SECOND_OFFSET + 1;
+const V4_HOURLY_RATE_OFFSET: usize = V4_PAYLOAD_RESERVED_OFFSET + 1;
+const V4_HOURLY_RATE_LEN: usize = 4;
+const V4_CRC_OFFSET: usize = V4_HOURLY_RATE_OFFSET + V4_HOURLY_RATE_LEN;
+const V4_CRC_LEN: usize = 4;
+const V4_COMMIT_MARKER_OFFSET: usize = V4_CRC_OFFSET + V4_CRC_LEN;
+const V4_COMMIT_MARKER_LEN: usize = 4;
+const V4_TRAILING_RESERVED_OFFSET: usize = V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN;
+const V4_TRAILING_RESERVED_LEN: usize = V4_RECORD_LEN - V4_TRAILING_RESERVED_OFFSET;
+const V4_IMMUTABLE_PAYLOAD_LEN: usize =
+    V4_VERSION_OFFSET + 1 + V4_CRC_OFFSET - V4_PREFIX_RESERVED_OFFSET;
 
-/// Offset of the payload CRC in the V4 record
-const V4_CRC_OFFSET: usize = 44;
-
-/// Offset of the commit marker in the V4 record
-const V4_COMMIT_MARKER_OFFSET: usize = 48;
-
-/// End of the CRC-covered payload (exclusive)
-/// Covers: magic(4) + version(1) + state(1) + reserved(2) + payload(36) = 44 bytes
-/// Excludes: state(1), crc(4), commit_marker(4), trailing_reserved(12)
-const V4_CRC_COVERED_END: usize = 44;
+fn v4_payload_crc(raw: &[u8; V4_RECORD_LEN]) -> u32 {
+    let mut payload = [0u8; V4_IMMUTABLE_PAYLOAD_LEN];
+    let header_len = V4_VERSION_OFFSET + 1;
+    payload[..header_len].copy_from_slice(&raw[V4_MAGIC_OFFSET..header_len]);
+    payload[header_len..].copy_from_slice(&raw[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]);
+    crc32(&payload)
+}
 
 /// Encode a V4 session into a 64-byte record.
 /// All reserved and state bytes are initialized to 0xFF.
@@ -278,45 +301,26 @@ const V4_CRC_COVERED_END: usize = 44;
 pub fn v4_encode(session: V4ActiveWorkSession) -> [u8; V4_RECORD_LEN] {
     let mut raw = [0xFF; V4_RECORD_LEN];
 
-    // Magic
-    raw[0..4].copy_from_slice(&V4_MAGIC);
-    // Version
-    raw[4] = V4_VERSION;
-    // State: initialized to Empty (0xFF)
+    raw[V4_MAGIC_OFFSET..V4_MAGIC_OFFSET + V4_MAGIC_LEN].copy_from_slice(&V4_MAGIC);
+    raw[V4_VERSION_OFFSET] = V4_VERSION;
     raw[V4_STATE_OFFSET] = STATE_EMPTY;
-    // Reserved (2 bytes at offset 6-7): already 0xFF
-
-    // Payload fields
-    raw[8..16].copy_from_slice(&session.sequence.to_le_bytes());
-    raw[16..24].copy_from_slice(&session.session_id.to_le_bytes());
-    raw[24..32].copy_from_slice(&session.start_unix.to_le_bytes());
-    raw[32..34].copy_from_slice(&session.start_date_ymd.0.to_le_bytes());
-    raw[34] = session.start_date_ymd.1;
-    raw[35] = session.start_date_ymd.2;
-    raw[36] = session.start_time_hms.0;
-    raw[37] = session.start_time_hms.1;
-    raw[38] = session.start_time_hms.2;
-    raw[39] = 0xFF; // reserved
-    raw[40..44].copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
-
-    // CRC: computed over immutable payload (bytes 0..44, EXCLUDING state byte at offset 5)
-    // CRC covers: magic(4) + version(1) + reserved(1 at 5) + reserved(2 at 6-7) + payload(36) = 44 bytes
-    // We need to compute CRC with state byte set to a fixed value (0xFF) so that
-    // changing state later doesn't change the CRC.
-    let mut crc_data = [0u8; V4_CRC_COVERED_END];
-    crc_data[0..4].copy_from_slice(&V4_MAGIC);
-    crc_data[4] = V4_VERSION;
-    crc_data[5] = 0xFF; // state is always 0xFF for CRC computation
-    crc_data[6..8].copy_from_slice(&[0xFF, 0xFF]); // reserved
-    crc_data[8..44].copy_from_slice(&raw[8..44]); // payload
-
-    let checksum = crc32(&crc_data);
-    raw[V4_CRC_OFFSET..V4_CRC_OFFSET + 4].copy_from_slice(&checksum.to_le_bytes());
-
-    // Commit marker: initialized to all 0xFF (not yet committed)
-    raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + 4].copy_from_slice(&[0xFF; 4]);
-
-    // Trailing reserved (12 bytes at offset 52-63): already 0xFF
+    raw[V4_SEQUENCE_OFFSET..V4_SEQUENCE_OFFSET + V4_SEQUENCE_LEN]
+        .copy_from_slice(&session.sequence.to_le_bytes());
+    raw[V4_SESSION_ID_OFFSET..V4_SESSION_ID_OFFSET + V4_SESSION_ID_LEN]
+        .copy_from_slice(&session.session_id.to_le_bytes());
+    raw[V4_START_UNIX_OFFSET..V4_START_UNIX_OFFSET + V4_START_UNIX_LEN]
+        .copy_from_slice(&session.start_unix.to_le_bytes());
+    raw[V4_START_DATE_YEAR_OFFSET..V4_START_DATE_YEAR_OFFSET + V4_START_DATE_YEAR_LEN]
+        .copy_from_slice(&session.start_date_ymd.0.to_le_bytes());
+    raw[V4_START_DATE_MONTH_OFFSET] = session.start_date_ymd.1;
+    raw[V4_START_DATE_DAY_OFFSET] = session.start_date_ymd.2;
+    raw[V4_START_TIME_HOUR_OFFSET] = session.start_time_hms.0;
+    raw[V4_START_TIME_MINUTE_OFFSET] = session.start_time_hms.1;
+    raw[V4_START_TIME_SECOND_OFFSET] = session.start_time_hms.2;
+    raw[V4_HOURLY_RATE_OFFSET..V4_HOURLY_RATE_OFFSET + V4_HOURLY_RATE_LEN]
+        .copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
+    let checksum = v4_payload_crc(&raw).to_le_bytes();
+    raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].copy_from_slice(&checksum);
 
     raw
 }
@@ -324,41 +328,63 @@ pub fn v4_encode(session: V4ActiveWorkSession) -> [u8; V4_RECORD_LEN] {
 /// Decode a V4 session from a 64-byte record.
 /// Returns None if the record is not a valid committed V4 record.
 pub fn v4_decode(raw: &[u8; V4_RECORD_LEN]) -> Option<V4ActiveWorkSession> {
-    if raw[..4] != V4_MAGIC || raw[4] != V4_VERSION {
+    if raw[V4_MAGIC_OFFSET..V4_MAGIC_OFFSET + V4_MAGIC_LEN] != V4_MAGIC
+        || raw[V4_VERSION_OFFSET] != V4_VERSION
+    {
         return None;
     }
     if raw[V4_STATE_OFFSET] != STATE_COMMITTED {
         return None;
     }
-    if &raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + 4] != V4_COMMIT_MARKER {
+    if raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN]
+        != V4_COMMIT_MARKER
+    {
         return None;
     }
-
-    // Compute CRC over immutable payload (state = 0xFF for CRC)
-    let mut crc_data = [0u8; V4_CRC_COVERED_END];
-    crc_data[0..4].copy_from_slice(&V4_MAGIC);
-    crc_data[4] = V4_VERSION;
-    crc_data[5] = 0xFF;
-    crc_data[6..8].copy_from_slice(&[0xFF, 0xFF]);
-    crc_data[8..44].copy_from_slice(&raw[8..44]);
-
-    if u32::from_le_bytes(raw[V4_CRC_OFFSET..V4_CRC_OFFSET + 4].try_into().ok()?)
-        != crc32(&crc_data)
+    if u32::from_le_bytes(
+        raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN]
+            .try_into()
+            .ok()?,
+    ) != v4_payload_crc(raw)
     {
         return None;
     }
 
     Some(V4ActiveWorkSession {
-        sequence: u64::from_le_bytes(raw[8..16].try_into().ok()?),
-        session_id: u64::from_le_bytes(raw[16..24].try_into().ok()?),
-        start_unix: i64::from_le_bytes(raw[24..32].try_into().ok()?),
-        start_date_ymd: (
-            u16::from_le_bytes(raw[32..34].try_into().ok()?),
-            raw[34],
-            raw[35],
+        sequence: u64::from_le_bytes(
+            raw[V4_SEQUENCE_OFFSET..V4_SEQUENCE_OFFSET + V4_SEQUENCE_LEN]
+                .try_into()
+                .ok()?,
         ),
-        start_time_hms: (raw[36], raw[37], raw[38]),
-        hourly_rate_cents: u32::from_le_bytes(raw[40..44].try_into().ok()?),
+        session_id: u64::from_le_bytes(
+            raw[V4_SESSION_ID_OFFSET..V4_SESSION_ID_OFFSET + V4_SESSION_ID_LEN]
+                .try_into()
+                .ok()?,
+        ),
+        start_unix: i64::from_le_bytes(
+            raw[V4_START_UNIX_OFFSET..V4_START_UNIX_OFFSET + V4_START_UNIX_LEN]
+                .try_into()
+                .ok()?,
+        ),
+        start_date_ymd: (
+            u16::from_le_bytes(
+                raw[V4_START_DATE_YEAR_OFFSET..V4_START_DATE_YEAR_OFFSET + V4_START_DATE_YEAR_LEN]
+                    .try_into()
+                    .ok()?,
+            ),
+            raw[V4_START_DATE_MONTH_OFFSET],
+            raw[V4_START_DATE_DAY_OFFSET],
+        ),
+        start_time_hms: (
+            raw[V4_START_TIME_HOUR_OFFSET],
+            raw[V4_START_TIME_MINUTE_OFFSET],
+            raw[V4_START_TIME_SECOND_OFFSET],
+        ),
+        hourly_rate_cents: u32::from_le_bytes(
+            raw[V4_HOURLY_RATE_OFFSET..V4_HOURLY_RATE_OFFSET + V4_HOURLY_RATE_LEN]
+                .try_into()
+                .ok()?,
+        ),
     })
 }
 
@@ -370,13 +396,11 @@ pub fn v4_classify(raw: &[u8; V4_RECORD_LEN]) -> V4RecordClass {
         return V4RecordClass::Empty;
     }
 
-    // Magic check
-    if raw[..4] != V4_MAGIC {
+    if raw[V4_MAGIC_OFFSET..V4_MAGIC_OFFSET + V4_MAGIC_LEN] != V4_MAGIC {
         return V4RecordClass::Corrupt;
     }
 
-    // Version check
-    let version = raw[4];
+    let version = raw[V4_VERSION_OFFSET];
     if version != V4_VERSION {
         // Versions 1-3 are legacy
         if version >= 1 && version <= 3 {
@@ -385,69 +409,36 @@ pub fn v4_classify(raw: &[u8; V4_RECORD_LEN]) -> V4RecordClass {
         return V4RecordClass::Corrupt;
     }
 
-    let state = raw[V4_STATE_OFFSET];
-
-    match state {
+    match raw[V4_STATE_OFFSET] {
+        STATE_EMPTY => V4RecordClass::Empty,
         STATE_WRITING => V4RecordClass::Writing,
         STATE_COMMITTED => {
-            // Verify commit marker
-            if &raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + 4] != V4_COMMIT_MARKER {
+            if raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN]
+                != V4_COMMIT_MARKER
+            {
                 return V4RecordClass::Corrupt;
             }
-            // Verify CRC
-            let mut crc_data = [0u8; V4_CRC_COVERED_END];
-            crc_data[0..4].copy_from_slice(&V4_MAGIC);
-            crc_data[4] = V4_VERSION;
-            crc_data[5] = 0xFF;
-            crc_data[6..8].copy_from_slice(&[0xFF, 0xFF]);
-            crc_data[8..44].copy_from_slice(&raw[8..44]);
-
-            if u32::from_le_bytes(
-                raw[V4_CRC_OFFSET..V4_CRC_OFFSET + 4]
-                    .try_into()
-                    .unwrap_or([0; 4]),
-            ) == crc32(&crc_data)
-            {
+            let Ok(stored_crc) = raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].try_into() else {
+                return V4RecordClass::Corrupt;
+            };
+            if u32::from_le_bytes(stored_crc) == v4_payload_crc(raw) {
                 V4RecordClass::Committed
             } else {
                 V4RecordClass::Corrupt
             }
         }
         STATE_RETIRED => {
-            // Verify CRC (commit marker not required for Retired)
-            let mut crc_data = [0u8; V4_CRC_COVERED_END];
-            crc_data[0..4].copy_from_slice(&V4_MAGIC);
-            crc_data[4] = V4_VERSION;
-            crc_data[5] = 0xFF;
-            crc_data[6..8].copy_from_slice(&[0xFF, 0xFF]);
-            crc_data[8..44].copy_from_slice(&raw[8..44]);
-
-            if u32::from_le_bytes(
-                raw[V4_CRC_OFFSET..V4_CRC_OFFSET + 4]
-                    .try_into()
-                    .unwrap_or([0; 4]),
-            ) == crc32(&crc_data)
-            {
+            let Ok(stored_crc) = raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].try_into() else {
+                return V4RecordClass::Corrupt;
+            };
+            if u32::from_le_bytes(stored_crc) == v4_payload_crc(raw) {
                 V4RecordClass::Retired
             } else {
                 V4RecordClass::Corrupt
             }
         }
-        STATE_EMPTY => V4RecordClass::Empty, // Should be caught by all-0xFF check, but handle anyway
         _ => V4RecordClass::Corrupt,
     }
-}
-
-/// Compute the payload CRC for a V4 record (for verification during writes).
-/// Uses the immutable payload bytes with state = 0xFF.
-pub fn v4_compute_payload_crc(raw: &[u8; V4_RECORD_LEN]) -> u32 {
-    let mut crc_data = [0u8; V4_CRC_COVERED_END];
-    crc_data[0..4].copy_from_slice(&V4_MAGIC);
-    crc_data[4] = V4_VERSION;
-    crc_data[5] = 0xFF;
-    crc_data[6..8].copy_from_slice(&[0xFF, 0xFF]);
-    crc_data[8..44].copy_from_slice(&raw[8..44]);
-    crc32(&crc_data)
 }
 
 /// Update the slot_state byte in a V4 record (NOR-safe: only 1->0 transitions).
@@ -461,12 +452,8 @@ pub fn v4_set_state(raw: &mut [u8; V4_RECORD_LEN], state: u8) {
 
 /// Write the commit marker in a V4 record.
 pub fn v4_set_commit_marker(raw: &mut [u8; V4_RECORD_LEN]) {
-    raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + 4].copy_from_slice(&V4_COMMIT_MARKER);
-}
-
-/// Write the payload CRC in a V4 record.
-pub fn v4_set_payload_crc(raw: &mut [u8; V4_RECORD_LEN], crc: u32) {
-    raw[V4_CRC_OFFSET..V4_CRC_OFFSET + 4].copy_from_slice(&crc.to_le_bytes());
+    raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN]
+        .copy_from_slice(&V4_COMMIT_MARKER);
 }
 
 pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
@@ -485,7 +472,7 @@ pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
     }
     let month_days = [
         31,
-        28 + if year % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+        28 + if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
             1
         } else {
             0
@@ -515,218 +502,152 @@ pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn v4_empty_record_classifies_empty() {
-        let raw = [0xFF; V4_RECORD_LEN];
-        assert_eq!(v4_classify(&raw), V4RecordClass::Empty);
-    }
-
-    #[test]
-    fn v4_partial_payload_writing_state_classifies_writing() {
-        let mut raw = [0xFF; V4_RECORD_LEN];
-        raw[0..4].copy_from_slice(&V4_MAGIC);
-        raw[4] = V4_VERSION;
-        raw[V4_STATE_OFFSET] = STATE_WRITING;
-        // Payload can be partial/garbage
-        raw[8] = 0x01;
-        assert_eq!(v4_classify(&raw), V4RecordClass::Writing);
-    }
-
-    #[test]
-    fn v4_valid_committed_record_classifies_committed() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-        let mut raw = v4_encode(session);
-        // Set state to Committed
-        v4_set_state(&mut raw, STATE_COMMITTED);
-        // Set commit marker
-        v4_set_commit_marker(&mut raw);
-        // Set CRC (recompute after state change)
-        let crc = v4_compute_payload_crc(&raw);
-        v4_set_payload_crc(&mut raw, crc);
-
-        assert_eq!(v4_classify(&raw), V4RecordClass::Committed);
-    }
-
-    #[test]
-    fn v4_committed_bad_crc_classifies_corrupt() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-        let mut raw = v4_encode(session);
-        v4_set_state(&mut raw, STATE_COMMITTED);
-        v4_set_commit_marker(&mut raw);
-        let crc = v4_compute_payload_crc(&raw);
-        v4_set_payload_crc(&mut raw, crc);
-
-        // Corrupt the CRC
-        raw[V4_CRC_OFFSET] ^= 0xFF;
-
-        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
-    }
-
-    #[test]
-    fn v4_committed_bad_marker_classifies_corrupt() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-        let mut raw = v4_encode(session);
-        v4_set_state(&mut raw, STATE_COMMITTED);
-        // Leave commit marker as 0xFF (invalid)
-        let crc = v4_compute_payload_crc(&raw);
-        v4_set_payload_crc(&mut raw, crc);
-
-        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
-    }
-
-    #[test]
-    fn v4_retired_valid_crc_classifies_retired() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-        let mut raw = v4_encode(session);
-        v4_set_state(&mut raw, STATE_RETIRED);
-        let crc = v4_compute_payload_crc(&raw);
-        v4_set_payload_crc(&mut raw, crc);
-
-        assert_eq!(v4_classify(&raw), V4RecordClass::Retired);
-    }
-
-    #[test]
-    fn v4_legacy_v3_classifies_legacy() {
-        let mut raw = [0xFF; V4_RECORD_LEN];
-        raw[0..4].copy_from_slice(&V4_MAGIC);
-        raw[4] = 3; // v3 version
-                    // Fill some payload
-        raw[8] = 0x01;
-
-        assert_eq!(v4_classify(&raw), V4RecordClass::Legacy(3));
-    }
-
-    #[test]
-    fn v4_encode_decode_roundtrip_preserves_all_fields() {
-        let original = V4ActiveWorkSession {
+    fn sample_v4_session() -> V4ActiveWorkSession {
+        V4ActiveWorkSession {
             sequence: 42,
             session_id: 100,
             start_unix: 1_700_000_000,
             start_date_ymd: (2024, 6, 15),
             start_time_hms: (14, 30, 45),
             hourly_rate_cents: 3000,
-        };
-
-        let mut raw = v4_encode(original);
-        v4_set_state(&mut raw, STATE_COMMITTED);
-        v4_set_commit_marker(&mut raw);
-        let crc = v4_compute_payload_crc(&raw);
-        v4_set_payload_crc(&mut raw, crc);
-
-        let decoded = v4_decode(&raw).expect("should decode");
-
-        assert_eq!(decoded.sequence, original.sequence);
-        assert_eq!(decoded.session_id, original.session_id);
-        assert_eq!(decoded.start_unix, original.start_unix);
-        assert_eq!(decoded.start_date_ymd, original.start_date_ymd);
-        assert_eq!(decoded.start_time_hms, original.start_time_hms);
-        assert_eq!(decoded.hourly_rate_cents, original.hourly_rate_cents);
-    }
-
-    #[test]
-    fn v4_crc_stable_when_state_changes() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-
-        let mut raw = v4_encode(session);
-        let crc_initial = v4_compute_payload_crc(&raw);
-
-        // Change state to Writing
-        v4_set_state(&mut raw, STATE_WRITING);
-        let crc_writing = v4_compute_payload_crc(&raw);
-
-        // Change state to Committed
-        v4_set_state(&mut raw, STATE_COMMITTED);
-        let crc_committed = v4_compute_payload_crc(&raw);
-
-        // Change state to Retired
-        v4_set_state(&mut raw, STATE_RETIRED);
-        let crc_retired = v4_compute_payload_crc(&raw);
-
-        // All CRC values must be identical
-        assert_eq!(crc_initial, crc_writing);
-        assert_eq!(crc_initial, crc_committed);
-        assert_eq!(crc_initial, crc_retired);
-    }
-
-    #[test]
-    fn v4_crc_stable_when_commit_marker_changes() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-
-        let mut raw = v4_encode(session);
-        let crc_no_marker = v4_compute_payload_crc(&raw);
-
-        // Add commit marker
-        v4_set_commit_marker(&mut raw);
-        let crc_with_marker = v4_compute_payload_crc(&raw);
-
-        // CRC must not change
-        assert_eq!(crc_no_marker, crc_with_marker);
-    }
-
-    #[test]
-    fn v4_reserved_bytes_remain_0xFF_after_encode() {
-        let session = V4ActiveWorkSession {
-            sequence: 1,
-            session_id: 42,
-            start_unix: 1_700_000_000,
-            start_date_ymd: (2024, 1, 15),
-            start_time_hms: (10, 30, 0),
-            hourly_rate_cents: 2500,
-        };
-
-        let raw = v4_encode(session);
-
-        // Reserved at offset 6-7
-        assert_eq!(raw[6], 0xFF);
-        assert_eq!(raw[7], 0xFF);
-        // Reserved at offset 39
-        assert_eq!(raw[39], 0xFF);
-        // Trailing reserved at offset 52-63
-        for i in 52..64 {
-            assert_eq!(raw[i], 0xFF, "trailing reserved[{}] != 0xFF", i);
         }
+    }
+
+    fn valid_v4_record(state: u8) -> [u8; V4_RECORD_LEN] {
+        let mut raw = v4_encode(sample_v4_session());
+        mutate_state(&mut raw, state);
+        v4_set_commit_marker(&mut raw);
+        raw
+    }
+
+    fn mutate_state(raw: &mut [u8; V4_RECORD_LEN], state: u8) {
+        raw[V4_STATE_OFFSET] = state;
+    }
+
+    fn mutate_crc(raw: &mut [u8; V4_RECORD_LEN]) {
+        raw[V4_CRC_OFFSET] ^= 1;
+    }
+
+    fn mutate_magic(raw: &mut [u8; V4_RECORD_LEN]) {
+        raw[V4_MAGIC_OFFSET] ^= 1;
+    }
+
+    fn mutate_version(raw: &mut [u8; V4_RECORD_LEN]) {
+        raw[V4_VERSION_OFFSET] ^= 1;
+    }
+
+    fn mutate_commit_marker(raw: &mut [u8; V4_RECORD_LEN]) {
+        raw[V4_COMMIT_MARKER_OFFSET] ^= 1;
+    }
+
+    #[test]
+    fn v4_record_classes_are_explicit() {
+        assert_eq!(v4_classify(&[0xFF; V4_RECORD_LEN]), V4RecordClass::Empty);
+
+        let mut writing = v4_encode(sample_v4_session());
+        mutate_state(&mut writing, STATE_WRITING);
+        assert_eq!(v4_classify(&writing), V4RecordClass::Writing);
+
+        assert_eq!(
+            v4_classify(&valid_v4_record(STATE_COMMITTED)),
+            V4RecordClass::Committed
+        );
+        assert_eq!(
+            v4_classify(&valid_v4_record(STATE_RETIRED)),
+            V4RecordClass::Retired
+        );
+    }
+
+    #[test]
+    fn v4_invalid_fields_classify_corrupt_and_old_versions_are_legacy() {
+        let mut raw = valid_v4_record(STATE_COMMITTED);
+        mutate_crc(&mut raw);
+        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
+
+        let mut raw = valid_v4_record(STATE_COMMITTED);
+        mutate_magic(&mut raw);
+        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
+
+        let mut raw = valid_v4_record(STATE_COMMITTED);
+        mutate_version(&mut raw);
+        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
+
+        let mut raw = valid_v4_record(STATE_COMMITTED);
+        mutate_commit_marker(&mut raw);
+        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
+
+        let mut legacy = [0xFF; V4_RECORD_LEN];
+        legacy[V4_MAGIC_OFFSET..V4_MAGIC_OFFSET + V4_MAGIC_LEN].copy_from_slice(&V4_MAGIC);
+        legacy[V4_VERSION_OFFSET] = 3;
+        assert_eq!(v4_classify(&legacy), V4RecordClass::Legacy(3));
+    }
+
+    #[test]
+    fn v4_crc_is_unchanged_by_state_or_commit_marker() {
+        let mut raw = v4_encode(sample_v4_session());
+        let encoded_crc = v4_payload_crc(&raw);
+        assert_eq!(
+            encoded_crc,
+            u32::from_le_bytes(
+                raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN]
+                    .try_into()
+                    .unwrap()
+            )
+        );
+
+        mutate_state(&mut raw, STATE_WRITING);
+        assert_eq!(v4_payload_crc(&raw), encoded_crc);
+        mutate_state(&mut raw, STATE_COMMITTED);
+        assert_eq!(v4_payload_crc(&raw), encoded_crc);
+        mutate_state(&mut raw, STATE_RETIRED);
+        assert_eq!(v4_payload_crc(&raw), encoded_crc);
+
+        mutate_commit_marker(&mut raw);
+        assert_eq!(v4_payload_crc(&raw), encoded_crc);
+    }
+
+    #[test]
+    fn v4_corrupting_any_crc_covered_byte_invalidates_record() {
+        for index in V4_MAGIC_OFFSET..V4_STATE_OFFSET {
+            let mut raw = valid_v4_record(STATE_COMMITTED);
+            raw[index] ^= 1;
+            assert_eq!(
+                v4_classify(&raw),
+                V4RecordClass::Corrupt,
+                "payload byte {index}"
+            );
+        }
+        for index in V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET {
+            let mut raw = valid_v4_record(STATE_COMMITTED);
+            raw[index] ^= 1;
+            assert_eq!(
+                v4_classify(&raw),
+                V4RecordClass::Corrupt,
+                "payload byte {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn v4_encode_decode_roundtrip_preserves_all_payload_fields() {
+        let original = sample_v4_session();
+        let decoded = v4_decode(&valid_v4_record(STATE_COMMITTED)).expect("should decode");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn v4_encode_leaves_reserved_bytes_erased() {
+        let raw = v4_encode(sample_v4_session());
+        assert!(
+            raw[V4_PREFIX_RESERVED_OFFSET..V4_PREFIX_RESERVED_OFFSET + V4_PREFIX_RESERVED_LEN]
+                .iter()
+                .all(|&byte| byte == 0xFF)
+        );
+        assert_eq!(raw[V4_PAYLOAD_RESERVED_OFFSET], 0xFF);
+        assert!(raw
+            [V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + V4_TRAILING_RESERVED_LEN]
+            .iter()
+            .all(|&byte| byte == 0xFF));
     }
 
     // Existing V3 tests
