@@ -8,12 +8,12 @@
 //     5      32   SSID bytes
 //    37       1   Password length (0-64)
 //    38      64   Password bytes
-//   102     ...   (future use)
+//  102     ...   (future use)
 //
 // Total: 102 bytes, stored in one flash sector (4096 bytes).
-// The sector address is the last OTA-safe sector in the "nvs" region.
-// On ESP32-S3 with IDF partition table, NVS starts at 0x9000.
-// We use a dedicated offset well inside that region.
+// The sector address is 0x9000, which is the first sector of the application-owned NVS partition.
+// The entire 24 KiB NVS partition (0x9000..0xEFFF) is managed by this firmware.
+// ESP-IDF's own NVS implementation is not used by this application.
 //
 // NOTE: FlashStorage::write() erases + rewrites the entire 4KB sector
 // on each call, so writes are safe but moderately expensive (~10ms).
@@ -23,8 +23,9 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
 
 /// Flash sector address for our credential storage.
-/// 0x9000 = default IDF NVS partition start; we use the first sector.
-/// If you have a custom partition table, adjust accordingly.
+/// 0x9000 = start of application-owned NVS partition (24 KiB total: 0x9000..0xEFFF).
+/// The CREDENTIALS sector occupies the first 4 KiB (0x9000..0xA000).
+/// Adjust offset if using a custom partition table where NVS does not start at 0x9000.
 const CRED_FLASH_OFFSET: u32 = CREDENTIALS.start;
 const CRED_SECTOR_SIZE: u32 = CREDENTIALS.len;
 
