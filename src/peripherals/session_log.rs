@@ -420,18 +420,40 @@ pub fn append_session_to<F: SessionLogFlash>(
     }
 
     let mut free_slot = None;
+
     for slot in 0..MAX_SESSION_RECORDS {
         let mut raw = [0u8; RECORD_SIZE];
         storage
             .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
             .map_err(|_| SessionLogError::Io)?;
+
         if raw.iter().all(|&byte| byte == 0xFF) {
-            free_slot = Some(slot);
-            break;
+            if free_slot.is_none() {
+                free_slot = Some(slot);
+            }
+            continue;
         }
+
+        let Some(existing) = SessionRecord::from_raw(&raw) else {
+            continue;
+        };
+
+        if existing.session_id != rec.session_id {
+            continue;
+        }
+
+        if existing == *rec {
+            // A prior attempt committed this exact record but the caller may
+            // not have received confirmation. Do not append it again.
+            return Ok(());
+        }
+
+        return Err(SessionLogError::DuplicateIdMismatch);
     }
 
-    let slot = free_slot.ok_or(SessionLogError::Full)?;
+    let Some(slot) = free_slot else {
+        return Err(SessionLogError::Full);
+    };
     let raw = rec.to_raw();
     let record_off = LOG_OFFSET + SessionRecord::record_offset(slot);
     // Commit marker (CRC) comes last. An interrupted payload write is
@@ -671,7 +693,7 @@ mod tests {
         assert_eq!(error.severity(), LogSeverity::Error);
     }
 
-    // ── FakeFlash for fault-injection tests ──────────────────────────────────
+    // ── FakeFlash for fault-injection tests ────────────────────────────────
 
     struct FakeFlash {
         data: [u8; 4096],
@@ -721,8 +743,13 @@ mod tests {
             if self.fail_read {
                 return Err(());
             }
-            let start = offset as usize;
+            let start = (offset - LOG_OFFSET) as usize;
             let end = start + bytes.len();
+
+            if offset < LOG_OFFSET || end > self.data.len() {
+                return Err(());
+            }
+
             bytes.copy_from_slice(&self.data[start..end]);
             Ok(())
         }
@@ -737,8 +764,13 @@ mod tests {
             if self.fail_write {
                 return Err(());
             }
-            let start = offset as usize;
+            let start = (offset - LOG_OFFSET) as usize;
             let end = start + bytes.len();
+
+            if offset < LOG_OFFSET || end > self.data.len() {
+                return Err(());
+            }
+
             self.data[start..end].copy_from_slice(bytes);
             Ok(())
         }
@@ -796,5 +828,29 @@ mod tests {
             valid_count, 1,
             "conflicting duplicate must not create a second valid record"
         );
+    }
+
+    #[test]
+    fn same_id_same_payload_is_idempotent() {
+        let mut flash = FakeFlash::new();
+        let record = test_record(0xA1B2C3D4E5F60708, 3_600, 50_000);
+
+        append_session_to(&mut flash, &record).expect("first append should succeed");
+        append_session_to(&mut flash, &record)
+            .expect("identical retry should be idempotent");
+
+        let mut valid_count = 0;
+        for slot in 0..MAX_SESSION_RECORDS {
+            let mut raw = [0u8; RECORD_SIZE];
+            flash
+                .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+                .expect("record read should succeed");
+
+            if SessionRecord::from_raw(&raw).is_some() {
+                valid_count += 1;
+            }
+        }
+
+        assert_eq!(valid_count, 1);
     }
 }

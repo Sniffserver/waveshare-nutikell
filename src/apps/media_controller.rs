@@ -759,8 +759,8 @@ mod tests {
             MediaAction::AddToPlaylist(
                 MediaSource::SoundCloud,
                 FixedString::try_from("Strobe (Club Edit)").unwrap(),
-
-);
+            )
+        );
         assert!(player.active_track().unwrap().in_playlist);
         assert!(player.toast_timer_ms > 0);
     }
