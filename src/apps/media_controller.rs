@@ -756,8 +756,11 @@ mod tests {
         let action = player.handle_touch_point(TouchPoint { x: 200, y: 470 });
         assert_eq!(
             action,
-            MediaAction::AddToPlaylist(MediaSource::SoundCloud, String::from("Strobe (Club Edit)"))
-        );
+            MediaAction::AddToPlaylist(
+                MediaSource::SoundCloud,
+                FixedString::try_from("Strobe (Club Edit)").unwrap(),
+
+);
         assert!(player.active_track().unwrap().in_playlist);
         assert!(player.toast_timer_ms > 0);
     }
