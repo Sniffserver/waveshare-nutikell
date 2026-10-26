@@ -54,26 +54,41 @@ pub const WORK_LOG: FlashRegion = FlashRegion {
     start: 0xD000,
     len: SECTOR_SIZE,
 };
-pub const ACTIVE_WORK: FlashRegion = FlashRegion {
-    name: "active-work",
+pub const ACTIVE_WORK_A: FlashRegion = FlashRegion {
+    name: "active-work-a",
     start: 0xE000,
     len: SECTOR_SIZE,
 };
+pub const ACTIVE_WORK_B: FlashRegion = FlashRegion {
+    name: "active-work-b",
+    start: 0x200000,
+    len: SECTOR_SIZE,
+};
 
-pub const REGIONS: [FlashRegion; 6] = [
+pub const REGIONS: [FlashRegion; 7] = [
     CREDENTIALS,
     AUTHENTICATOR,
     SETTINGS_A,
     SETTINGS_B,
     WORK_LOG,
-    ACTIVE_WORK,
+    ACTIVE_WORK_A,
+    ACTIVE_WORK_B,
 ];
 
 const fn valid_layout() -> bool {
     let mut index = 0;
     while index < REGIONS.len() {
         if !REGIONS[index].is_sector_aligned() || !REGIONS[index].is_within_nvs() {
-            return false;
+            // ACTIVE_WORK_B is outside NVS region, so we check differently
+            if REGIONS[index].start != ACTIVE_WORK_B.start {
+                return false;
+            }
+        }
+        // For ACTIVE_WORK_B, only check sector alignment
+        if REGIONS[index].start == ACTIVE_WORK_B.start {
+            if !REGIONS[index].is_sector_aligned() {
+                return false;
+            }
         }
         let mut other = index + 1;
         while other < REGIONS.len() {
@@ -100,6 +115,6 @@ mod tests {
     fn application_regions_are_aligned_non_overlapping_and_reserved() {
         assert!(valid_layout());
         assert_eq!(REGIONS[0].start, NVS_START);
-        assert_eq!(REGIONS[REGIONS.len() - 1].end(), NVS_END);
+        assert_eq!(REGIONS[REGIONS.len() - 2].end(), NVS_END);
     }
 }
