@@ -700,6 +700,81 @@ fn save_active_session_v4_to<F: ActiveWorkFlash>(
     }
 }
 
+fn active_session(record: V4ActiveWorkSession) -> ActiveWorkSession {
+    ActiveWorkSession {
+        session_id: record.session_id,
+        start_unix: record.start_unix,
+        start_date_ymd: record.start_date_ymd,
+        start_time_hms: record.start_time_hms,
+        hourly_rate_cents: record.hourly_rate_cents,
+    }
+}
+
+fn load_active_session_v4_from<F: ActiveWorkFlash>(
+    flash: &mut F,
+) -> Result<Option<ActiveWorkSession>, ActiveWorkError> {
+    let classes = [
+        classify_v4_slot(flash, V4Slot::SlotA)?,
+        classify_v4_slot(flash, V4Slot::SlotB)?,
+    ];
+    let committed = [
+        committed_v4_session(flash, V4Slot::SlotA)?,
+        committed_v4_session(flash, V4Slot::SlotB)?,
+    ];
+    if let (Some(a), Some(b)) = (committed[0], committed[1]) {
+        if a.sequence == b.sequence {
+            return Err(ActiveWorkError::Corrupt);
+        }
+    }
+    if let Some(record) = committed
+        .iter()
+        .flatten()
+        .max_by_key(|record| record.sequence)
+    {
+        return Ok(Some(active_session(*record)));
+    }
+    if matches!(classes, [V4RecordClass::Corrupt, V4RecordClass::Corrupt]) {
+        return Err(ActiveWorkError::Corrupt);
+    }
+    Ok(None)
+}
+
+fn migrate_legacy_active_work_v3_to_v4<F: ActiveWorkFlash>(
+    flash: &mut F,
+) -> Result<(), ActiveWorkError> {
+    let legacy_raw = v3_read_slot(flash, 0)?;
+    let legacy_empty = legacy_raw.iter().all(|&byte| byte == 0xFF);
+    let Some(legacy) = v3_decode(&legacy_raw) else {
+        return if legacy_empty {
+            Ok(())
+        } else {
+            Err(ActiveWorkError::Corrupt)
+        };
+    };
+    if !matches!(
+        classify_v4_slot(flash, V4Slot::SlotB)?,
+        V4RecordClass::Empty
+    ) {
+        return Err(ActiveWorkError::Corrupt);
+    }
+    let record = v4_session(1, legacy);
+    flash
+        .write(
+            V4Slot::SlotB.offset() + V4_STATE_OFFSET as u32,
+            &[STATE_WRITING],
+        )
+        .map_err(|_| ActiveWorkError::Io)?;
+    write_v4_payload(flash, V4Slot::SlotB, record)?;
+    verify_v4_payload(flash, V4Slot::SlotB, record)?;
+    write_v4_crc(flash, V4Slot::SlotB, record)?;
+    write_v4_commit_marker(flash, V4Slot::SlotB)?;
+    write_v4_committed_state(flash, V4Slot::SlotB)?;
+    if committed_v4_session(flash, V4Slot::SlotB)? != Some(record) {
+        return Err(ActiveWorkError::VerifyFailed);
+    }
+    erase_v4_slot(flash, V4Slot::SlotA)
+}
+
 pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
     let (year, month, day) = ymd;
     let (hour, minute, second) = hms;
@@ -795,6 +870,11 @@ mod tests {
             };
             let offset = slot.offset() as usize;
             self.bytes[offset..offset + V4_RECORD_LEN].copy_from_slice(&raw);
+        }
+
+        fn store_v3(&mut self, session: ActiveWorkSession) {
+            self.bytes[ACTIVE_WORK_A.start as usize..ACTIVE_WORK_A.start as usize + V3_RECORD_LEN]
+                .copy_from_slice(&v3_encode(session));
         }
 
         fn recover(&mut self) -> Option<V4ActiveWorkSession> {
@@ -1126,6 +1206,98 @@ mod tests {
         assert_eq!(
             save_active_session_v4_to(&mut flash, save_session(9)),
             Err(ActiveWorkError::Corrupt)
+        );
+    }
+
+    #[test]
+    fn v4_recovery_selects_only_the_highest_distinct_committed_record() {
+        let mut flash = FakeFlash::new();
+        assert_eq!(load_active_session_v4_from(&mut flash), Ok(None));
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        assert_eq!(
+            load_active_session_v4_from(&mut flash)
+                .unwrap()
+                .unwrap()
+                .session_id,
+            10
+        );
+        flash.store_committed(V4Slot::SlotB, 2, 11);
+        assert_eq!(
+            load_active_session_v4_from(&mut flash)
+                .unwrap()
+                .unwrap()
+                .session_id,
+            11
+        );
+    }
+
+    #[test]
+    fn v4_recovery_rejects_equal_sequences_and_two_corrupt_records() {
+        let mut flash = FakeFlash::new();
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash.store_committed(V4Slot::SlotB, 1, 11);
+        assert_eq!(
+            load_active_session_v4_from(&mut flash),
+            Err(ActiveWorkError::Corrupt)
+        );
+
+        let mut flash = FakeFlash::new();
+        flash.bytes[ACTIVE_WORK_A.start as usize] = 0;
+        flash.bytes[ACTIVE_WORK_B.start as usize] = 0;
+        assert_eq!(
+            load_active_session_v4_from(&mut flash),
+            Err(ActiveWorkError::Corrupt)
+        );
+    }
+
+    #[test]
+    fn v4_recovery_ignores_writing_and_corrupt_peers_when_committed_exists() {
+        let mut flash = FakeFlash::new();
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash.bytes[ACTIVE_WORK_B.start as usize + V4_STATE_OFFSET] = STATE_WRITING;
+        assert_eq!(
+            load_active_session_v4_from(&mut flash)
+                .unwrap()
+                .unwrap()
+                .session_id,
+            10
+        );
+        flash.bytes[ACTIVE_WORK_B.start as usize] = 0;
+        assert_eq!(
+            load_active_session_v4_from(&mut flash)
+                .unwrap()
+                .unwrap()
+                .session_id,
+            10
+        );
+    }
+
+    #[test]
+    fn legacy_migration_preserves_fields_and_erases_only_after_verification() {
+        let mut flash = FakeFlash::new();
+        let legacy = save_session(10);
+        flash.store_v3(legacy);
+        migrate_legacy_active_work_v3_to_v4(&mut flash).unwrap();
+        assert!(flash.bytes
+            [ACTIVE_WORK_A.start as usize..ACTIVE_WORK_A.start as usize + V3_RECORD_LEN]
+            .iter()
+            .all(|&byte| byte == 0xFF));
+        let migrated = committed_v4_session(&mut flash, V4Slot::SlotB)
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated.sequence, 1);
+        assert_eq!(active_session(migrated), legacy);
+    }
+
+    #[test]
+    fn failed_legacy_migration_leaves_legacy_record_intact() {
+        let legacy = save_session(10);
+        let mut flash = FakeFlash::new().fail_on(Fault::Write(1));
+        flash.store_v3(legacy);
+        assert!(migrate_legacy_active_work_v3_to_v4(&mut flash).is_err());
+        assert_eq!(
+            v3_decode(&v3_read_slot(&mut flash, 0).unwrap()),
+            Some(legacy)
         );
     }
 
