@@ -51,8 +51,8 @@ pub enum SessionLogError {
     CorruptHeader,
     Full,
     VerifyFailed,
+    DuplicateIdMismatch,
 }
-
 /// Bounded flash adapter for append and host fault-injection tests.
 pub trait SessionLogFlash {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()>;
@@ -766,8 +766,7 @@ mod tests {
 
         let original = test_record(0xA1B2C3D4E5F60708, 3_600, 50_000);
 
-        append_session_to(&mut flash, &original)
-            .expect("first append should succeed");
+        append_session_to(&mut flash, &original).expect("first append should succeed");
 
         let mut conflicting = original;
         conflicting.elapsed_secs = 7_200;
