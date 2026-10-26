@@ -14,6 +14,7 @@
 // The sector address is 0x9000, which is the first sector of the application-owned NVS partition.
 // The entire 24 KiB NVS partition (0x9000..0xEFFF) is managed by this firmware.
 // ESP-IDF's own NVS implementation is not used by this application.
+// phy_init is a separate partition at 0xF000.
 //
 // NOTE: FlashStorage::write() erases + rewrites the entire 4KB sector
 // on each call, so writes are safe but moderately expensive (~10ms).
