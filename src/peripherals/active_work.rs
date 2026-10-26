@@ -9,7 +9,7 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 #[cfg(target_arch = "xtensa")]
 use esp_storage::FlashStorage;
 
-use crate::peripherals::flash_layout::ACTIVE_WORK_A;
+use crate::peripherals::flash_layout::{ACTIVE_WORK_A, ACTIVE_WORK_B};
 
 // ============================================================================
 // V3 (current) single-sector two-slot format
@@ -456,6 +456,250 @@ pub fn v4_set_commit_marker(raw: &mut [u8; V4_RECORD_LEN]) {
         .copy_from_slice(&V4_COMMIT_MARKER);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum V4Slot {
+    SlotA,
+    SlotB,
+}
+
+impl V4Slot {
+    const ALL: [Self; 2] = [Self::SlotA, Self::SlotB];
+
+    fn peer(self) -> Self {
+        match self {
+            Self::SlotA => Self::SlotB,
+            Self::SlotB => Self::SlotA,
+        }
+    }
+
+    fn offset(self) -> u32 {
+        match self {
+            Self::SlotA => ACTIVE_WORK_A.start,
+            Self::SlotB => ACTIVE_WORK_B.start,
+        }
+    }
+
+    fn len(self) -> u32 {
+        match self {
+            Self::SlotA => ACTIVE_WORK_A.len,
+            Self::SlotB => ACTIVE_WORK_B.len,
+        }
+    }
+}
+
+fn read_v4_slot<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+) -> Result<[u8; V4_RECORD_LEN], ActiveWorkError> {
+    let mut raw = [0; V4_RECORD_LEN];
+    flash
+        .read(slot.offset(), &mut raw)
+        .map_err(|_| ActiveWorkError::Io)?;
+    Ok(raw)
+}
+
+fn classify_v4_slot<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+) -> Result<V4RecordClass, ActiveWorkError> {
+    Ok(v4_classify(&read_v4_slot(flash, slot)?))
+}
+
+fn erase_v4_slot<F: ActiveWorkFlash>(flash: &mut F, slot: V4Slot) -> Result<(), ActiveWorkError> {
+    flash
+        .erase(slot.offset(), slot.offset() + slot.len())
+        .map_err(|_| ActiveWorkError::Io)
+}
+
+fn v4_session(sequence: u64, session: ActiveWorkSession) -> V4ActiveWorkSession {
+    V4ActiveWorkSession {
+        sequence,
+        session_id: session.session_id,
+        start_unix: session.start_unix,
+        start_date_ymd: session.start_date_ymd,
+        start_time_hms: session.start_time_hms,
+        hourly_rate_cents: session.hourly_rate_cents,
+    }
+}
+
+fn write_v4_payload<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+    session: V4ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    let raw = v4_encode(session);
+    flash
+        .write(
+            slot.offset() + V4_MAGIC_OFFSET as u32,
+            &raw[V4_MAGIC_OFFSET..V4_STATE_OFFSET],
+        )
+        .map_err(|_| ActiveWorkError::Io)?;
+    flash
+        .write(
+            slot.offset() + V4_PREFIX_RESERVED_OFFSET as u32,
+            &raw[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET],
+        )
+        .map_err(|_| ActiveWorkError::Io)
+}
+
+fn write_v4_crc<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+    session: V4ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    let raw = v4_encode(session);
+    flash
+        .write(
+            slot.offset() + V4_CRC_OFFSET as u32,
+            &raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN],
+        )
+        .map_err(|_| ActiveWorkError::Io)
+}
+
+fn write_v4_commit_marker<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+) -> Result<(), ActiveWorkError> {
+    flash
+        .write(
+            slot.offset() + V4_COMMIT_MARKER_OFFSET as u32,
+            &V4_COMMIT_MARKER,
+        )
+        .map_err(|_| ActiveWorkError::Io)
+}
+
+fn write_v4_committed_state<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+) -> Result<(), ActiveWorkError> {
+    flash
+        .write(slot.offset() + V4_STATE_OFFSET as u32, &[STATE_COMMITTED])
+        .map_err(|_| ActiveWorkError::Io)
+}
+
+fn retire_v4_slot<F: ActiveWorkFlash>(flash: &mut F, slot: V4Slot) -> Result<(), ActiveWorkError> {
+    flash
+        .write(slot.offset() + V4_STATE_OFFSET as u32, &[STATE_RETIRED])
+        .map_err(|_| ActiveWorkError::Io)
+}
+
+fn verify_v4_payload<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+    session: V4ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    let actual = read_v4_slot(flash, slot)?;
+    let expected = v4_encode(session);
+    if actual[V4_STATE_OFFSET] == STATE_WRITING
+        && actual[V4_MAGIC_OFFSET..V4_STATE_OFFSET] == expected[V4_MAGIC_OFFSET..V4_STATE_OFFSET]
+        && actual[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]
+            == expected[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]
+    {
+        Ok(())
+    } else {
+        Err(ActiveWorkError::VerifyFailed)
+    }
+}
+
+fn committed_v4_session<F: ActiveWorkFlash>(
+    flash: &mut F,
+    slot: V4Slot,
+) -> Result<Option<V4ActiveWorkSession>, ActiveWorkError> {
+    Ok(v4_decode(&read_v4_slot(flash, slot)?))
+}
+
+fn save_active_session_v4_to<F: ActiveWorkFlash>(
+    flash: &mut F,
+    session: ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    let classes = [
+        classify_v4_slot(flash, V4Slot::SlotA)?,
+        classify_v4_slot(flash, V4Slot::SlotB)?,
+    ];
+    let committed = [
+        committed_v4_session(flash, V4Slot::SlotA)?,
+        committed_v4_session(flash, V4Slot::SlotB)?,
+    ];
+    let highest = committed
+        .iter()
+        .flatten()
+        .max_by_key(|record| record.sequence)
+        .copied();
+    if let Some(highest_record) = highest {
+        if committed
+            .iter()
+            .flatten()
+            .filter(|record| record.sequence == highest_record.sequence)
+            .count()
+            > 1
+        {
+            return Err(ActiveWorkError::Corrupt);
+        }
+    }
+    if highest.is_some_and(|record| session.session_id <= record.session_id) {
+        return Err(ActiveWorkError::Corrupt);
+    }
+    let sequence = highest.map_or(1, |record| record.sequence + 1);
+    let target_index = if committed[0].is_some() && committed[1].is_some() {
+        if committed[0].unwrap().sequence < committed[1].unwrap().sequence {
+            0
+        } else {
+            1
+        }
+    } else if matches!(classes[0], V4RecordClass::Empty | V4RecordClass::Retired) {
+        0
+    } else if matches!(classes[1], V4RecordClass::Empty | V4RecordClass::Retired) {
+        1
+    } else if committed[0].is_some() {
+        1
+    } else if committed[1].is_some() {
+        0
+    } else {
+        0
+    };
+    let target = V4Slot::ALL[target_index];
+    let old = target.peer();
+    let old_committed = committed[1 - target_index];
+
+    if !matches!(classes[target_index], V4RecordClass::Empty) {
+        if committed[target_index].is_some() || old_committed.is_some() {
+            let valid = old_committed
+                .or(committed[target_index])
+                .ok_or(ActiveWorkError::VerifyFailed)?;
+            if committed_v4_session(flash, if old_committed.is_some() { old } else { target })?
+                != Some(valid)
+            {
+                return Err(ActiveWorkError::VerifyFailed);
+            }
+        }
+        erase_v4_slot(flash, target)?;
+    }
+
+    let record = v4_session(sequence, session);
+    flash
+        .write(target.offset() + V4_STATE_OFFSET as u32, &[STATE_WRITING])
+        .map_err(|_| ActiveWorkError::Io)?;
+    write_v4_payload(flash, target, record)?;
+    verify_v4_payload(flash, target, record)?;
+    write_v4_crc(flash, target, record)?;
+    write_v4_commit_marker(flash, target)?;
+    write_v4_committed_state(flash, target)?;
+    if committed_v4_session(flash, target)? != Some(record) {
+        return Err(ActiveWorkError::VerifyFailed);
+    }
+    if old_committed.is_some() {
+        retire_v4_slot(flash, old)?;
+    }
+    match classify_v4_slot(flash, target)? {
+        V4RecordClass::Committed => match classify_v4_slot(flash, old)? {
+            V4RecordClass::Retired | V4RecordClass::Empty => Ok(()),
+            _ if old_committed.is_none() => Ok(()),
+            _ => Err(ActiveWorkError::VerifyFailed),
+        },
+        _ => Err(ActiveWorkError::VerifyFailed),
+    }
+}
+
 pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
     let (year, month, day) = ymd;
     let (hour, minute, second) = hms;
@@ -501,6 +745,122 @@ pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    #[derive(Clone, Copy)]
+    enum Fault {
+        Read(usize),
+        Write(usize),
+        Erase(usize),
+    }
+
+    struct FakeFlash {
+        bytes: Vec<u8>,
+        reads: usize,
+        writes: usize,
+        erases: usize,
+        fault: Option<Fault>,
+    }
+
+    impl FakeFlash {
+        fn new() -> Self {
+            Self {
+                bytes: vec![0xFF; (ACTIVE_WORK_B.start + ACTIVE_WORK_B.len) as usize],
+                reads: 0,
+                writes: 0,
+                erases: 0,
+                fault: None,
+            }
+        }
+
+        fn fail_on(mut self, fault: Fault) -> Self {
+            self.fault = Some(fault);
+            self
+        }
+
+        fn store_committed(&mut self, slot: V4Slot, sequence: u64, session_id: u64) {
+            let raw = {
+                let mut raw = v4_encode(V4ActiveWorkSession {
+                    sequence,
+                    session_id,
+                    start_unix: 1_700_000_000,
+                    start_date_ymd: (2024, 1, 15),
+                    start_time_hms: (10, 30, 0),
+                    hourly_rate_cents: 2500,
+                });
+                v4_set_state(&mut raw, STATE_COMMITTED);
+                v4_set_commit_marker(&mut raw);
+                raw
+            };
+            let offset = slot.offset() as usize;
+            self.bytes[offset..offset + V4_RECORD_LEN].copy_from_slice(&raw);
+        }
+
+        fn recover(&mut self) -> Option<V4ActiveWorkSession> {
+            V4Slot::ALL
+                .iter()
+                .filter_map(|&slot| committed_v4_session(self, slot).ok().flatten())
+                .max_by_key(|record| record.sequence)
+        }
+    }
+
+    impl ActiveWorkFlash for FakeFlash {
+        fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()> {
+            self.reads += 1;
+            if matches!(self.fault, Some(Fault::Read(n)) if n == self.reads) {
+                return Err(());
+            }
+            bytes.copy_from_slice(&self.bytes[offset as usize..offset as usize + bytes.len()]);
+            Ok(())
+        }
+
+        fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
+            self.writes += 1;
+            if matches!(self.fault, Some(Fault::Write(n)) if n == self.writes) {
+                return Err(());
+            }
+            for (stored, &next) in self.bytes[offset as usize..offset as usize + bytes.len()]
+                .iter_mut()
+                .zip(bytes)
+            {
+                if (*stored & next) != next {
+                    return Err(());
+                }
+                *stored = next;
+            }
+            Ok(())
+        }
+
+        fn erase(&mut self, from: u32, to: u32) -> Result<(), ()> {
+            self.erases += 1;
+            if matches!(self.fault, Some(Fault::Erase(n)) if n == self.erases) {
+                return Err(());
+            }
+            self.bytes[from as usize..to as usize].fill(0xFF);
+            Ok(())
+        }
+    }
+
+    fn save_session(session_id: u64) -> ActiveWorkSession {
+        ActiveWorkSession {
+            session_id,
+            start_unix: 1_700_000_100,
+            start_date_ymd: (2024, 1, 16),
+            start_time_hms: (11, 0, 0),
+            hourly_rate_cents: 3000,
+        }
+    }
+
+    fn flash_with_old_record(fault: Fault) -> FakeFlash {
+        let mut flash = FakeFlash::new().fail_on(fault);
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash
+    }
+
+    fn assert_old_recoverable(flash: &mut FakeFlash) {
+        assert_eq!(flash.recover().map(|record| record.session_id), Some(10));
+    }
 
     fn sample_v4_session() -> V4ActiveWorkSession {
         V4ActiveWorkSession {
@@ -648,6 +1008,125 @@ mod tests {
             [V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + V4_TRAILING_RESERVED_LEN]
             .iter()
             .all(|&byte| byte == 0xFF));
+    }
+
+    #[test]
+    fn power_loss_after_target_erase() {
+        let mut flash = FakeFlash::new().fail_on(Fault::Write(1));
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash.store_committed(V4Slot::SlotB, 0, 1);
+        assert!(matches!(
+            save_active_session_v4_to(&mut flash, save_session(11)),
+            Err(ActiveWorkError::Io | ActiveWorkError::VerifyFailed)
+        ));
+        assert_old_recoverable(&mut flash);
+    }
+
+    #[test]
+    fn power_loss_after_writing_state() {
+        let mut flash = flash_with_old_record(Fault::Write(2));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_old_recoverable(&mut flash);
+    }
+
+    #[test]
+    fn power_loss_after_payload_write() {
+        let mut flash = flash_with_old_record(Fault::Write(4));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_old_recoverable(&mut flash);
+        assert!(!matches!(
+            classify_v4_slot(&mut flash, V4Slot::SlotB),
+            Ok(V4RecordClass::Committed)
+        ));
+    }
+
+    #[test]
+    fn power_loss_after_payload_verify() {
+        let mut flash = flash_with_old_record(Fault::Write(4));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_old_recoverable(&mut flash);
+    }
+
+    #[test]
+    fn power_loss_after_crc_write() {
+        let mut flash = flash_with_old_record(Fault::Write(5));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_old_recoverable(&mut flash);
+    }
+
+    #[test]
+    fn power_loss_after_commit_marker() {
+        let mut flash = flash_with_old_record(Fault::Write(6));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_old_recoverable(&mut flash);
+        assert!(!matches!(
+            classify_v4_slot(&mut flash, V4Slot::SlotB),
+            Ok(V4RecordClass::Committed)
+        ));
+    }
+
+    #[test]
+    fn power_loss_after_committed_state() {
+        let mut flash = flash_with_old_record(Fault::Read(6));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_eq!(flash.recover().map(|record| record.session_id), Some(11));
+    }
+
+    #[test]
+    fn power_loss_after_full_verify() {
+        let mut flash = flash_with_old_record(Fault::Write(7));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert!(matches!(
+            flash.recover().map(|record| record.session_id),
+            Some(10 | 11)
+        ));
+    }
+
+    #[test]
+    fn power_loss_after_retire_old() {
+        let mut flash = flash_with_old_record(Fault::Write(7));
+        assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
+        assert_eq!(flash.recover().map(|record| record.session_id), Some(11));
+    }
+
+    #[test]
+    fn both_committed_older_sector_replaced() {
+        let mut flash = FakeFlash::new();
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash.store_committed(V4Slot::SlotB, 2, 11);
+        save_active_session_v4_to(&mut flash, save_session(12)).unwrap();
+        assert_eq!(
+            committed_v4_session(&mut flash, V4Slot::SlotA)
+                .unwrap()
+                .unwrap()
+                .sequence,
+            3
+        );
+        assert_eq!(
+            classify_v4_slot(&mut flash, V4Slot::SlotB).unwrap(),
+            V4RecordClass::Retired
+        );
+    }
+
+    #[test]
+    fn equal_committed_sequences_are_not_silently_tied() {
+        let mut flash = FakeFlash::new();
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash.store_committed(V4Slot::SlotB, 1, 11);
+        assert!(matches!(
+            save_active_session_v4_to(&mut flash, save_session(12)),
+            Err(ActiveWorkError::Corrupt | ActiveWorkError::VerifyFailed)
+        ));
+    }
+
+    #[test]
+    fn stale_session_id_rejected() {
+        let mut flash = FakeFlash::new();
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        assert_eq!(
+            save_active_session_v4_to(&mut flash, save_session(9)),
+            Err(ActiveWorkError::Corrupt)
+        );
     }
 
     // Existing V3 tests
