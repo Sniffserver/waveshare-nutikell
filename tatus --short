@@ -1,0 +1,21 @@
+[1mdiff --git a/src/peripherals/session_log.rs b/src/peripherals/session_log.rs[m
+[1mindex 72b5bd6..abc15a0 100644[m
+[1m--- a/src/peripherals/session_log.rs[m
+[1m+++ b/src/peripherals/session_log.rs[m
+[36m@@ -836,8 +836,7 @@[m [mmod tests {[m
+         let record = test_record(0xA1B2C3D4E5F60708, 3_600, 50_000);[m
+ [m
+         append_session_to(&mut flash, &record).expect("first append should succeed");[m
+[31m-        append_session_to(&mut flash, &record)[m
+[31m-            .expect("identical retry should be idempotent");[m
+[32m+[m[32m        append_session_to(&mut flash, &record).expect("identical retry should be idempotent");[m
+ [m
+         let mut valid_count = 0;[m
+         for slot in 0..MAX_SESSION_RECORDS {[m
+[36m@@ -853,4 +852,4 @@[m [mmod tests {[m
+ [m
+         assert_eq!(valid_count, 1);[m
+     }[m
+[31m-}[m
+\ No newline at end of file[m
+[32m+[m[32m}[m

@@ -836,8 +836,7 @@ mod tests {
         let record = test_record(0xA1B2C3D4E5F60708, 3_600, 50_000);
 
         append_session_to(&mut flash, &record).expect("first append should succeed");
-        append_session_to(&mut flash, &record)
-            .expect("identical retry should be idempotent");
+        append_session_to(&mut flash, &record).expect("identical retry should be idempotent");
 
         let mut valid_count = 0;
         for slot in 0..MAX_SESSION_RECORDS {
