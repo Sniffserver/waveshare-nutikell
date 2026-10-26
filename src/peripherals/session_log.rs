@@ -7,7 +7,8 @@
 //   Offset  Size  Content
 //   ------  ----  -------
 //     0       4   Magic:      b"WLOG"
-//     4       8   Reserved (all 0xFF)
+//     4       1   Format version (2 = current, 0xFF = legacy)
+//     5       7   Reserved (all 0xFF)
 //    12   N*48   Session records (N = MAX_SESSIONS = 85)
 //
 // Each session record (48 bytes):
@@ -44,11 +45,14 @@ pub const MAX_SESSION_RECORDS: usize = (SECTOR_SIZE as usize - HEADER_SIZE) / RE
 pub const LOG_FORMAT_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"WLOG";
+const HEADER_VERSION_OFFSET: usize = 4;
+const LEGACY_LOG_FORMAT_VERSION: u8 = 0xFF;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionLogError {
     Io,
     CorruptHeader,
+    UnsupportedVersion,
     Full,
     VerifyFailed,
     DuplicateIdMismatch,
@@ -66,13 +70,19 @@ pub enum LogHeaderState {
     Corrupt,
 }
 
-fn classify_header(header: &[u8; HEADER_SIZE]) -> LogHeaderState {
+fn classify_header(header: &[u8; HEADER_SIZE]) -> Result<LogHeaderState, SessionLogError> {
     if header.iter().all(|&byte| byte == 0xFF) {
-        LogHeaderState::Empty
-    } else if header[..4] == MAGIC {
-        LogHeaderState::Valid
-    } else {
-        LogHeaderState::Corrupt
+        return Ok(LogHeaderState::Empty);
+    }
+
+    if header[..4] != MAGIC {
+        return Err(SessionLogError::CorruptHeader);
+    }
+
+    match header[HEADER_VERSION_OFFSET] {
+        LEGACY_LOG_FORMAT_VERSION => Ok(LogHeaderState::Valid),
+        version if version <= LOG_FORMAT_VERSION => Ok(LogHeaderState::Valid),
+        _ => Err(SessionLogError::UnsupportedVersion),
     }
 }
 
@@ -261,10 +271,10 @@ pub fn read_all_sessions_checked() -> Result<alloc::vec::Vec<SessionRecord>, Ses
     let mut storage = FlashStorage::new();
     let mut header = [0u8; HEADER_SIZE];
     ReadNorFlash::read(&mut storage, LOG_OFFSET, &mut header).map_err(|_| SessionLogError::Io)?;
-    if classify_header(&header) == LogHeaderState::Empty {
+    if classify_header(&header) == Ok(LogHeaderState::Empty) {
         return Ok(alloc::vec::Vec::new());
     }
-    if classify_header(&header) == LogHeaderState::Corrupt {
+    if classify_header(&header).is_err() {
         return Err(SessionLogError::CorruptHeader);
     }
     Ok(read_all_sessions())
@@ -403,20 +413,38 @@ pub fn append_session_to<F: SessionLogFlash>(
     storage
         .read(LOG_OFFSET, &mut header)
         .map_err(|_| SessionLogError::Io)?;
-    if classify_header(&header) == LogHeaderState::Empty {
-        // A truly erased sector can be initialized without erasing it again.
+
+    let header_state = classify_header(&header)?;
+
+    if header_state == LogHeaderState::Empty {
+        let mut first_record = [0u8; RECORD_SIZE];
         storage
-            .write(LOG_OFFSET, &MAGIC)
+            .read(
+                LOG_OFFSET + SessionRecord::record_offset(0),
+                &mut first_record,
+            )
             .map_err(|_| SessionLogError::Io)?;
-        let mut verify = [0u8; 4];
+
+        if !first_record.iter().all(|&byte| byte == 0xFF) {
+            return Err(SessionLogError::CorruptHeader);
+        }
+
+        let mut new_header = [0xFFu8; HEADER_SIZE];
+        new_header[..4].copy_from_slice(&MAGIC);
+        new_header[HEADER_VERSION_OFFSET] = LOG_FORMAT_VERSION;
+
+        storage
+            .write(LOG_OFFSET, &new_header)
+            .map_err(|_| SessionLogError::Io)?;
+
+        let mut verify = [0u8; HEADER_SIZE];
         storage
             .read(LOG_OFFSET, &mut verify)
             .map_err(|_| SessionLogError::Io)?;
-        if verify != MAGIC {
+
+        if verify != new_header {
             return Err(SessionLogError::VerifyFailed);
         }
-    } else if header[..4] != MAGIC {
-        return Err(SessionLogError::CorruptHeader);
     }
 
     let mut free_slot = None;
@@ -581,8 +609,14 @@ mod tests {
     fn corrupt_header_is_not_empty() {
         let mut header = [0xFF; HEADER_SIZE];
         header[0] = b'X';
-        assert_eq!(classify_header(&header), LogHeaderState::Corrupt);
-        assert_eq!(classify_header(&[0xFF; HEADER_SIZE]), LogHeaderState::Empty);
+        assert_eq!(
+            classify_header(&header),
+            Err(SessionLogError::CorruptHeader)
+        );
+        assert_eq!(
+            classify_header(&[0xFF; HEADER_SIZE]),
+            Ok(LogHeaderState::Empty)
+        );
     }
 
     #[test]
@@ -851,5 +885,77 @@ mod tests {
         }
 
         assert_eq!(valid_count, 1);
+    }
+
+    // ── Version header tests ────────────────────────────────────────────────
+
+    #[test]
+    fn empty_header_initializes_with_version_2() {
+        let mut flash = FakeFlash::new();
+        let record = test_record(0x1000, 1_800, 25_000);
+
+        append_session_to(&mut flash, &record).expect("append should succeed");
+
+        let mut header = [0u8; HEADER_SIZE];
+        flash
+            .read(LOG_OFFSET, &mut header)
+            .expect("header read should succeed");
+
+        assert_eq!(&header[..4], &MAGIC);
+        assert_eq!(header[HEADER_VERSION_OFFSET], LOG_FORMAT_VERSION);
+    }
+
+    #[test]
+    fn unsupported_version_preserves_sector() {
+        let mut flash = FakeFlash::new();
+
+        let mut header = [0xFFu8; HEADER_SIZE];
+        header[..4].copy_from_slice(&MAGIC);
+        header[HEADER_VERSION_OFFSET] = LOG_FORMAT_VERSION + 1;
+        flash
+            .write(LOG_OFFSET, &header)
+            .expect("setup header write should succeed");
+
+        let before = flash.snapshot();
+
+        let record = test_record(0x2000, 1_800, 25_000);
+        let result = append_session_to(&mut flash, &record);
+
+        assert_eq!(result, Err(SessionLogError::UnsupportedVersion));
+        flash.assert_unchanged(&before);
+    }
+
+    #[test]
+    fn legacy_0xff_version_header_remains_readable() {
+        let mut flash = FakeFlash::new();
+
+        let mut header = [0xFFu8; HEADER_SIZE];
+        header[..4].copy_from_slice(&MAGIC);
+        flash
+            .write(LOG_OFFSET, &header)
+            .expect("setup header write should succeed");
+
+        let record = test_record(0x3000, 1_800, 25_000);
+        append_session_to(&mut flash, &record).expect("legacy header must remain appendable");
+    }
+
+    #[test]
+    fn initialization_rejects_nonempty_first_record() {
+        let mut flash = FakeFlash::new();
+
+        // Leave header erased but place non-erased data in the first record slot.
+        let mut raw = [0xFFu8; RECORD_SIZE];
+        raw[4] = 0x01;
+        flash
+            .write(LOG_OFFSET + SessionRecord::record_offset(0), &raw)
+            .expect("setup record write should succeed");
+
+        let before = flash.snapshot();
+
+        let record = test_record(0x4000, 1_800, 25_000);
+        let result = append_session_to(&mut flash, &record);
+
+        assert_eq!(result, Err(SessionLogError::CorruptHeader));
+        flash.assert_unchanged(&before);
     }
 }
