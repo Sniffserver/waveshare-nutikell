@@ -75,7 +75,7 @@ impl<'d> Co5300Display<'d> {
 
     /// Initialize the display. Must be called before any drawing.
     /// Follows the exact init sequence from Arduino_CO5300.h/cpp.
-    pub fn init(&mut self) {
+    pub fn init(&mut self) -> Result<(), DisplayError> {
         // Hardware reset
         self.reset.set_high();
         self.delay.delay_millis(10);
@@ -105,6 +105,10 @@ impl<'d> Co5300Display<'d> {
 
         // Inversion off (standard for this panel)
         self.bus.write_command(CMD_INVOFF);
+        if self.bus.take_error() {
+            return Err(DisplayError::BusError);
+        }
+        Ok(())
     }
 
     /// Set the address window for pixel writes.
@@ -177,26 +181,41 @@ impl<'d> Co5300Display<'d> {
     }
 
     /// Set display brightness (0x00 = off, 0xD0 = default, 0xFF = max).
-    pub fn set_brightness(&mut self, brightness: u8) {
+    pub fn set_brightness(&mut self, brightness: u8) -> Result<(), DisplayError> {
         self.bus.write_c8d8(CMD_BRIGHTNESS, brightness);
+        if self.bus.take_error() {
+            Err(DisplayError::BusError)
+        } else {
+            Ok(())
+        }
     }
 
     /// Turn display on (exit sleep + display ON).
     /// MIPI DCS order: SLPOUT -> 120ms -> DISPON -> 20ms.
-    pub fn display_on(&mut self) {
+    pub fn display_on(&mut self) -> Result<(), DisplayError> {
         self.bus.write_command(CMD_SLPOUT);
         self.delay.delay_millis(SLPOUT_DELAY_MS);
         self.bus.write_command(CMD_DISPON);
         self.delay.delay_millis(20);
+        if self.bus.take_error() {
+            Err(DisplayError::BusError)
+        } else {
+            Ok(())
+        }
     }
 
     /// Turn display off (DISPOFF + enter sleep).
     /// MIPI DCS order: DISPOFF -> 20ms -> SLPIN -> 120ms.
-    pub fn display_off(&mut self) {
+    pub fn display_off(&mut self) -> Result<(), DisplayError> {
         self.bus.write_command(CMD_DISPOFF);
         self.delay.delay_millis(20);
         self.bus.write_command(0x10); // SLPIN
         self.delay.delay_millis(SLPIN_DELAY_MS);
+        if self.bus.take_error() {
+            Err(DisplayError::BusError)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -224,7 +243,9 @@ impl DrawTarget for Co5300Display<'_> {
             {
                 let raw: u16 = RawU16::from(color).into_inner();
                 // Write 2x2 block (4 pixels)
-                self.set_addr_window(coord.x as u16, coord.y as u16, 2, 2)?;
+                let x = (coord.x as u16).min(self.width.saturating_sub(2));
+                let y = (coord.y as u16).min(self.height.saturating_sub(2));
+                self.set_addr_window(x, y, 2, 2)?;
                 self.bus.write_pixels(&[raw, raw, raw, raw]);
                 if self.bus.take_error() {
                     return Err(DisplayError::BusError);

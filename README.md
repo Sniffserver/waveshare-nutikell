@@ -16,7 +16,7 @@
 
 Complete conversion of the original C/C++ project (ESP-IDF + Arduino GFX + LVGL) to a single-binary Rust codebase relying on `esp-hal` 1.0, `esp-rtos`, Embassy, and custom drivers for each of the board's peripherals.
 
-The firmware handles the 410×502 QSPI display in 80 MHz DMA, the I2S audio codec, 2.4 GHz WiFi with NTP sync, SD card, capacitive touch, gyroscope, hardware RTC, AXP2101 power management, a launcher with 5 mini-games, a T9 keyboard, an MP3 player (UI), a Smart Home app (HTTP), a sleep/wake mode with an Apple Watch style Always-On Display, and an event-driven main loop based on GPIO interrupts to leave the CPU asleep >99% of the time on the watchface.
+The firmware handles the 410×502 QSPI display in 80 MHz DMA, the I2S audio codec, 2.4 GHz WiFi with NTP sync, SD card, capacitive touch, gyroscope, hardware RTC, AXP2101 power management, a launcher with 5 mini-games, a T9 keyboard, an MP3 player (UI), authenticated BLE position ingress, a sleep/wake mode with an Apple Watch style Always-On Display, and an event-driven main loop based on GPIO interrupts to leave the CPU asleep >99% of the time on the watchface. Smart Home HTTP controls are quarantined from release builds.
 
 ---
 
@@ -101,7 +101,7 @@ main.rs
 │       ├── Snake, 2048, Tetris, Flappy, Maze
 │       ├── MP3 Player (UI)
 │       ├── Settings + T9 keyboard
-│       └── SmartHome (buttons → HTTP)
+│       └── SmartHome (quarantined; authenticated HTTPS pending)
 ```
 
 ---
@@ -144,7 +144,7 @@ src/
     ├── maze.rs             Maze with IMU ball
     ├── settings.rs         WiFi SSID/password + T9
     ├── mp3player.rs        MP3 player UI (decoding to be wired)
-    └── smarthome.rs        Button grid → HTTP GET/POST
+    └── smarthome.rs        Quarantined legacy HTTP UI (not release-enabled)
 ```
 
 ---
@@ -178,7 +178,7 @@ On wake via touch/button: immediate return to state 3, framebuffer forced into f
 | Watchface clock, gyro on           | 33 ms    | ~30 Hz              |
 | Sensors page                       | 100 ms   | 10 Hz               |
 | System page                        | 2 s      | 0.5 Hz              |
-| Launcher / Settings / MP3 / SmartHome | 100 ms| 10 Hz               |
+| Launcher / Settings / MP3             | 100 ms| 10 Hz               |
 | Snake / 2048 / Tetris / Maze       | 16 ms    | ~60 Hz              |
 | Flappy                             | 8 ms     | 125 Hz              |
 | Finger held on the screen          | 16 ms    | 60 Hz (override)    |
@@ -315,21 +315,21 @@ On Linux: `/dev/ttyACM0` or `/dev/ttyUSB0` depending on the USB bridge.
 - FT3168 touch + iOS-like swipe detection + tap + diagonal rejection
 - QMI8658 IMU accel + gyro + temperature with power management
 - PCF85063A RTC + NTP sync via embassy-net UDP
-- WiFi STA: DHCPv4, NTP, HTTP GET/POST, auto-disconnect idle
+- WiFi STA: validated/persisted Settings credentials, DHCPv4, NTP, retry timeout/backoff
 - ES8311 audio + I2S DMA (Snake beep)
 - SD Card 4 GB detection (FAT32 /mp3 scan in place, stable mount if MBR is valid)
 - Watchface 3 pages: Clock (7-segment time + battery + FR date + gyro ball), Sensors, System
 - Launcher app list with smooth scroll
 - Games: Snake, 2048, Tetris, Flappy Bird, Maze (gyro)
 - Settings: WiFi SSID/password fields with T9 keyboard
-- SmartHome: configurable 6-button HTTP grid
+- SmartHome: quarantined from release builds until authenticated HTTPS exists
 - MP3 Player: UI (play/pause, prev/next, progress bar)
 - Screen sleep/wake 4 levels with minute-by-minute Always-On Display
 - Boot button = launcher, swipe up = launcher
 
 ### Partially wired / stubbed
 - **MP3 decoding**: `nanomp3` compiled and as a dependency, UI ready, SD → I2S stream to be wired.
-- **BLE**: `esp-radio` compiled with stub feature, init disabled due to a panic `btdm_controller_init -4` in coex with WiFi (requires additional `coex` config).
+- **BLE**: HCI initialization and authenticated position-packet dispatch are enabled. The pinned radio crate does not provide a GATT server, so a production GATT server task must call the dispatcher for each characteristic write.
 - **WiFi scan list**: `ScanResult` types ready, Settings UI shows the field but without scan.
 - **USB Mass Storage**: not wired (copy-from-PC would require `usb-device` + `usbd-storage`).
 - **ESP deep sleep**: no `esp_hal::system::Sleep`; we stay in light sleep via the Embassy executor, sufficient for watch usage.
@@ -417,7 +417,7 @@ Minimal HTTP client without external crate: parse URL, `TcpSocket::connect`, for
 2. `esp_alloc::psram_allocator!`: 8 MB PSRAM heap
 3. `esp_rtos::start(timg0.timer0)`: Embassy executor
 4. Sequential init of all I2C/SPI/I2S drivers
-5. `wifi_controller.connect_async().await`
+5. `wifi_controller.connect_async().await` after validated Settings input is persisted
 6. `embassy_net::Stack` + `StackResources<3>`, spawn `net_task` task
 7. Wait for DHCP IP
 8. `ntp_sync()`: UDP to 216.239.35.0:123, parse timestamp, `rtc.set_time()`
@@ -510,7 +510,7 @@ Major steps of the rewrite:
 
 5. **Event-driven loop**. Converted from `loop { Timer::after(5ms).await; ... }` to `select3(Timer, touch_edge, button_edge)`. Gain: CPU wake-ups reduced by ~6000× in screen OFF and ~200× in idle watchface.
 
-6. **BLE**. Init attempt with `esp_radio::ble::BleConnector::new` → panic `btdm_controller_init returned -4`. BLE disabled in `Cargo.toml` features pending a correct coex configuration.
+6. **BLE**. The HCI connector is initialized and advertising is controlled by the persisted BLE setting. Position writes must pass through the authenticated dispatcher; no unauthenticated command path is enabled.
 
 7. **Sleep/wake**. Initial bug: the `display_on()` sequence did DISPON then SLPOUT (incorrect order), so DISPON happened while the panel was still in SLPIN. Fixed to SLPOUT (120 ms) → DISPON (20 ms), standard MIPI DCS order.
 

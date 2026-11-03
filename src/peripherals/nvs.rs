@@ -10,7 +10,7 @@
 //    38       1   Password length (0-63)
 //    39      64   Password bytes (one byte reserved)
 //   104      32   HMAC-SHA-256 record tag
-//   136     ...   (future use)
+//   136      32   Per-device random HMAC key (inside encrypted flash)
 //
 // Total record: 136 bytes, stored in one flash sector (4096 bytes).
 // The sector address is 0x9000, which is the first sector of the application-owned NVS partition.
@@ -39,13 +39,17 @@ const RECORD_VERSION: u8 = 2;
 const RECORD_AUTH_END: usize = 104;
 const RECORD_TAG_START: usize = RECORD_AUTH_END;
 const RECORD_READ_LEN: usize = RECORD_TAG_START + 32;
+const DEVICE_KEY_START: usize = 136;
+const DEVICE_KEY_LEN: usize = 32;
+const DEVICE_RECORD_READ_LEN: usize = DEVICE_KEY_START + DEVICE_KEY_LEN;
 
-// Inject this at release build time from the provisioning secret store. There
-// is deliberately no firmware fallback: a missing key makes storage unusable.
-fn credential_key() -> Option<&'static [u8]> {
-    option_env!("SBIE_CREDENTIAL_KEY")
-        .map(|key| key.as_bytes())
-        .filter(|key| key.len() >= 16)
+fn key_from_record(record: &[u8]) -> Option<&[u8]> {
+    let key = record.get(DEVICE_KEY_START..DEVICE_RECORD_READ_LEN)?;
+    if key.iter().all(|b| *b == 0xFF) || key.iter().all(|b| *b == 0) {
+        None
+    } else {
+        Some(key)
+    }
 }
 
 fn flash_encryption_enabled() -> bool {
@@ -107,15 +111,11 @@ pub fn read_credentials() -> Option<StoredCredentials> {
     if !flash_encryption_enabled() {
         return None;
     }
-    let key = credential_key()?;
     let mut storage = FlashStorage::new();
-    let mut buf = [0u8; 144];
+    let mut buf = [0u8; DEVICE_RECORD_READ_LEN];
 
     // FlashStorage::read requires aligned 4-byte offset and len
-    if storage
-        .read(CRED_FLASH_OFFSET, &mut buf[..RECORD_READ_LEN])
-        .is_err()
-    {
+    if storage.read(CRED_FLASH_OFFSET, &mut buf).is_err() {
         return None;
     }
 
@@ -136,6 +136,7 @@ pub fn read_credentials() -> Option<StoredCredentials> {
         return None;
     }
 
+    let key = key_from_record(&buf)?;
     let mut creds = StoredCredentials::empty();
     creds.ssid_len = ssid_len;
     let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
@@ -155,7 +156,6 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStor
     if !flash_encryption_enabled() {
         return Err(CredentialStorageError::FlashEncryptionRequired);
     }
-    let key = credential_key().ok_or(CredentialStorageError::KeyUnavailable)?;
     if creds.ssid_len == 0
         || creds.ssid_len > creds.ssid.len()
         || creds.pass_len > 63
@@ -165,6 +165,19 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStor
         return Err(CredentialStorageError::InvalidLength);
     }
     let mut storage = FlashStorage::new();
+    let mut key = [0u8; DEVICE_KEY_LEN];
+    let mut existing = [0u8; DEVICE_RECORD_READ_LEN];
+    if storage.read(CRED_FLASH_OFFSET, &mut existing).is_ok() {
+        if let Some(saved) = key_from_record(&existing) {
+            key.copy_from_slice(saved);
+        }
+    }
+    if key.iter().all(|b| *b == 0) {
+        #[cfg(target_arch = "xtensa")]
+        esp_hal::rng::Rng::new().read(&mut key);
+        #[cfg(not(target_arch = "xtensa"))]
+        key.copy_from_slice(b"host-only-test-device-key-32bytes!");
+    }
 
     // Build the 4096-byte sector buffer (rest stays 0xFF to preserve flash health)
     // We only need 136 bytes but FlashStorage::write erases the whole sector.
@@ -175,8 +188,9 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStor
     sector[6..6 + creds.ssid_len].copy_from_slice(&creds.ssid[..creds.ssid_len]);
     sector[38] = creds.pass_len as u8;
     sector[39..39 + creds.pass_len].copy_from_slice(&creds.password[..creds.pass_len]);
+    sector[DEVICE_KEY_START..DEVICE_RECORD_READ_LEN].copy_from_slice(&key);
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(key).map_err(|_| CredentialStorageError::KeyUnavailable)?;
+        Hmac::<Sha256>::new_from_slice(&key).map_err(|_| CredentialStorageError::KeyUnavailable)?;
     mac.update(&sector[..RECORD_AUTH_END]);
     sector[RECORD_TAG_START..RECORD_READ_LEN].copy_from_slice(&mac.finalize().into_bytes());
 

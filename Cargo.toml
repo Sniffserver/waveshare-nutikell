@@ -58,6 +58,7 @@ path = "src/lib.rs"
 [features]
 default = []
 firmware = []
+smart-home = []
 
 [[bin]]
 name = "waveshare-watch-rs"
@@ -72,5 +73,5 @@ esp-alloc = "0.9.0"
 esp-println = { version = "0.16.1", features = ["esp32s3", "log-04"] }
 esp-backtrace = { version = "0.18.1", features = ["esp32s3", "panic-handler", "println"] }
 esp-bootloader-esp-idf = { version = "0.4", features = ["esp32s3"] }
-esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "unstable", "log-04"] }
+esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "ble", "unstable", "log-04"] }
 esp-storage = { version = "0.6.0", features = ["esp32s3"] }

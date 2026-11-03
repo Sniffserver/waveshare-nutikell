@@ -17,10 +17,11 @@ perform and record the device-specific provisioning step.
 
 ## Credentials
 
-Wi-Fi credentials are stored only in the application-owned credentials sector.
-The sector is intended to be protected by ESP flash encryption; writes and
-reads must be tested only after flash encryption is enabled. Never ship a
-device with plaintext flash and real credentials.
+Wi-Fi credentials and a randomly generated per-device HMAC key are stored only
+in the application-owned credentials sector. The sector is intended to be
+protected by ESP flash encryption; writes and reads must be tested only after
+flash encryption is enabled. Never ship a device with plaintext flash and real
+credentials.
 
 ## BLE position packets
 

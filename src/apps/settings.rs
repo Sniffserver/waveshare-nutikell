@@ -26,6 +26,7 @@ pub struct SettingsApp {
     pub stored_ssid_len: usize,
     active_field: SettingsField,
     editing: bool,
+    connect_requested: bool,
 }
 
 impl SettingsApp {
@@ -38,6 +39,7 @@ impl SettingsApp {
             stored_ssid_len: 0,
             active_field: SettingsField::Ssid,
             editing: false,
+            connect_requested: false,
         }
     }
 
@@ -105,11 +107,25 @@ impl SettingsApp {
         if y >= 195 && y < 240 {
             // Connect button
             if self.wifi_state == WifiState::Disconnected || self.wifi_state == WifiState::Error {
-                self.wifi_state = WifiState::Connecting;
+                if self.wifi_config.validate().is_ok() {
+                    self.wifi_state = WifiState::Connecting;
+                    self.connect_requested = true;
+                } else {
+                    self.wifi_state = WifiState::Error;
+                }
             }
             return true;
         }
         false
+    }
+
+    pub fn take_connect_request(&mut self) -> Option<WifiConfig> {
+        if self.connect_requested {
+            self.connect_requested = false;
+            Some(self.wifi_config)
+        } else {
+            None
+        }
     }
 
     pub fn update(&mut self, dt_ms: u32) {

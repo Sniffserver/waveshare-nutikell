@@ -14,6 +14,21 @@
 
 use embedded_io::Write;
 
+use crate::outdoor::ble::handle_position_packet;
+use crate::outdoor::{BleStatus, OutdoorState};
+
+/// Authenticated GATT write dispatcher for the companion position
+/// characteristic. The pinned radio crate supplies HCI transport only; a
+/// GATT server task must call this for every position-characteristic write.
+pub fn dispatch_position_write(
+    value: &[u8],
+    auth_key: &[u8],
+    status: &mut BleStatus,
+    outdoor: &mut OutdoorState,
+) -> bool {
+    handle_position_packet(value, auth_key, status, outdoor)
+}
+
 /// Start BLE advertising as "Rust Watch".
 /// Sends HCI commands synchronously via the BleConnector's Write impl.
 pub fn start_advertising<W: Write>(hci: &mut W) -> Result<(), W::Error> {

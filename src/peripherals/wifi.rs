@@ -9,6 +9,7 @@
 // WiFi will be initialized on-demand (from Settings page)
 // not at boot, to save power and memory.
 
+#[derive(Clone, Copy)]
 pub struct WifiConfig {
     pub ssid: [u8; 32],
     pub ssid_len: usize,
@@ -27,6 +28,7 @@ impl WifiConfig {
     }
 
     pub fn set_ssid(&mut self, s: &str) {
+        self.ssid.fill(0);
         let bytes = s.as_bytes();
         let len = bytes.len().min(32);
         self.ssid[..len].copy_from_slice(&bytes[..len]);
@@ -34,15 +36,38 @@ impl WifiConfig {
     }
 
     pub fn set_password(&mut self, p: &str) {
+        self.password.fill(0);
         let bytes = p.as_bytes();
         let len = bytes.len().min(63);
         self.password[..len].copy_from_slice(&bytes[..len]);
         self.pass_len = len;
     }
 
+    pub fn validate(&self) -> Result<(), WifiConfigError> {
+        if self.ssid_len == 0 || self.ssid_len > 32 || self.pass_len > 63 {
+            return Err(WifiConfigError::InvalidLength);
+        }
+        if self.ssid[..self.ssid_len].iter().any(|b| *b == 0)
+            || self.password[..self.pass_len].iter().any(|b| *b == 0)
+        {
+            return Err(WifiConfigError::InvalidByte);
+        }
+        Ok(())
+    }
+
     pub fn ssid_str(&self) -> &str {
         core::str::from_utf8(&self.ssid[..self.ssid_len]).unwrap_or("")
     }
+
+    pub fn pass_str(&self) -> &str {
+        core::str::from_utf8(&self.password[..self.pass_len]).unwrap_or("")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiConfigError {
+    InvalidLength,
+    InvalidByte,
 }
 
 // WiFi connection state

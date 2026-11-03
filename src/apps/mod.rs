@@ -12,6 +12,7 @@ pub mod maze;
 pub mod media_controller;
 pub mod outdoor_app;
 pub mod settings;
+#[cfg(feature = "smart-home")]
 pub mod smarthome;
 pub mod snake;
 pub mod tetris;
@@ -48,7 +49,6 @@ pub enum AppState {
     Watchface,
     Launcher,
     Mp3Player,
-    SmartHome,
     Settings,
     Outdoor,
     WorkTracker,

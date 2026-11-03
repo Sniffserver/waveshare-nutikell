@@ -80,7 +80,6 @@ use crate::apps::game2048::Game2048;
 use crate::apps::maze::MazeGame;
 use crate::apps::media_controller::{MediaAction, MediaCommand, MediaController};
 use crate::apps::settings::SettingsApp;
-use crate::apps::smarthome::SmartHomeApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
@@ -97,7 +96,7 @@ use crate::peripherals::active_work::{
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
-use crate::peripherals::nvs::{read_credentials, StoredCredentials};
+use crate::peripherals::nvs::{read_credentials, write_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
 use crate::peripherals::session_log::{
@@ -263,10 +262,10 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
 async fn main(_spawner: Spawner) {
     // Reserve a bounded internal heap and keep large allocations in PSRAM.
     // The ESP32-S3 data region is shared with Wi-Fi/radio statics, so a 320 KiB
-    // heap leaves no room for the firmware image to link. 192 KiB preserves
-    // radio headroom while the framebuffer and application allocations use
+    // heap leaves no room for the firmware image to link. 160 KiB preserves
+    // radio headroom for BLE + WiFi while the framebuffer and application allocations use
     // the PSRAM allocator below.
-    esp_alloc::heap_allocator!(size: 192 * 1024);
+    esp_alloc::heap_allocator!(size: 160 * 1024);
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
@@ -323,7 +322,10 @@ async fn main(_spawner: Spawner) {
     let cs = Output::new(peripherals.GPIO12, Level::High, OutputConfig::default());
     let reset = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
     let mut display = Co5300Display::new(QspiBus::new(spi, cs), reset);
-    display.init();
+    if let Err(error) = display.init() {
+        println!("[DISPLAY] initialization failed: {:?}", error);
+        return;
+    }
 
     // Enable Tearing Effect output on CO5300 (TE pin = GPIO13)
     // Command 0x35 = TEARON, param 0x00 = VBlank only
@@ -334,7 +336,10 @@ async fn main(_spawner: Spawner) {
     // === Framebuffer PSRAM ===
     let mut fb = Framebuffer::new();
     fb.clear_color(Rgb565::BLACK);
-    fb.flush(&mut display);
+    if let Err(error) = fb.flush(&mut display) {
+        println!("[DISPLAY] initial framebuffer flush failed: {:?}", error);
+        return;
+    }
     println!("[FB] OK");
     log_memory("after-display");
 
@@ -576,16 +581,13 @@ async fn main(_spawner: Spawner) {
         esp_radio::wifi::new(radio_controller, peripherals.WIFI, wifi_config)
             .expect("WiFi init failed");
 
-    // === BLE init (OFF by default, advertising starts on user toggle) ===
-    // TEMPORARILY DISABLED — ble feature removed from Cargo.toml to fix
-    // stack overflow panic. Re-enable once heap is stable at 384KB+.
-    // let mut ble_connector = esp_radio::ble::controller::BleConnector::new(
-    //     radio_controller,
-    //     peripherals.BT,
-    //     esp_radio::ble::Config::default(),
-    // )
-    // .expect("BLE init failed");
-    // println!("[BLE] Connector ready (advertising OFF)");
+    let mut ble_connector = esp_radio::ble::controller::BleConnector::new(
+        radio_controller,
+        peripherals.BT,
+        esp_radio::ble::Config::default(),
+    )
+    .expect("BLE init failed");
+    println!("[BLE] HCI connector ready");
     log_memory("after-radio");
 
     // === NVS: load stored WiFi credentials ===
@@ -608,6 +610,13 @@ async fn main(_spawner: Spawner) {
         watch_settings.ble_enabled,
         watch_settings.wifi_enabled,
     );
+    if watch_settings.ble_enabled {
+        if let Err(e) = crate::peripherals::ble::start_advertising(&mut ble_connector) {
+            println!("[BLE] advertising start failed: {:?}", e);
+        } else {
+            println!("[BLE] advertising enabled");
+        }
+    }
 
     // Compile-time fallback credentials (for development without NVS provisioning)
     let fallback_ssid = option_env!("WIFI_SSID").unwrap_or("");
@@ -790,7 +799,6 @@ async fn main(_spawner: Spawner) {
         settings_app.set_stored_ssid(fallback_ssid);
     }
     let mut media_controller = MediaController::new();
-    let mut smarthome_app = SmartHomeApp::new();
 
     let mut accel = (0.0f32, 0.0f32, 0.0f32);
     let mut page_dirty = true;
@@ -1001,7 +1009,6 @@ async fn main(_spawner: Spawner) {
                 AppState::Launcher
                 | AppState::Settings
                 | AppState::Mp3Player
-                | AppState::SmartHome
                 | AppState::WorkTracker
                 | AppState::Authenticator
                 | AppState::BleAnalyzer => Duration::from_millis(100),
@@ -1357,7 +1364,6 @@ async fn main(_spawner: Spawner) {
                         AppState::Authenticator => authenticator_app.setup(),
                         AppState::BleAnalyzer => ble_analyzer_app.setup(),
                         AppState::Mp3Player => media_controller.setup(),
-                        AppState::SmartHome => smarthome_app.setup(),
                         AppState::Snake => snake_game.setup(),
                         AppState::Game2048 => game_2048.setup(),
                         AppState::Tetris => tetris_game.setup(),
@@ -1399,7 +1405,6 @@ async fn main(_spawner: Spawner) {
             AppState::Authenticator => Some(authenticator_app.update(&app_input)),
             AppState::BleAnalyzer => Some(ble_analyzer_app.update(&app_input)),
             AppState::Mp3Player => Some(media_controller.update(&app_input)),
-            AppState::SmartHome => Some(smarthome_app.update(&app_input)),
             AppState::Snake => Some(snake_game.update(&app_input)),
             AppState::Game2048 => Some(game_2048.update(&app_input)),
             AppState::Tetris => Some(tetris_game.update(&app_input)),
@@ -1407,6 +1412,48 @@ async fn main(_spawner: Spawner) {
             AppState::Maze => Some(maze_game.update(&app_input)),
             AppState::Watchface => None,
         };
+
+        // Settings owns the editing UX; the main loop owns radio lifecycle and
+        // persistence. Apply a validated request atomically before retrying.
+        if let Some(config) = settings_app.take_connect_request() {
+            let mut creds = StoredCredentials::empty();
+            creds.ssid_len = config.ssid_len;
+            creds.ssid[..config.ssid_len].copy_from_slice(&config.ssid[..config.ssid_len]);
+            creds.pass_len = config.pass_len;
+            creds.password[..config.pass_len].copy_from_slice(&config.password[..config.pass_len]);
+            match write_credentials(&creds) {
+                Ok(()) => {
+                    settings_app.set_stored_ssid(config.ssid_str());
+                    if wifi_started {
+                        let _ = wifi_controller.stop();
+                        wifi_started = false;
+                    }
+                    let client = ClientConfig::default()
+                        .with_ssid(alloc::string::String::from(config.ssid_str()))
+                        .with_password(alloc::string::String::from(config.pass_str()))
+                        .with_auth_method(if config.pass_len == 0 {
+                            AuthMethod::None
+                        } else {
+                            AuthMethod::WpaWpa2Personal
+                        });
+                    if wifi_controller
+                        .set_config(&ModeConfig::Client(client))
+                        .is_ok()
+                    {
+                        wifi_connected = false;
+                        wifi_attempt = 0;
+                        wifi_retry_at = None;
+                        wifi_toggle_request = true;
+                    } else {
+                        settings_app.wifi_state = crate::peripherals::wifi::WifiState::Error;
+                    }
+                }
+                Err(error) => {
+                    println!("[WIFI] credential persistence failed: {:?}", error);
+                    settings_app.wifi_state = crate::peripherals::wifi::WifiState::Error;
+                }
+            }
+        }
         if app_result == Some(AppResult::Exit) {
             app_state = AppState::Launcher;
             launcher = Launcher::new();
@@ -1432,7 +1479,9 @@ async fn main(_spawner: Spawner) {
             let previous = screen_state;
             screen_state = target_state;
             match (previous, screen_state) {
-                (3, 2) => display.set_brightness(watchface.brightness.min(0x40)),
+                (3, 2) => {
+                    let _ = display.set_brightness(watchface.brightness.min(0x40));
+                }
                 (_, 1) => {
                     fb.clear_color(Rgb565::BLACK);
                     let _ = watchface.render_aod(&mut fb);
@@ -1440,7 +1489,9 @@ async fn main(_spawner: Spawner) {
                     fb.flush(&mut display);
                     aod_last_minute = watchface.current_minute();
                 }
-                (_, 0) => display.display_off(),
+                (_, 0) => {
+                    let _ = display.display_off();
+                }
                 (_, 3) if previous == 0 => {
                     display.display_on();
                     display.set_brightness(watchface.brightness);
@@ -1476,7 +1527,6 @@ async fn main(_spawner: Spawner) {
                 AppState::Authenticator => authenticator_app.render(&mut fb),
                 AppState::BleAnalyzer => ble_analyzer_app.render(&mut fb),
                 AppState::Mp3Player => media_controller.render(&mut fb),
-                AppState::SmartHome => smarthome_app.render(&mut fb),
                 AppState::Snake => snake_game.render(&mut fb),
                 AppState::Game2048 => game_2048.render(&mut fb),
                 AppState::Tetris => tetris_game.render(&mut fb),

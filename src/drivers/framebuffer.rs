@@ -78,19 +78,18 @@ impl Framebuffer {
                 break;
             }
         }
-        self.flush(display);
+        let _ = self.flush(display);
     }
 
     /// Flush the entire framebuffer to the display via DMA QSPI.
-    pub fn flush(&self, display: &mut Co5300Display) {
-        if display
-            .set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16)
-            .is_err()
-        {
-            return;
-        }
+    pub fn flush(&self, display: &mut Co5300Display) -> Result<(), DisplayError> {
+        display.set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16)?;
         display.bus_mut().write_pixels(&self.buf);
-        let _ = display.bus_mut().take_error();
+        if display.bus_mut().take_error() {
+            Err(DisplayError::BusError)
+        } else {
+            Ok(())
+        }
     }
 
     /// Flush only a rectangular region (dirty rect optimization).
