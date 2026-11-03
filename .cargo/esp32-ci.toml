@@ -1,0 +1,4 @@
+# Embedded-only Cargo settings. This file is passed explicitly by the ESP32
+# CI job so host tests never inherit build-std or embedded linker settings.
+[unstable]
+build-std = ["core", "alloc"]

@@ -14,6 +14,7 @@ use esp_hal::gpio::Output;
 
 use crate::board;
 use crate::drivers::qspi_bus::QspiBus;
+use crate::drivers::display_window::DisplayWindow;
 
 use embedded_graphics_core::geometry::Point;
 
@@ -123,21 +124,20 @@ impl<'d> Co5300Display<'d> {
         {
             return Err(DisplayError::InvalidWindow);
         }
-        let x_start = x
-            .checked_add(self.col_offset)
-            .ok_or(DisplayError::InvalidWindow)?;
-        let x_end = x_start
-            .checked_add(w - 1)
-            .ok_or(DisplayError::InvalidWindow)?;
-        let y_start = y
-            .checked_add(self.row_offset)
-            .ok_or(DisplayError::InvalidWindow)?;
-        let y_end = y_start
-            .checked_add(h - 1)
-            .ok_or(DisplayError::InvalidWindow)?;
+        let window = DisplayWindow::checked(
+            x,
+            y,
+            w,
+            h,
+            self.width,
+            self.height,
+            self.col_offset,
+            self.row_offset,
+        )
+        .map_err(|_| DisplayError::InvalidWindow)?;
 
-        self.bus.write_c8d16d16(CMD_CASET, x_start, x_end);
-        self.bus.write_c8d16d16(CMD_PASET, y_start, y_end);
+        self.bus.write_c8d16d16(CMD_CASET, window.x_start, window.x_end);
+        self.bus.write_c8d16d16(CMD_PASET, window.y_start, window.y_end);
         self.bus.write_command(CMD_RAMWR);
         if self.bus.take_error() {
             return Err(DisplayError::BusError);

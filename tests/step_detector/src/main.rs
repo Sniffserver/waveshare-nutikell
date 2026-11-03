@@ -4,6 +4,14 @@
 extern crate alloc;
 
 use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
+use embedded_hal::i2c::ErrorKind;
+
+#[path = "../../../src/peripherals/touch.rs"]
+mod touch_driver;
+#[path = "../../../src/peripherals/wifi.rs"]
+mod wifi_driver;
+#[path = "../../../src/outdoor/steps.rs"]
+mod production_steps;
 
 // Reuse the production flash contract on the host. This deliberately has no
 // ESP HAL dependency, so layout regressions are caught before flashing.
@@ -175,15 +183,15 @@ impl<I: embedded_hal::i2c::I2c> Axp2101Power<I> {
             .write_read(AXP2101_ADDR, &[REG_AXP_VBAT_H], &mut h)?;
         self.i2c
             .write_read(AXP2101_ADDR, &[REG_AXP_VBAT_L], &mut l)?;
-        let raw = ((h[0] as u16) << 8) | (l[0] as u16);
-        Ok(raw & 0x3FFF)
+        let raw = (((h[0] as u16) << 8) | (l[0] as u16)) & 0x3FFF;
+        Ok(((raw as u32 * 11 + 5) / 10) as u16)
     }
 
     pub fn get_battery_percent(&mut self) -> Result<u8, I::Error> {
         let mut p = [0u8; 1];
         self.i2c
             .write_read(AXP2101_ADDR, &[REG_AXP_BAT_PERCENT], &mut p)?;
-        Ok(p[0])
+        Ok(p[0].min(100))
     }
 
     pub fn is_charging(&mut self) -> Result<bool, I::Error> {
@@ -202,10 +210,10 @@ impl<I: embedded_hal::i2c::I2c> Axp2101Power<I> {
     }
 
     pub fn read_battery(&mut self) -> Result<BatteryState, I::Error> {
-        let voltage_mv = self.get_battery_voltage().unwrap_or(0);
-        let percent = self.get_battery_percent().unwrap_or(0);
-        let charging = self.is_charging().unwrap_or(false);
-        let vbus_present = self.is_vbus_in().unwrap_or(false);
+        let voltage_mv = self.get_battery_voltage()?;
+        let percent = self.get_battery_percent()?;
+        let charging = self.is_charging()?;
+        let vbus_present = self.is_vbus_in()?;
         let connected = voltage_mv > 2000;
         Ok(BatteryState {
             connected,
@@ -777,6 +785,39 @@ mod tests {
     }
 
     #[test]
+    fn production_step_detector_detects_confirmed_peak() {
+        let mut detector = production_steps::StepDetector::default();
+        let mut now = 0u64;
+        for _ in 0..200 {
+            detector.update(
+                production_steps::AccelSample {
+                    x_g: 0.0,
+                    y_g: 0.0,
+                    z_g: 1.0,
+                },
+                now,
+            );
+            now += 32;
+        }
+        let envelope = [
+            1.00, 1.02, 1.05, 1.10, 1.18, 1.28, 1.38, 1.38, 1.38, 1.30, 1.20, 1.10,
+            1.03, 1.00,
+        ];
+        for magnitude in envelope {
+            detector.update(
+                production_steps::AccelSample {
+                    x_g: 0.0,
+                    y_g: 0.0,
+                    z_g: magnitude,
+                },
+                now,
+            );
+            now += 32;
+        }
+        assert_eq!(detector.steps(), 1);
+    }
+
+    #[test]
     fn qmi_who_am_i_is_valid() {
         let expectations = [I2cTransaction::write_read(
             QMI8658_ADDR,
@@ -839,9 +880,10 @@ mod tests {
 
     #[test]
     fn axp2101_reads_battery_voltage_and_percent() {
-        // Voltage ADC: 14-bit (0x1034 = 4148 mV)
-        let high = (4148 >> 8) as u8;
-        let low = (4148 & 0xFF) as u8;
+        // Voltage ADC: raw 14-bit 4148 * 1.1mV = 4563mV.
+        let raw = 4148;
+        let high = (raw >> 8) as u8;
+        let low = (raw & 0xFF) as u8;
 
         let expectations = [
             I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_VBAT_H], vec![high]),
@@ -856,12 +898,50 @@ mod tests {
         let mut pmic = Axp2101Power::new(i2c);
         let bat = pmic.read_battery().unwrap();
 
-        assert_eq!(bat.voltage_mv, 4148);
+        assert_eq!(bat.voltage_mv, 4563);
         assert_eq!(bat.percent, 88);
         assert!(bat.charging);
         assert!(bat.vbus_present);
         assert!(bat.connected);
         pmic.release().done();
+    }
+
+    #[test]
+    fn axp2101_propagates_i2c_failures() {
+        let expectations = [I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_VBAT_H], vec![0])
+            .with_error(ErrorKind::Other)];
+        let i2c = I2cMock::new(&expectations);
+        let mut pmic = Axp2101Power::new(i2c);
+        assert!(pmic.read_battery().is_err());
+        pmic.release().done();
+    }
+
+    #[test]
+    fn touch_tap_coordinates_are_decoded_and_classified() {
+        let expectations = [
+            I2cTransaction::write_read(0x38, vec![0x02], vec![1, 0x00, 100, 0x00, 200]),
+            I2cTransaction::write_read(0x38, vec![0x02], vec![0, 0, 0, 0, 0]),
+        ];
+        let i2c = I2cMock::new(&expectations);
+        let mut touch = touch_driver::Ft3168Touch::new(i2c);
+        let (point, gesture) = touch.poll().unwrap();
+        assert_eq!(point.unwrap().x, 100);
+        assert!(gesture.is_none());
+        let (point, gesture) = touch.poll().unwrap();
+        assert!(point.is_none());
+        let event = gesture.unwrap();
+        assert!(matches!(event.direction, touch_driver::SwipeDirection::Tap));
+        touch.release().done();
+    }
+
+    #[test]
+    fn wifi_config_keeps_ssid_and_password_within_wire_limits() {
+        let mut config = wifi_driver::WifiConfig::new();
+        config.set_ssid("012345678901234567890123456789012345");
+        config.set_password("012345678901234567890123456789012345678901234567890123456789012345");
+        assert_eq!(config.ssid_len, 32);
+        assert_eq!(config.pass_len, 63);
+        assert!(config.ssid_str().is_ascii());
     }
 
     #[test]

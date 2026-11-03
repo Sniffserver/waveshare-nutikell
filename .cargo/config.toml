@@ -5,9 +5,6 @@ target = "xtensa-esp32s3-none-elf"
 runner = "espflash flash --monitor"
 rustflags = ["-C", "link-arg=-Tlinkall.x"]
 
-[unstable]
-build-std = ["core", "alloc"]
-
 [env]
 # "error" silences the harmless esp_wifi_internal_tx warnings that fire
 # when the network runner task tries to send DHCP DISCOVER before the radio
@@ -16,4 +13,4 @@ ESP_LOG = "error"
 ESP_HAL_CONFIG_PSRAM_MODE = "octal"
 
 [alias]
-test-host = "test --lib --target x86_64-unknown-linux-gnu -Zbuild-std=std,core,alloc"
+test-host = "test --lib --target x86_64-unknown-linux-gnu"

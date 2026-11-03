@@ -192,3 +192,11 @@ impl<I: I2c> Ft3168Touch<I> {
         })
     }
 }
+
+impl<I> Ft3168Touch<I> {
+    /// Release the underlying bus device for host tests and bus ownership
+    /// transitions.
+    pub fn release(self) -> I {
+        self.i2c
+    }
+}
