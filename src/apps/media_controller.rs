@@ -160,19 +160,19 @@ pub struct MediaController {
 impl MediaController {
     pub fn new() -> Self {
         let mut tracks = FixedVec::new();
-        tracks.push(
+        let _ = tracks.push(
             TrackInfo::try_new("Strobe (Club Edit)", "deadmau5", "mau5trap Chill", 355)
                 .expect("built-in track fits"),
         );
-        tracks.push(
+        let _ = tracks.push(
             TrackInfo::try_new("Sunset Lover", "Petit Biscuit", "SoundCloud Wave", 237)
                 .expect("built-in track fits"),
         );
-        tracks.push(
+        let _ = tracks.push(
             TrackInfo::try_new("Resonance", "HOME", "Synthwave Essentials", 212)
                 .expect("built-in track fits"),
         );
-        tracks.push(
+        let _ = tracks.push(
             TrackInfo::try_new("Midnight City", "M83", "Hurry Up, We Are Dreaming", 243)
                 .expect("built-in track fits"),
         );

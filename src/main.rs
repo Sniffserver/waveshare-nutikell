@@ -87,6 +87,7 @@ use crate::apps::work_tracker::WorkTracker;
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::ble_analyzer::BleAnalyzerApp;
 use crate::drivers::co5300::Co5300Display;
+use crate::drivers::co5300::DisplayError;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::active_work::{
@@ -116,6 +117,12 @@ async fn net_task(
     mut runner: embassy_net::Runner<'static, esp_radio::wifi::WifiDevice<'static>>,
 ) -> ! {
     runner.run().await
+}
+
+fn report_display(result: Result<(), DisplayError>) {
+    if let Err(error) = result {
+        println!("[DISPLAY] runtime operation failed: {:?}", error);
+    }
 }
 
 // Simple NTP sync (UDP to pool.ntp.org:123)
@@ -686,7 +693,7 @@ async fn main(_spawner: Spawner) {
         println!("[PROVISION] AP up. Open http://192.168.4.1 to configure WiFi.");
         fb.clear_color(Rgb565::BLACK);
         setup_app.render(&mut fb);
-        fb.flush(&mut display);
+        report_display(fb.flush(&mut display));
 
         // Run AP services (DHCP + DNS + HTTP) alongside UI rendering & touch detection
         let mut ap_services =
@@ -714,7 +721,7 @@ async fn main(_spawner: Spawner) {
                     setup_app.mark_done();
                     fb.clear_color(Rgb565::BLACK);
                     setup_app.render(&mut fb);
-                    fb.flush(&mut display);
+                    report_display(fb.flush(&mut display));
                     Timer::after(Duration::from_secs(2)).await;
                     esp_hal::system::software_reset();
                 }
@@ -723,7 +730,7 @@ async fn main(_spawner: Spawner) {
                     if setup_app.phase == SetupPhase::Waiting {
                         fb.clear_color(Rgb565::BLACK);
                         setup_app.render(&mut fb);
-                        fb.flush(&mut display);
+                        report_display(fb.flush(&mut display));
                     }
                 }
             }
@@ -904,7 +911,7 @@ async fn main(_spawner: Spawner) {
     }
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
-    fb.flush(&mut display);
+    report_display(fb.flush(&mut display));
 
     // === Event-driven async main loop ===
     //
@@ -1264,8 +1271,8 @@ async fn main(_spawner: Spawner) {
                 if screen_state < 2 {
                     screen_state = 3;
                     page_dirty = true;
-                    display.display_on();
-                    display.set_brightness(watchface.brightness);
+                    report_display(display.display_on());
+                    report_display(display.set_brightness(watchface.brightness));
                 }
             }
 
@@ -1280,8 +1287,8 @@ async fn main(_spawner: Spawner) {
                 last_interaction = now;
                 if screen_state < 2 {
                     screen_state = 3;
-                    display.display_on();
-                    display.set_brightness(watchface.brightness);
+                    report_display(display.display_on());
+                    report_display(display.set_brightness(watchface.brightness));
                     page_dirty = true;
                 }
 
@@ -1299,7 +1306,7 @@ async fn main(_spawner: Spawner) {
                         } else if let Some(brightness) = WatchFace::brightness_from_tap(tp.x, tp.y)
                         {
                             watchface.brightness = brightness;
-                            display.set_brightness(brightness);
+                            report_display(display.set_brightness(brightness));
                             watchface.force_redraw();
                             page_dirty = true;
                         } else if WatchFace::is_cpu_zone(tp.x, tp.y) {
@@ -1480,26 +1487,26 @@ async fn main(_spawner: Spawner) {
             screen_state = target_state;
             match (previous, screen_state) {
                 (3, 2) => {
-                    let _ = display.set_brightness(watchface.brightness.min(0x40));
+                    report_display(display.set_brightness(watchface.brightness.min(0x40)));
                 }
                 (_, 1) => {
                     fb.clear_color(Rgb565::BLACK);
                     let _ = watchface.render_aod(&mut fb);
-                    display.set_brightness(0x18);
-                    fb.flush(&mut display);
+                    report_display(display.set_brightness(0x18));
+                    report_display(fb.flush(&mut display));
                     aod_last_minute = watchface.current_minute();
                 }
                 (_, 0) => {
-                    let _ = display.display_off();
+                    report_display(display.display_off());
                 }
                 (_, 3) if previous == 0 => {
-                    display.display_on();
-                    display.set_brightness(watchface.brightness);
+                    report_display(display.display_on());
+                    report_display(display.set_brightness(watchface.brightness));
                     watchface.force_redraw();
                     page_dirty = true;
                 }
                 (_, 3) => {
-                    display.set_brightness(watchface.brightness);
+                    report_display(display.set_brightness(watchface.brightness));
                     page_dirty = true;
                 }
                 _ => {}
@@ -1512,7 +1519,7 @@ async fn main(_spawner: Spawner) {
             if minute != aod_last_minute {
                 fb.clear_color(Rgb565::BLACK);
                 let _ = watchface.render_aod(&mut fb);
-                fb.flush(&mut display);
+                report_display(fb.flush(&mut display));
                 aod_last_minute = minute;
             }
         } else if screen_state >= 2 && (page_dirty || now >= next_watchface_flush) {
@@ -1533,7 +1540,7 @@ async fn main(_spawner: Spawner) {
                 AppState::Flappy => flappy_game.render(&mut fb),
                 AppState::Maze => maze_game.render(&mut fb),
             }
-            fb.flush(&mut display);
+            report_display(fb.flush(&mut display));
             page_dirty = false;
             next_watchface_flush = now + Duration::from_millis(100);
         }
