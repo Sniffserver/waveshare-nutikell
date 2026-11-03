@@ -83,6 +83,6 @@ tests/step_detector/.cargo/
   config.toml
 tests/step_detector/src/
   main.rs
-(2 doc file(s) omitted)
+(3 doc file(s) omitted)
 src/apps/ — 13 more file(s) (use list_files to enumerate)
 src/outdoor/ — 10 more file(s) (use list_files to enumerate)
