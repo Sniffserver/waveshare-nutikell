@@ -6,8 +6,8 @@
 //     0       4   Magic header: b"SBIE"
 //     4       1   SSID length (0-32)
 //     5      32   SSID bytes
-//    37       1   Password length (0-64)
-//    38      64   Password bytes
+//    37       1   Password length (0-63)
+//    38      64   Password bytes (one byte reserved)
 //  102     ...   (future use)
 //
 // Total: 102 bytes, stored in one flash sector (4096 bytes).
@@ -92,7 +92,7 @@ pub fn read_credentials() -> Option<StoredCredentials> {
         return None;
     }
     let pass_len = buf[37] as usize;
-    if pass_len > 64 {
+    if pass_len > 63 {
         return None;
     }
 
@@ -110,7 +110,9 @@ pub fn read_credentials() -> Option<StoredCredentials> {
 pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStorageError> {
     if creds.ssid_len == 0
         || creds.ssid_len > creds.ssid.len()
-        || creds.pass_len > creds.password.len()
+        || creds.pass_len > 63
+        || core::str::from_utf8(&creds.ssid[..creds.ssid_len]).is_err()
+        || core::str::from_utf8(&creds.password[..creds.pass_len]).is_err()
     {
         return Err(CredentialStorageError::InvalidLength);
     }

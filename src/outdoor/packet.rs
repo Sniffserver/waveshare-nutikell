@@ -14,6 +14,7 @@ pub enum PositionError {
     OutOfOrder,
     InvalidLatitude,
     InvalidLongitude,
+    InvalidTimestamp,
     InvalidCourse,
     InvalidAccuracy,
 }
@@ -56,6 +57,10 @@ impl PositionPacket {
             course_cdeg: u16::from_le_bytes([data[28], data[29]]),
             accuracy_cm: u32::from_le_bytes([data[30], data[31], data[32], data[33]]),
         };
+
+        if packet.timestamp_unix < 0 {
+            return Err(PositionError::InvalidTimestamp);
+        }
 
         let lat = packet.latitude_deg();
         let lon = packet.longitude_deg();
@@ -220,7 +225,7 @@ mod tests {
     #[test]
     fn rejects_invalid_longitude() {
         let mut pkt = sample_packet();
-        pkt.longitude_e7 = -1810_000_000; // -181 degrees W
+        pkt.longitude_e7 = -1_810_000_000; // -181 degrees W
         let bytes = pkt.encode();
         assert_eq!(
             PositionPacket::decode(&bytes),

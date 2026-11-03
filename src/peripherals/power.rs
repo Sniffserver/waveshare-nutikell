@@ -181,10 +181,10 @@ impl<I> Axp2101Power<I> {
 impl<I: I2c> Axp2101Power<I> {
     /// Read full battery telemetry in a single snapshot.
     pub fn read_battery(&mut self) -> Result<BatteryState, I::Error> {
-        let voltage_mv = self.get_battery_voltage().unwrap_or(0);
-        let percent = self.get_battery_percent().unwrap_or(0);
-        let charging = self.is_charging().unwrap_or(false);
-        let vbus_present = self.is_vbus_in().unwrap_or(false);
+        let voltage_mv = self.get_battery_voltage()?;
+        let percent = self.get_battery_percent()?;
+        let charging = self.is_charging()?;
+        let vbus_present = self.is_vbus_in()?;
         let connected = voltage_mv > 2000;
         Ok(BatteryState {
             connected,

@@ -23,6 +23,7 @@ pub struct AppInput {
 }
 
 /// Result of an app update
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AppResult {
     Continue,
     Exit, // Return to launcher/watchface

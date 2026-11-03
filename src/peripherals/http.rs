@@ -4,6 +4,8 @@
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::Duration;
 
+const MAX_STREAM_BODY: usize = 16 * 1024;
+
 /// Write the entire buffer to a TCP socket, handling partial writes.
 async fn write_all(socket: &mut TcpSocket<'_>, buf: &[u8]) -> Result<(), HttpError> {
     let mut written = 0;
@@ -106,11 +108,15 @@ pub async fn http_get_stream<'a, S: HttpResponseSink>(
         }
 
         if let Some(_) = status {
-            sink.on_chunk(&chunk[..read])
-                .map_err(HttpStreamError::Sink)?;
-            body_len = body_len
+            let next_len = body_len
                 .checked_add(read)
                 .ok_or(HttpStreamError::LengthMismatch)?;
+            if next_len > MAX_STREAM_BODY {
+                return Err(HttpStreamError::LengthMismatch);
+            }
+            sink.on_chunk(&chunk[..read])
+                .map_err(HttpStreamError::Sink)?;
+            body_len = next_len;
             if declared_len.is_some_and(|expected| body_len > expected) {
                 return Err(HttpStreamError::LengthMismatch);
             }
@@ -133,17 +139,25 @@ pub async fn http_get_stream<'a, S: HttpResponseSink>(
 
             let body = &headers[body_start..header_len];
             if !body.is_empty() {
-                sink.on_chunk(body).map_err(HttpStreamError::Sink)?;
-                body_len = body_len
+                let next_len = body_len
                     .checked_add(body.len())
                     .ok_or(HttpStreamError::LengthMismatch)?;
+                if next_len > MAX_STREAM_BODY {
+                    return Err(HttpStreamError::LengthMismatch);
+                }
+                sink.on_chunk(body).map_err(HttpStreamError::Sink)?;
+                body_len = next_len;
             }
             let remainder = &chunk[take..read];
             if !remainder.is_empty() {
-                sink.on_chunk(remainder).map_err(HttpStreamError::Sink)?;
-                body_len = body_len
+                let next_len = body_len
                     .checked_add(remainder.len())
                     .ok_or(HttpStreamError::LengthMismatch)?;
+                if next_len > MAX_STREAM_BODY {
+                    return Err(HttpStreamError::LengthMismatch);
+                }
+                sink.on_chunk(remainder).map_err(HttpStreamError::Sink)?;
+                body_len = next_len;
             }
             if declared_len.is_some_and(|expected| body_len > expected) {
                 return Err(HttpStreamError::LengthMismatch);
@@ -253,18 +267,18 @@ pub async fn http_post<'a>(
 // === Internal helpers ===
 
 fn parse_url(url: &str) -> Result<(&str, u16, &str), ()> {
-    let url = url.strip_prefix("http://").unwrap_or(url);
+    let url = url.strip_prefix("http://").ok_or(())?;
     let (host_port, path) = match url.find('/') {
         Some(i) => (&url[..i], &url[i..]),
         None => (url, "/"),
     };
     let (host, port) = match host_port.find(':') {
-        Some(i) => (
-            &host_port[..i],
-            host_port[i + 1..].parse::<u16>().unwrap_or(80),
-        ),
+        Some(i) => (&host_port[..i], host_port[i + 1..].parse::<u16>().map_err(|_| ())?),
         None => (host_port, 80),
     };
+    if host.is_empty() || path.is_empty() {
+        return Err(());
+    }
     Ok((host, port, path))
 }
 

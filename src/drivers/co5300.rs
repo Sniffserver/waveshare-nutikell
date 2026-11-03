@@ -107,10 +107,13 @@ impl<'d> Co5300Display<'d> {
 
     /// Set the address window for pixel writes.
     pub fn set_addr_window(&mut self, x: u16, y: u16, w: u16, h: u16) {
-        let x_start = x + self.col_offset;
-        let x_end = x_start + w - 1;
-        let y_start = y + self.row_offset;
-        let y_end = y_start + h - 1;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let x_start = x.saturating_add(self.col_offset);
+        let x_end = x_start.saturating_add(w.saturating_sub(1));
+        let y_start = y.saturating_add(self.row_offset);
+        let y_end = y_start.saturating_add(h.saturating_sub(1));
 
         self.bus.write_c8d16d16(CMD_CASET, x_start, x_end);
         self.bus.write_c8d16d16(CMD_PASET, y_start, y_end);
@@ -205,13 +208,6 @@ impl DrawTarget for Co5300Display<'_> {
             return Ok(());
         }
 
-        self.set_addr_window(
-            area.top_left.x as u16,
-            area.top_left.y as u16,
-            area.size.width as u16,
-            area.size.height as u16,
-        );
-
         // CO5300 requires minimum 2-line writes.
         // If height is 1, double it and duplicate each row.
         let actual_h = if area.size.height < 2 {
@@ -228,34 +224,22 @@ impl DrawTarget for Co5300Display<'_> {
             actual_h,
         );
 
-        self.bus.begin_pixels();
         let w = area.size.width as usize;
-        let mut row_buf = [0u16; 128]; // max width we support per row
-        let mut col = 0usize;
+        let mut row_buf = [0u16; board::LCD_WIDTH as usize];
+        let mut colors = colors.into_iter();
 
-        for color in colors.into_iter() {
-            if col < 128 {
-                row_buf[col] = RawU16::from(color).into_inner();
+        self.bus.begin_pixels();
+        for _ in 0..area.size.height {
+            for pixel in &mut row_buf[..w] {
+                *pixel = RawU16::from(colors.next().unwrap_or(Rgb565::BLACK)).into_inner();
             }
-            col += 1;
-
-            // End of row
-            if col >= w {
-                let slice = &row_buf[..w.min(128)];
-                self.bus.stream_pixels(slice);
-                if needs_row_dup {
-                    // Duplicate the row for minimum 2-line requirement
-                    self.bus.stream_pixels(slice);
-                }
-                col = 0;
+            for chunk in row_buf[..w].chunks(128) {
+                self.bus.stream_pixels(chunk);
             }
-        }
-        // Flush remaining partial row
-        if col > 0 {
-            let slice = &row_buf[..col.min(128)];
-            self.bus.stream_pixels(slice);
             if needs_row_dup {
-                self.bus.stream_pixels(slice);
+                for chunk in row_buf[..w].chunks(128) {
+                    self.bus.stream_pixels(chunk);
+                }
             }
         }
         self.bus.end_pixels();

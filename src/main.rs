@@ -46,8 +46,6 @@ mod outdoor;
 mod peripherals;
 mod ui;
 
-use alloc::vec;
-use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use embedded_graphics_core::prelude::RawData;
@@ -105,10 +103,9 @@ use crate::peripherals::session_log::{
     append_session, contains_session_id, next_session_id, session_log_health, LogSeverity,
     SessionRecord,
 };
-use crate::peripherals::settings::{load_settings, save_settings};
-use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
+use crate::peripherals::settings::load_settings;
+use crate::peripherals::touch::{Ft3168Touch, SwipeDirection, TouchPoint};
 use crate::ui::launcher::Launcher;
-use crate::ui::notification::{Notification, NotificationManager, Urgency};
 use crate::ui::pages::{self, Page};
 use crate::ui::power_page;
 use crate::ui::watchface::{WatchFace, SLEEP_DISSOLVE_FRAMES};
@@ -486,7 +483,8 @@ async fn main(_spawner: Spawner) {
                                 if !entry.attributes.is_directory() {
                                     let name = core::str::from_utf8(&entry.name.base_name())
                                         .unwrap_or("?");
-                                    let ext = core::str::from_utf8(&entry.name.extension()).unwrap_or("");
+                                    let ext =
+                                        core::str::from_utf8(&entry.name.extension()).unwrap_or("");
                                     println!("[SD]   {}.{}", name.trim(), ext.trim());
                                     file_count = file_count.saturating_add(1);
                                 }
@@ -503,7 +501,8 @@ async fn main(_spawner: Spawner) {
                                     if !entry.attributes.is_directory() {
                                         let name = core::str::from_utf8(&entry.name.base_name())
                                             .unwrap_or("?");
-                                        let ext = core::str::from_utf8(&entry.name.extension()).unwrap_or("");
+                                        let ext =
+                                            core::str::from_utf8(&entry.name.extension()).unwrap_or("");
                                         println!("[SD]   {}.{}", name.trim(), ext.trim());
                                         file_count = file_count.saturating_add(1);
                                     }
@@ -635,7 +634,6 @@ async fn main(_spawner: Spawner) {
     // Load persistent watch settings (hourly rate, display prefs, feature flags).
     // Falls back to defaults if flash is blank or CRC fails (first boot).
     let mut watch_settings = load_settings();
-    let mut settings_dirty_since: Option<Instant> = None;
     println!(
         "[SETTINGS] rate={}c/h timeout={}s ble={} wifi={}",
         watch_settings.hourly_rate_cents,
@@ -674,16 +672,22 @@ async fn main(_spawner: Spawner) {
     // === WiFi provisioning AP mode (runs BEFORE main watchface loop) ===
     //
     // If no credentials are configured anywhere (neither NVS nor compile-time
-    // env vars), the watch becomes an open AP named "Watch-Setup" and shows a
+    // env vars), the watch becomes a protected AP named "Watch-Setup" and shows a
     // QR code on the display.  The phone connects, opens the captive portal,
     // submits credentials, and the watch saves them to NVS then reboots.
     if !wifi_has_creds {
         println!("[PROVISION] No WiFi creds — starting AP provisioning");
 
+        let ap_password = alloc::format!("sbie-{:08X}", Instant::now().as_millis() as u32);
+
         // Reconfigure WiFi controller as Access Point
+        // Never expose credential provisioning on an open AP. The password is
+        // shown by the setup UI/QR flow and protects the plaintext HTTP form
+        // from arbitrary nearby clients.
         let ap_config = AccessPointConfig::default()
             .with_ssid(alloc::string::String::from(AP_SSID))
-            .with_auth_method(AuthMethod::None);
+            .with_password(ap_password.clone())
+            .with_auth_method(AuthMethod::WpaWpa2Personal);
         let ap_mode = ModeConfig::AccessPoint(ap_config);
         wifi_controller.set_config(&ap_mode).ok();
         wifi_controller.start().ok();
@@ -701,7 +705,7 @@ async fn main(_spawner: Spawner) {
         _spawner.spawn(net_task(ap_runner)).ok();
 
         // Provisioning UI
-        let mut setup_app = WifiSetupApp::new();
+        let mut setup_app = WifiSetupApp::new(&ap_password);
 
         println!("[PROVISION] AP up. Open http://192.168.4.1 to configure WiFi.");
         fb.clear_color(Rgb565::BLACK);
@@ -784,12 +788,12 @@ async fn main(_spawner: Spawner) {
     // === State ===
     let mut watchface = WatchFace::new();
     watchface.wifi_connected = false;
-    watchface.wifi_on = wifi_has_nvs_creds;
+    // Credentials being present does not mean the radio is running; Wi-Fi is
+    // explicitly user-activated from the watchface.
+    watchface.wifi_on = false;
     let mut current_page = Page::Clock;
     // Live power-diagnostic snapshot, updated in the main loop and read
     // by the Power page renderer. Kept as plain POD so reading it is free.
-    let mut power_stats = PowerStats::new();
-    power_stats.cpu_mhz = 160;
     let mut app_state = AppState::Watchface;
     let mut snake_game = SnakeGame::new();
     let mut game_2048 = Game2048::new();
@@ -811,9 +815,6 @@ async fn main(_spawner: Spawner) {
     );
     let mut ble_analyzer_app = alloc::boxed::Box::new(BleAnalyzerApp::new());
     log_memory("after-analyzer");
-    let mut notification_mgr = NotificationManager::new();
-    let mut demo_notif_scheduled = true;
-    let demo_notif_time = Instant::now() + Duration::from_secs(7);
     let mut outdoor_state = crate::outdoor::OutdoorState::new();
     let mut step_detector = crate::outdoor::StepDetector::default();
     let mut next_outdoor_tick = Instant::now();
@@ -847,16 +848,11 @@ async fn main(_spawner: Spawner) {
     // once per minute, not faster. Saves both DMA bandwidth and AMOLED current.
     let mut aod_last_minute: u8 = 99;
 
-    let pixel_count = board::LCD_WIDTH as usize * board::LCD_HEIGHT as usize;
-    let mut snap_current: Vec<u16> = vec![0u16; pixel_count];
-    let mut snap_target: Vec<u16> = vec![0u16; pixel_count];
     println!(
-        "[MEM:UI] framebuffer={}B snapshots={}B qspi_scratch={}B ble_analyzer={}B notif_history_cap={} auth_accounts_cap={}",
+        "[MEM:UI] framebuffer={}B qspi_scratch={}B ble_analyzer={}B auth_accounts_cap={}",
         fb.allocated_bytes(),
-        (snap_current.capacity() + snap_target.capacity()) * core::mem::size_of::<u16>(),
         display.bus_mut().scratch_capacity_bytes(),
         core::mem::size_of_val(&*ble_analyzer_app),
-        notification_mgr.history_capacity(),
         authenticator_app.account_capacity(),
     );
 
@@ -970,19 +966,18 @@ async fn main(_spawner: Spawner) {
     let mut next_watchface_flush = Instant::now();
     // Radio state: we track both what the user *wants* and what the radio
     // actually is. They drift apart briefly during connect/disconnect.
-    let mut wifi_on_request: bool = wifi_has_nvs_creds;
+    let mut wifi_on_request: bool = false;
     let mut wifi_started: bool = false; // controller.start() called
     let mut wifi_connected: bool = false; // connect_async succeeded
     let mut ntp_synced: bool = false;
-    let mut last_wifi_idle_check = Instant::now();
     let mut last_wifi_toggle = Instant::now();
+    let mut wifi_retry_at: Option<Instant> = None;
+    let mut wifi_attempt: u8 = 0;
     // Request pending from a UI tap on the WiFi button.
     let mut wifi_toggle_request: bool = false;
     // BLE state & supervisor — BLE disabled until heap stable at 384KB+
     let mut ble_on: bool = false;
-    let mut ble_toggle_request: bool = false;
     let mut ble_status = crate::outdoor::BleStatus::new();
-    let mut ble_backoff_until = Instant::now();
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum ImuPowerMode {
@@ -1170,9 +1165,9 @@ async fn main(_spawner: Spawner) {
             next_outdoor_tick = now + Duration::from_secs(1);
         }
 
-        // RTC: 1 Hz update is enough for a clock display. Skip when screen is off OR in AOD
-        // (AOD updates the RTC manually once per minute).
-        if screen_state >= 2 && now >= next_rtc {
+        // RTC: keep the model current in AOD as well, so the next minute is
+        // rendered correctly after a long display-off interval.
+        if screen_state >= 1 && now >= next_rtc {
             if let Ok(dt) = rtc.get_time() {
                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                 watchface.update_date(dt.day, dt.month, dt.year);
@@ -1189,30 +1184,66 @@ async fn main(_spawner: Spawner) {
         }
 
         // WiFi toggle logic
-        if wifi_toggle_request && now.duration_since(last_wifi_toggle) > Duration::from_secs(2) {
+        let retry_ready = wifi_retry_at.map_or(true, |deadline| now >= deadline);
+        if wifi_toggle_request
+            && retry_ready
+            && now.duration_since(last_wifi_toggle) > Duration::from_secs(2)
+        {
             last_wifi_toggle = now;
             wifi_toggle_request = false;
 
             if !wifi_started {
                 // Start WiFi radio
                 println!("[WIFI] Starting radio...");
-                wifi_controller.start().ok();
-                wifi_started = true;
-                wifi_on_request = true;
+                match wifi_controller.start() {
+                    Ok(()) => {
+                        wifi_started = true;
+                        wifi_on_request = true;
+                    }
+                    Err(e) => {
+                        println!("[WIFI] Start failed: {:?}", e);
+                        wifi_started = false;
+                        wifi_on_request = false;
+                        continue;
+                    }
+                }
 
                 // Give it a moment, then attempt connect
                 Timer::after(Duration::from_secs(2)).await;
 
                 // Try connecting
-                match wifi_controller.connect_async().await {
-                    Ok(()) => {
+                match embassy_time::with_timeout(
+                    Duration::from_secs(15),
+                    wifi_controller.connect_async(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
                         println!("[WIFI] Connected!");
                         wifi_connected = true;
                         ntp_synced = false; // will sync in next cycle
+                        wifi_attempt = 0;
+                        wifi_retry_at = None;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         println!("[WIFI] Connect failed: {:?}", e);
                         wifi_connected = false;
+                        wifi_controller.stop().ok();
+                        wifi_started = false;
+                        wifi_attempt = wifi_attempt.saturating_add(1);
+                        let backoff = (1u64 << wifi_attempt.min(5)).min(30);
+                        wifi_retry_at = Some(now + Duration::from_secs(backoff));
+                        wifi_toggle_request = true;
+                    }
+                    Err(_) => {
+                        println!("[WIFI] Connect timeout");
+                        wifi_connected = false;
+                        wifi_controller.stop().ok();
+                        wifi_started = false;
+                        wifi_attempt = wifi_attempt.saturating_add(1);
+                        let backoff = (1u64 << wifi_attempt.min(5)).min(30);
+                        wifi_retry_at = Some(now + Duration::from_secs(backoff));
+                        wifi_toggle_request = true;
                     }
                 }
             } else {
@@ -1222,15 +1253,22 @@ async fn main(_spawner: Spawner) {
                 wifi_started = false;
                 wifi_on_request = false;
                 wifi_connected = false;
+                wifi_retry_at = None;
+                wifi_attempt = 0;
             }
         }
 
         // NTP sync after WiFi connects
         if wifi_connected && !ntp_synced {
-            // Only sync if we have a stack
-            // (stack is available from embassy_net::new earlier)
-            // ntp_sync(stack, &mut rtc).await.ok(); // needs stack in scope
-            ntp_synced = true;
+            match ntp_sync(stack, &mut rtc).await {
+                Ok(()) => {
+                    ntp_synced = true;
+                    println!("[NTP] synchronized");
+                }
+                Err(()) => {
+                    println!("[NTP] synchronization failed; will retry");
+                }
+            }
         }
 
         // Battery check every 30s
@@ -1250,17 +1288,60 @@ async fn main(_spawner: Spawner) {
         // === Touch / button input ===
         // The touch driver reports live points while pressed and a classified
         // SwipeEvent once the finger is lifted.
+        let mut frame_touch = None;
+        let mut frame_swipe = None;
         if let Ok((point, swipe_event)) = touch.poll() {
             if point.is_some() {
+                frame_touch = point;
                 last_interaction = now;
                 // Wake screen if off/AOD.
                 if screen_state < 2 {
                     screen_state = 3;
                     page_dirty = true;
+                    display.display_on();
+                    display.set_brightness(watchface.brightness);
                 }
             }
 
             if let Some(event) = swipe_event {
+                frame_swipe = Some(event.direction);
+                let event_touch = TouchPoint {
+                    x: event.end_x,
+                    y: event.end_y,
+                    fingers: 0,
+                };
+                frame_touch = Some(event_touch);
+                last_interaction = now;
+                if screen_state < 2 {
+                    screen_state = 3;
+                    display.display_on();
+                    display.set_brightness(watchface.brightness);
+                    page_dirty = true;
+                }
+
+                if app_state == AppState::Watchface && event.direction == SwipeDirection::Tap {
+                    if let Some(tp) = frame_touch {
+                        if WatchFace::is_apps_zone(tp.x, tp.y) {
+                            app_state = AppState::Launcher;
+                            launcher = Launcher::new();
+                            page_dirty = true;
+                        } else if WatchFace::is_wifi_zone(tp.x, tp.y) {
+                            wifi_toggle_request = true;
+                        } else if WatchFace::is_gyro_zone(tp.x, tp.y) {
+                            watchface.toggle_gyro();
+                            page_dirty = true;
+                        } else if let Some(brightness) = WatchFace::brightness_from_tap(tp.x, tp.y) {
+                            watchface.brightness = brightness;
+                            display.set_brightness(brightness);
+                            watchface.force_redraw();
+                            page_dirty = true;
+                        } else if WatchFace::is_cpu_zone(tp.x, tp.y) {
+                            watchface.cycle_cpu();
+                            page_dirty = true;
+                        }
+                    }
+                }
+
                 match event.direction {
                     SwipeDirection::Right => {
                         // Swipe right → previous page.
@@ -1287,26 +1368,159 @@ async fn main(_spawner: Spawner) {
             }
         }
 
+        // Dispatch the normalized input to the active application. The
+        // release point is retained so taps can hit-test app controls.
+        let app_touch = frame_touch;
+        let app_swipe = frame_swipe;
+        let app_input = AppInput {
+            touch: app_touch,
+            swipe: app_swipe,
+            tap: app_swipe == Some(SwipeDirection::Tap),
+            accel,
+            dt_ms,
+        };
+        let app_result = match app_state {
+            AppState::Launcher => {
+                if let Some(tp) = app_touch {
+                    launcher.update(app_input.swipe, app_input.tap, tp.y)
+                } else {
+                    launcher.update(app_input.swipe, false, 0)
+                }
+                .map(|state| {
+                    match state {
+                        AppState::Outdoor => outdoor_app.setup(),
+                        AppState::Settings => {
+                            settings_app.wifi_state = crate::peripherals::wifi::WifiState::Disconnected
+                        }
+                        AppState::WorkTracker => work_tracker.setup(),
+                        AppState::Authenticator => authenticator_app.setup(),
+                        AppState::BleAnalyzer => ble_analyzer_app.setup(),
+                        AppState::Mp3Player => media_controller.setup(),
+                        AppState::SmartHome => smarthome_app.setup(),
+                        _ => {}
+                    }
+                    app_state = state;
+                    page_dirty = true;
+                });
+                None
+            }
+            AppState::Settings => {
+                settings_app.update(dt_ms);
+                if app_input.swipe == Some(SwipeDirection::Right) {
+                    Some(AppResult::Exit)
+                } else if app_input.tap {
+                    if let Some(tp) = app_touch {
+                        settings_app.handle_tap(tp.x, tp.y);
+                    }
+                    None
+                } else {
+                    None
+                }
+            }
+            AppState::Outdoor => {
+                if app_input.tap {
+                    if let Some(tp) = app_touch {
+                        outdoor_app.handle_tap(tp.x, tp.y, &mut outdoor_state);
+                    }
+                }
+                if app_input.swipe == Some(SwipeDirection::Right) {
+                    Some(AppResult::Exit)
+                } else {
+                    None
+                }
+            }
+            AppState::WorkTracker => Some(work_tracker.update(&app_input)),
+            AppState::Authenticator => Some(authenticator_app.update(&app_input)),
+            AppState::BleAnalyzer => Some(ble_analyzer_app.update(&app_input)),
+            AppState::Mp3Player => Some(media_controller.update(&app_input)),
+            AppState::SmartHome => Some(smarthome_app.update(&app_input)),
+            AppState::Snake => Some(snake_game.update(&app_input)),
+            AppState::Game2048 => Some(game_2048.update(&app_input)),
+            AppState::Tetris => Some(tetris_game.update(&app_input)),
+            AppState::Flappy => Some(flappy_game.update(&app_input)),
+            AppState::Maze => Some(maze_game.update(&app_input)),
+            AppState::Watchface => None,
+        };
+        if app_result == Some(AppResult::Exit) {
+            app_state = AppState::Launcher;
+            launcher = Launcher::new();
+            page_dirty = true;
+        }
+
+        // Idle display policy. Keep AOD only on the clock page; other apps
+        // go directly dark so an unattended app cannot burn the panel.
+        let idle = now.duration_since(last_interaction);
+        let target_state = if idle >= Duration::from_secs(600) {
+            0
+        } else if app_state == AppState::Watchface
+            && current_page == Page::Clock
+            && idle >= Duration::from_secs(40)
+        {
+            1
+        } else if idle >= Duration::from_secs(20) {
+            2
+        } else {
+            3
+        };
+        if target_state != screen_state {
+            let previous = screen_state;
+            screen_state = target_state;
+            match (previous, screen_state) {
+                (3, 2) => display.set_brightness(watchface.brightness.min(0x40)),
+                (_, 1) => {
+                    fb.clear_color(Rgb565::BLACK);
+                    let _ = watchface.render_aod(&mut fb);
+                    display.set_brightness(0x18);
+                    fb.flush(&mut display);
+                    aod_last_minute = watchface.current_minute();
+                }
+                (_, 0) => display.display_off(),
+                (_, 3) if previous == 0 => {
+                    display.display_on();
+                    display.set_brightness(watchface.brightness);
+                    watchface.force_redraw();
+                    page_dirty = true;
+                }
+                (_, 3) => {
+                    display.set_brightness(watchface.brightness);
+                    page_dirty = true;
+                }
+                _ => {}
+            }
+        }
+
         // === Render when dirty ===
-        if page_dirty || now >= next_watchface_flush {
+        if screen_state == 1 {
+            let minute = watchface.current_minute();
+            if minute != aod_last_minute {
+                fb.clear_color(Rgb565::BLACK);
+                let _ = watchface.render_aod(&mut fb);
+                fb.flush(&mut display);
+                aod_last_minute = minute;
+            }
+        } else if screen_state >= 2 && (page_dirty || now >= next_watchface_flush) {
             match app_state {
                 AppState::Watchface => {
                     let _ = watchface.render(&mut fb);
                 }
-                _ => {}
+                AppState::Launcher => launcher.render(&mut fb),
+                AppState::Settings => settings_app.render(&mut fb),
+                AppState::Outdoor => outdoor_app.render(&mut fb, &outdoor_state),
+                AppState::WorkTracker => work_tracker.render(&mut fb),
+                AppState::Authenticator => authenticator_app.render(&mut fb),
+                AppState::BleAnalyzer => ble_analyzer_app.render(&mut fb),
+                AppState::Mp3Player => media_controller.render(&mut fb),
+                AppState::SmartHome => smarthome_app.render(&mut fb),
+                AppState::Snake => snake_game.render(&mut fb),
+                AppState::Game2048 => game_2048.render(&mut fb),
+                AppState::Tetris => tetris_game.render(&mut fb),
+                AppState::Flappy => flappy_game.render(&mut fb),
+                AppState::Maze => maze_game.render(&mut fb),
             }
             fb.flush(&mut display);
             page_dirty = false;
             next_watchface_flush = now + Duration::from_millis(100);
         }
-
-        // === BLE toggle (disabled — feature removed from Cargo.toml) ===
-        // if ble_toggle_request && now.duration_since(ble_backoff_until) > Duration::ZERO {
-        //     ble_toggle_request = false;
-        //     ble_backoff_until = now + Duration::from_secs(5);
-        //     ble_on = !ble_on;
-        //     println!("[BLE] toggled -> {}", ble_on);
-        // }
 
     }
 }

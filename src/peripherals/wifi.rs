@@ -35,7 +35,7 @@ impl WifiConfig {
 
     pub fn set_password(&mut self, p: &str) {
         let bytes = p.as_bytes();
-        let len = bytes.len().min(64);
+        let len = bytes.len().min(63);
         self.password[..len].copy_from_slice(&bytes[..len]);
         self.pass_len = len;
     }

@@ -139,7 +139,6 @@ impl SmartHomeApp {
             HttpMethod::Get,
         );
         app.add_button("TV", "http://192.168.1.10/api/tv/toggle", HttpMethod::Get);
-        app.add_button("Custom API", "http://example.com/api", HttpMethod::Get);
 
         app
     }

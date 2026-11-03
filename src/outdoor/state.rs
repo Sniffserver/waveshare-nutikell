@@ -127,7 +127,9 @@ impl OutdoorState {
         now_unix: i64,
     ) -> Result<(), PositionError> {
         let packet = PositionPacket::decode(data)?;
-        if self.last_sequence != 0 && packet.sequence <= self.last_sequence {
+        if self.last_sequence != 0
+            && !crate::outdoor::ble::is_newer_sequence(packet.sequence, self.last_sequence)
+        {
             return Err(PositionError::OutOfOrder);
         }
 
@@ -194,8 +196,6 @@ impl OutdoorState {
         self.hike.status = HikeStatus::Stopped;
         self.has_prev_coord = false;
     }
-
-    /// Periodic update (called every 1 second).
 
     pub fn is_hike_running(&self) -> bool {
         self.hike.status == HikeStatus::Running

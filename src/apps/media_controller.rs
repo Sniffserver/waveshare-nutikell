@@ -6,7 +6,6 @@
 //! over BLE companion protocol.
 
 use alloc::format;
-use alloc::string::String;
 use heapless::{String as FixedString, Vec as FixedVec};
 
 use embedded_graphics::geometry::Point as EgPoint;

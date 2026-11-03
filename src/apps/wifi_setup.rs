@@ -1,7 +1,7 @@
 // WiFi Setup App — shown when no credentials are stored in NVS.
 //
 // Flow:
-//   1. Watch enters AP mode ("Watch-Setup", open network).
+//   1. Watch enters AP mode ("Watch-Setup", protected network).
 //   2. Screen shows:
 //       - A QR code encoding the AP connection string so phone camera
 //         can join the AP in one tap.
@@ -9,8 +9,8 @@
 //       - "Waiting for credentials..." spinner.
 //   3. Once the phone submits the form, screen transitions to "Saved!".
 //
-// QR payload (Wi-Fi Easy Connect standard):
-//   WIFI:S:Watch-Setup;T:nopass;;
+// QR payload (Wi-Fi Easy Connect standard) is generated per boot with the
+// temporary AP password.
 
 use embedded_graphics::geometry::Point as EgPoint;
 use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_9X18_BOLD};
@@ -21,6 +21,7 @@ use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use embedded_graphics::text::{Alignment, Text};
 
 use embedded_qr::{QrBuilder, Version2};
+use heapless::String;
 
 use crate::board;
 
@@ -31,9 +32,7 @@ pub const AP_SSID: &str = "Watch-Setup";
 /// IP address of the watch in AP mode (standard esp-idf default).
 pub const AP_IP: &str = "192.168.4.1";
 
-/// WiFi-connect QR payload for an open network.
-const QR_PAYLOAD: &[u8] = b"WIFI:S:Watch-Setup;T:nopass;;";
-
+/// WiFi-connect QR payload for the protected setup network.
 #[derive(Clone, Copy, PartialEq)]
 pub enum SetupPhase {
     /// Waiting for phone to connect and submit credentials.
@@ -44,14 +43,18 @@ pub enum SetupPhase {
 
 pub struct WifiSetupApp {
     pub phase: SetupPhase,
+    password: String<32>,
     /// Spinning indicator frame counter (incremented by `update`).
     tick: u32,
 }
 
 impl WifiSetupApp {
-    pub fn new() -> Self {
+    pub fn new(password: &str) -> Self {
+        let mut password_buf = String::new();
+        let _ = password_buf.push_str(password);
         Self {
             phase: SetupPhase::Waiting,
+            password: password_buf,
             tick: 0,
         }
     }
@@ -130,7 +133,7 @@ impl WifiSetupApp {
         .draw(d);
 
         // QR code centred on the screen — built at compile time into a const-size matrix
-        draw_qr(d);
+        draw_qr(d, self.password.as_str());
 
         // AP info
         let _ = Text::with_alignment(
@@ -143,7 +146,7 @@ impl WifiSetupApp {
         let _ = Text::with_alignment(AP_SSID, EgPoint::new(W / 2, 378), val_st, Alignment::Center)
             .draw(d);
         let _ = Text::with_alignment(
-            "(open network, no password)",
+            self.password.as_str(),
             EgPoint::new(W / 2, 391),
             label_st,
             Alignment::Center,
@@ -175,11 +178,16 @@ impl WifiSetupApp {
 /// Render the QR code centred at x=205, starting at y=92.
 /// Uses Version 2 (25×25 modules) @ 7px/module = 175px wide.
 /// Centre on 410px wide screen: (410 - 175) / 2 = 117.
-fn draw_qr<D: DrawTarget<Color = Rgb565>>(d: &mut D) {
+fn draw_qr<D: DrawTarget<Color = Rgb565>>(d: &mut D, password: &str) {
     const MODULE_PX: u32 = 7;
     const BORDER: u32 = 2; // quiet-zone modules
 
-    let matrix = match QrBuilder::<Version2>::new().build(QR_PAYLOAD) {
+    let mut payload = String::<96>::new();
+    let _ = core::fmt::write(
+        &mut payload,
+        format_args!("WIFI:S:{};T:WPA;P:{};;", AP_SSID, password),
+    );
+    let matrix = match QrBuilder::<Version2>::new().build(payload.as_bytes()) {
         Ok(m) => m,
         Err(_) => return,
     };

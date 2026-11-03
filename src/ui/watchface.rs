@@ -169,6 +169,10 @@ impl WatchFace {
         }
     }
 
+    pub const fn current_minute(&self) -> u8 {
+        self.minutes
+    }
+
     pub fn update_date(&mut self, day: u8, month: u8, year: u8) {
         self.day = day;
         self.month = month;

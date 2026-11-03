@@ -355,6 +355,7 @@ impl AuthenticatorApp {
             hidden: false,
             copied_toast: false,
         };
+        #[cfg(test)]
         app.load_default_sample_accounts();
         app
     }

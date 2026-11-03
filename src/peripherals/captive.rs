@@ -426,11 +426,15 @@ fn parse_form_creds(body: &[u8]) -> Option<StoredCredentials> {
     let ssid_bytes = url_decode(ssid_str);
     let pass_bytes = url_decode(pass_str);
 
-    let sl = ssid_bytes.len().min(32);
+    if ssid_bytes.is_empty() || ssid_bytes.len() > 32 || pass_bytes.len() > 63 {
+        return None;
+    }
+
+    let sl = ssid_bytes.len();
     creds.ssid[..sl].copy_from_slice(&ssid_bytes[..sl]);
     creds.ssid_len = sl;
 
-    let pl = pass_bytes.len().min(64);
+    let pl = pass_bytes.len();
     creds.password[..pl].copy_from_slice(&pass_bytes[..pl]);
     creds.pass_len = pl;
 

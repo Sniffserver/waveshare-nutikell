@@ -62,7 +62,7 @@ pub fn handle_position_packet(
         }
     };
 
-    if packet.sequence <= status.last_sequence && status.last_sequence != 0 {
+    if status.last_sequence != 0 && !is_newer_sequence(packet.sequence, status.last_sequence) {
         status.packets_dropped = status.packets_dropped.saturating_add(1);
         return false;
     }
@@ -72,6 +72,11 @@ pub fn handle_position_packet(
 
     let _ = outdoor.handle_position_write(data, packet.timestamp_unix);
     true
+}
+
+/// RFC 1982-style serial arithmetic for a wrapping u32 sequence number.
+pub const fn is_newer_sequence(candidate: u32, current: u32) -> bool {
+    candidate != current && candidate.wrapping_sub(current) < 0x8000_0000
 }
 
 impl BleStatus {
