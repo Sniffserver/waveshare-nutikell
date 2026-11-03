@@ -52,8 +52,8 @@ impl Framebuffer {
 
     /// Fill a rectangular region.
     pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u16) {
-        let x_end = (x + w).min(WIDTH);
-        let y_end = (y + h).min(HEIGHT);
+        let x_end = x.saturating_add(w).min(WIDTH);
+        let y_end = y.saturating_add(h).min(HEIGHT);
         for row in y..y_end {
             let start = row * WIDTH + x;
             let end = row * WIDTH + x_end;
@@ -83,8 +83,14 @@ impl Framebuffer {
 
     /// Flush the entire framebuffer to the display via DMA QSPI.
     pub fn flush(&self, display: &mut Co5300Display) {
-        display.set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16);
+        if display
+            .set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16)
+            .is_err()
+        {
+            return;
+        }
         display.bus_mut().write_pixels(&self.buf);
+        let _ = display.bus_mut().take_error();
     }
 
     /// Flush only a rectangular region (dirty rect optimization).
@@ -119,7 +125,28 @@ impl Framebuffer {
         let flush_w = (x1 - x0).max(2).min(WIDTH - x0);
         let flush_h = (y1 - y0).max(2).min(HEIGHT - y0);
 
-        display.set_addr_window(x0 as u16, y0 as u16, flush_w as u16, flush_h as u16);
+        if flush_w < 2 {
+            if x0 >= 1 {
+                x0 -= 1;
+            } else {
+                x1 = (x1 + 1).min(WIDTH);
+            }
+        }
+        if flush_h < 2 {
+            if y0 >= 1 {
+                y0 -= 1;
+            } else {
+                y1 = (y1 + 1).min(HEIGHT);
+            }
+        }
+        let flush_w = (x1 - x0).min(WIDTH - x0);
+        let flush_h = (y1 - y0).min(HEIGHT - y0);
+        if display
+            .set_addr_window(x0 as u16, y0 as u16, flush_w as u16, flush_h as u16)
+            .is_err()
+        {
+            return;
+        }
         display.bus_mut().begin_pixels();
         for row in y0..(y0 + flush_h) {
             let start = row * WIDTH + x0;

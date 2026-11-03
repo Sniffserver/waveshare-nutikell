@@ -100,8 +100,9 @@ pub struct SmartHomeApp {
 
 impl SmartHomeApp {
     pub fn new() -> Self {
-        // Default buttons - user can customize these
-        let mut app = Self {
+        // Smart-home commands are intentionally disabled until an authenticated
+        // HTTPS transport and per-device authorization are provisioned.
+        Self {
             buttons: [
                 ApiButton::empty(),
                 ApiButton::empty(),
@@ -115,35 +116,15 @@ impl SmartHomeApp {
             count: 0,
             scroll_offset: 0,
             selected: None,
-        };
-
-        // Pre-configured example buttons
-        app.add_button(
-            "Salon Light",
-            "http://192.168.1.10/api/toggle/1",
-            HttpMethod::Get,
-        );
-        app.add_button(
-            "Chambre",
-            "http://192.168.1.10/api/toggle/2",
-            HttpMethod::Get,
-        );
-        app.add_button(
-            "Porte",
-            "http://192.168.1.10/api/door/lock",
-            HttpMethod::Post,
-        );
-        app.add_button(
-            "Temperature",
-            "http://192.168.1.10/api/temp",
-            HttpMethod::Get,
-        );
-        app.add_button("TV", "http://192.168.1.10/api/tv/toggle", HttpMethod::Get);
-
-        app
+        }
     }
 
     pub fn add_button(&mut self, name: &str, url: &str, method: HttpMethod) {
+        // The current transport only implements plaintext HTTP. Do not allow
+        // callers to accidentally re-enable LAN commands through configuration.
+        if !url.starts_with("https://") {
+            return;
+        }
         if self.count < MAX_BUTTONS {
             self.buttons[self.count] = ApiButton::new(name, url, method);
             self.count += 1;

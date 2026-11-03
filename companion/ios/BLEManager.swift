@@ -1,4 +1,5 @@
 import CoreBluetooth
+import CryptoKit
 import Foundation
 
 enum OutdoorUUID {
@@ -17,10 +18,21 @@ final class BLEManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     private var watch: CBPeripheral?
     private var positionCharacteristic: CBCharacteristic?
     private var statusCharacteristic: CBCharacteristic?
+    private var positionKey: SymmetricKey?
 
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
+    }
+
+    /// Set the per-device key obtained from the provisioning flow/keychain.
+    /// The app intentionally has no built-in fallback key.
+    func configurePositionKey(_ keyData: Data) {
+        guard keyData.count >= 16 else {
+            stateText = "Invalid position key"
+            return
+        }
+        positionKey = SymmetricKey(data: keyData)
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -105,9 +117,13 @@ final class BLEManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     }
 
     func send(_ packet: PositionPacket) {
-        guard let watch, let characteristic = positionCharacteristic else { return }
-        let data = packet.encode()
-        guard data.count == 34 else {
+        guard let watch, let characteristic = positionCharacteristic,
+              let positionKey else {
+            stateText = "Position key not provisioned"
+            return
+        }
+        let data = packet.encode(authenticatedWith: positionKey)
+        guard data.count == 50 else {
             stateText = "Invalid packet length"
             return
         }

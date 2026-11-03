@@ -121,7 +121,7 @@ impl OutdoorState {
     }
 
     /// Process a newly received PositionPacket from BLE GATT write.
-    pub fn handle_position_write(
+    pub(crate) fn handle_position_write(
         &mut self,
         data: &[u8],
         now_unix: i64,

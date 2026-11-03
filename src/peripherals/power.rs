@@ -50,6 +50,12 @@ impl<I: I2c> Axp2101Power<I> {
         self.i2c.write(AXP2101_ADDR, &[reg, val])
     }
 
+    fn read_adc14(&mut self, high_reg: u8, low_reg: u8) -> Result<u16, I::Error> {
+        let high = self.read_reg(high_reg)? as u16;
+        let low = self.read_reg(low_reg)? as u16;
+        Ok(((high << 8) | low) & 0x3FFF)
+    }
+
     /// Initialize the AXP2101: enable power rails, disable IRQs, enable ADC.
     pub fn init(&mut self) -> Result<(), I::Error> {
         // === CRITICAL: Enable power rails for display ===
@@ -86,29 +92,28 @@ impl<I: I2c> Axp2101Power<I> {
 
     /// Read battery voltage in millivolts.
     pub fn get_battery_voltage(&mut self) -> Result<u16, I::Error> {
-        let high = self.read_reg(REG_VBAT_H)? as u16;
-        let low = self.read_reg(REG_VBAT_L)? as u16;
-        // 14-bit ADC, 1.1mV per LSB
-        Ok(((high << 8) | low) & 0x3FFF)
+        // VBAT ADC: 14-bit, 1.1mV per LSB.
+        let raw = self.read_adc14(REG_VBAT_H, REG_VBAT_L)? as u32;
+        Ok(((raw * 11 + 5) / 10).min(u16::MAX as u32) as u16)
     }
 
     /// Read VBUS voltage in millivolts.
     pub fn get_vbus_voltage(&mut self) -> Result<u16, I::Error> {
-        let high = self.read_reg(REG_VBUS_H)? as u16;
-        let low = self.read_reg(REG_VBUS_L)? as u16;
-        Ok(((high << 8) | low) & 0x3FFF)
+        // VBUS ADC: 14-bit, 1.7mV per LSB.
+        let raw = self.read_adc14(REG_VBUS_H, REG_VBUS_L)? as u32;
+        Ok(((raw * 17 + 5) / 10).min(u16::MAX as u32) as u16)
     }
 
     /// Read system voltage in millivolts.
     pub fn get_system_voltage(&mut self) -> Result<u16, I::Error> {
-        let high = self.read_reg(REG_VSYS_H)? as u16;
-        let low = self.read_reg(REG_VSYS_L)? as u16;
-        Ok(((high << 8) | low) & 0x3FFF)
+        // VSYS ADC: 14-bit, 1.4mV per LSB.
+        let raw = self.read_adc14(REG_VSYS_H, REG_VSYS_L)? as u32;
+        Ok(((raw * 14 + 5) / 10).min(u16::MAX as u32) as u16)
     }
 
     /// Read battery percentage (0-100).
     pub fn get_battery_percent(&mut self) -> Result<u8, I::Error> {
-        self.read_reg(REG_BAT_PERCENT)
+        Ok(self.read_reg(REG_BAT_PERCENT)?.min(100))
     }
 
     /// Check if charging.

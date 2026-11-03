@@ -3,6 +3,7 @@
 // I2C address 0x6B
 
 use embedded_hal::i2c::I2c;
+use esp_hal::delay::Delay;
 use esp_println::println;
 
 const QMI8658_ADDR: u8 = 0x6B;
@@ -37,6 +38,7 @@ pub struct GyroData {
 
 pub struct Qmi8658Imu<I> {
     i2c: I,
+    delay: Delay,
     accel_scale: f32,
     gyro_scale: f32,
 }
@@ -45,6 +47,7 @@ impl<I: I2c> Qmi8658Imu<I> {
     pub fn new(i2c: I) -> Self {
         Self {
             i2c,
+            delay: Delay::new(),
             accel_scale: 1.0 / 4096.0, // ±8g default
             gyro_scale: 1.0 / 64.0,    // ±512 dps default
         }
@@ -71,9 +74,7 @@ impl<I: I2c> Qmi8658Imu<I> {
             return Ok(false);
         }
 
-        // Reset: CTRL1 bit 6 = soft reset (auto-clear)
-        self.write_reg(REG_CTRL1, 0x40)?;
-        // Wait for reset (no delay available here, just write next configs)
+        self.reset()?;
 
         // CTRL1: address auto-increment enabled
         self.write_reg(REG_CTRL1, 0x60)?;
@@ -98,6 +99,14 @@ impl<I: I2c> Qmi8658Imu<I> {
         Ok(true)
     }
 
+    /// Reset the sensor and wait for the device to leave reset before any
+    /// configuration writes. QMI8658 requires this settling interval.
+    pub fn reset(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_CTRL1, 0x40)?;
+        self.delay.delay_millis(2);
+        Ok(())
+    }
+
     /// Power down accelerometer + gyroscope. Call when sensors are not needed.
     /// Reduces idle current significantly (gyro alone draws ~1.5 mA).
     pub fn power_down(&mut self) -> Result<(), I::Error> {
@@ -118,6 +127,11 @@ impl<I: I2c> Qmi8658Imu<I> {
     pub fn accel_ready(&mut self) -> Result<bool, I::Error> {
         let status = self.read_reg(REG_STATUS0)?;
         Ok(status & 0x01 != 0)
+    }
+
+    pub fn gyro_ready(&mut self) -> Result<bool, I::Error> {
+        let status = self.read_reg(REG_STATUS0)?;
+        Ok(status & 0x02 != 0)
     }
 
     /// Initialize accelerometer only (low-power navigation mode).
@@ -153,6 +167,14 @@ impl<I: I2c> Qmi8658Imu<I> {
         Ok(AccelData { x, y, z })
     }
 
+    /// Read a sample only when the IMU reports fresh accelerometer data.
+    pub fn read_accel_if_ready(&mut self) -> Result<Option<AccelData>, I::Error> {
+        if !self.accel_ready()? {
+            return Ok(None);
+        }
+        self.read_accel().map(Some)
+    }
+
     /// Read gyroscope data in degrees per second.
     pub fn read_gyro(&mut self) -> Result<GyroData, I::Error> {
         let mut buf = [0u8; 6];
@@ -163,6 +185,14 @@ impl<I: I2c> Qmi8658Imu<I> {
         let z = i16::from_le_bytes([buf[4], buf[5]]) as f32 * self.gyro_scale;
 
         Ok(GyroData { x, y, z })
+    }
+
+    /// Read a sample only when the IMU reports fresh gyroscope data.
+    pub fn read_gyro_if_ready(&mut self) -> Result<Option<GyroData>, I::Error> {
+        if !self.gyro_ready()? {
+            return Ok(None);
+        }
+        self.read_gyro().map(Some)
     }
 
     /// Read chip temperature in °C.

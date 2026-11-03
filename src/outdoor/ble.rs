@@ -51,10 +51,11 @@ pub const fn reconnect_delay_secs(attempt: u8) -> u64 {
 /// Validates sequence monotonicity and updates both BleStatus and OutdoorState.
 pub fn handle_position_packet(
     data: &[u8],
+    auth_key: &[u8],
     status: &mut BleStatus,
     outdoor: &mut OutdoorState,
 ) -> bool {
-    let packet = match PositionPacket::decode(data) {
+    let packet = match PositionPacket::decode_authenticated(data, auth_key) {
         Ok(p) => p,
         Err(_) => {
             status.packets_dropped = status.packets_dropped.saturating_add(1);
@@ -70,7 +71,7 @@ pub fn handle_position_packet(
     status.last_sequence = packet.sequence;
     status.packets_received = status.packets_received.saturating_add(1);
 
-    let _ = outdoor.handle_position_write(data, packet.timestamp_unix);
+    let _ = outdoor.handle_position_write(&data[..crate::outdoor::packet::POSITION_PACKET_LEN], packet.timestamp_unix);
     true
 }
 
@@ -214,7 +215,9 @@ mod tests {
         };
 
         // First packet: valid sequence
-        let ok1 = handle_position_packet(&pkt1.encode(), &mut status, &mut outdoor);
+        let key = b"test-only-position-key";
+        let bytes1 = pkt1.encode_authenticated(key).unwrap();
+        let ok1 = handle_position_packet(&bytes1, key, &mut status, &mut outdoor);
         assert!(ok1);
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 0);
@@ -222,21 +225,22 @@ mod tests {
         assert_eq!(outdoor.latitude_deg, 59.437);
 
         // Duplicate sequence (10 <= 10): dropped
-        let ok_dup = handle_position_packet(&pkt1.encode(), &mut status, &mut outdoor);
+        let ok_dup = handle_position_packet(&bytes1, key, &mut status, &mut outdoor);
         assert!(!ok_dup);
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 1);
 
         // Invalid packet (bad length): dropped
         let corrupt = [0u8; 12];
-        let ok_corrupt = handle_position_packet(&corrupt, &mut status, &mut outdoor);
+        let ok_corrupt = handle_position_packet(&corrupt, key, &mut status, &mut outdoor);
         assert!(!ok_corrupt);
         assert_eq!(status.packets_dropped, 2);
 
         // Monotonic sequence (11 > 10): accepted
         let mut pkt2 = pkt1;
         pkt2.sequence = 11;
-        let ok2 = handle_position_packet(&pkt2.encode(), &mut status, &mut outdoor);
+        let bytes2 = pkt2.encode_authenticated(key).unwrap();
+        let ok2 = handle_position_packet(&bytes2, key, &mut status, &mut outdoor);
         assert!(ok2);
         assert_eq!(status.packets_received, 2);
         assert_eq!(status.last_sequence, 11);

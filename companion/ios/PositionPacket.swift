@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct PositionPacket {
     let sequence: UInt32
@@ -11,7 +12,7 @@ struct PositionPacket {
     let accuracyCm: UInt32
     let flags: UInt8
 
-    func encode() -> Data {
+    func encode(authenticatedWith key: SymmetricKey) -> Data {
         var bytes = [UInt8]()
         bytes.reserveCapacity(34)
         bytes.append(1) // Version 1
@@ -24,6 +25,8 @@ struct PositionPacket {
         bytes.append(contentsOf: speedCms.littleEndianBytes)
         bytes.append(contentsOf: courseCdeg.littleEndianBytes)
         bytes.append(contentsOf: accuracyCm.littleEndianBytes)
+        let tag = HMAC<SHA256>.authenticationCode(for: Data(bytes), using: key)
+        bytes.append(contentsOf: tag.prefix(16))
         return Data(bytes)
     }
 }

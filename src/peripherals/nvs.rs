@@ -4,13 +4,15 @@
 //   Offset  Size  Content
 //   ------  ----  -------
 //     0       4   Magic header: b"SBIE"
-//     4       1   SSID length (0-32)
-//     5      32   SSID bytes
-//    37       1   Password length (0-63)
-//    38      64   Password bytes (one byte reserved)
-//  102     ...   (future use)
+//     4       1   Record version (2)
+//     5       1   SSID length (0-32)
+//     6      32   SSID bytes
+//    38       1   Password length (0-63)
+//    39      64   Password bytes (one byte reserved)
+//   104      32   HMAC-SHA-256 record tag
+//   136     ...   (future use)
 //
-// Total: 102 bytes, stored in one flash sector (4096 bytes).
+// Total record: 136 bytes, stored in one flash sector (4096 bytes).
 // The sector address is 0x9000, which is the first sector of the application-owned NVS partition.
 // The entire 24 KiB NVS partition (0x9000..0xEFFF) is managed by this firmware.
 // ESP-IDF's own NVS implementation is not used by this application.
@@ -22,6 +24,8 @@
 use crate::peripherals::flash_layout::CREDENTIALS;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 /// Flash sector address for our credential storage.
 /// 0x9000 = start of application-owned NVS partition (24 KiB total: 0x9000..0xEFFF).
@@ -31,6 +35,27 @@ const CRED_FLASH_OFFSET: u32 = CREDENTIALS.start;
 const CRED_SECTOR_SIZE: u32 = CREDENTIALS.len;
 
 const MAGIC: [u8; 4] = *b"SBIE";
+const RECORD_VERSION: u8 = 2;
+const RECORD_AUTH_END: usize = 104;
+const RECORD_TAG_START: usize = RECORD_AUTH_END;
+const RECORD_READ_LEN: usize = RECORD_TAG_START + 32;
+
+// Inject this at release build time from the provisioning secret store. There
+// is deliberately no firmware fallback: a missing key makes storage unusable.
+fn credential_key() -> Option<&'static [u8]> {
+    option_env!("SBIE_CREDENTIAL_KEY").map(|key| key.as_bytes()).filter(|key| key.len() >= 16)
+}
+
+fn flash_encryption_enabled() -> bool {
+    #[cfg(target_arch = "xtensa")]
+    {
+        esp_hal::efuse::Efuse::flash_encryption()
+    }
+    #[cfg(not(target_arch = "xtensa"))]
+    {
+        true
+    }
+}
 
 /// Stored WiFi credentials. Zeroable / copyable so main.rs can own it.
 #[derive(Clone)]
@@ -47,6 +72,9 @@ pub enum CredentialStorageError {
     Erase,
     Write,
     VerifyFailed,
+    KeyUnavailable,
+    AuthenticationFailed,
+    FlashEncryptionRequired,
 }
 
 impl StoredCredentials {
@@ -74,11 +102,15 @@ impl StoredCredentials {
 
 /// Read credentials from flash. Returns `None` if no valid record found.
 pub fn read_credentials() -> Option<StoredCredentials> {
+    if !flash_encryption_enabled() {
+        return None;
+    }
+    let key = credential_key()?;
     let mut storage = FlashStorage::new();
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; 144];
 
     // FlashStorage::read requires aligned 4-byte offset and len
-    if storage.read(CRED_FLASH_OFFSET, &mut buf[..104]).is_err() {
+    if storage.read(CRED_FLASH_OFFSET, &mut buf[..RECORD_READ_LEN]).is_err() {
         return None;
     }
 
@@ -87,20 +119,26 @@ pub fn read_credentials() -> Option<StoredCredentials> {
         return None;
     }
 
-    let ssid_len = buf[4] as usize;
+    if buf[4] != RECORD_VERSION {
+        return None;
+    }
+    let ssid_len = buf[5] as usize;
     if ssid_len > 32 {
         return None;
     }
-    let pass_len = buf[37] as usize;
+    let pass_len = buf[38] as usize;
     if pass_len > 63 {
         return None;
     }
 
     let mut creds = StoredCredentials::empty();
     creds.ssid_len = ssid_len;
-    creds.ssid[..ssid_len].copy_from_slice(&buf[5..5 + ssid_len]);
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+    mac.update(&buf[..RECORD_AUTH_END]);
+    mac.verify_slice(&buf[RECORD_TAG_START..RECORD_READ_LEN]).ok()?;
+    creds.ssid[..ssid_len].copy_from_slice(&buf[6..6 + ssid_len]);
     creds.pass_len = pass_len;
-    creds.password[..pass_len].copy_from_slice(&buf[38..38 + pass_len]);
+    creds.password[..pass_len].copy_from_slice(&buf[39..39 + pass_len]);
 
     Some(creds)
 }
@@ -108,6 +146,10 @@ pub fn read_credentials() -> Option<StoredCredentials> {
 /// Write credentials to flash. Erases the sector and rewrites.
 /// Returns Ok(()) on success.
 pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStorageError> {
+    if !flash_encryption_enabled() {
+        return Err(CredentialStorageError::FlashEncryptionRequired);
+    }
+    let key = credential_key().ok_or(CredentialStorageError::KeyUnavailable)?;
     if creds.ssid_len == 0
         || creds.ssid_len > creds.ssid.len()
         || creds.pass_len > 63
@@ -119,13 +161,18 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStor
     let mut storage = FlashStorage::new();
 
     // Build the 4096-byte sector buffer (rest stays 0xFF to preserve flash health)
-    // We only need 102 bytes but FlashStorage::write erases the whole sector.
+    // We only need 136 bytes but FlashStorage::write erases the whole sector.
     let mut sector = alloc::boxed::Box::new([0xFFu8; CRED_SECTOR_SIZE as usize]);
     sector[0..4].copy_from_slice(&MAGIC);
-    sector[4] = creds.ssid_len as u8;
-    sector[5..5 + creds.ssid_len].copy_from_slice(&creds.ssid[..creds.ssid_len]);
-    sector[37] = creds.pass_len as u8;
-    sector[38..38 + creds.pass_len].copy_from_slice(&creds.password[..creds.pass_len]);
+    sector[4] = RECORD_VERSION;
+    sector[5] = creds.ssid_len as u8;
+    sector[6..6 + creds.ssid_len].copy_from_slice(&creds.ssid[..creds.ssid_len]);
+    sector[38] = creds.pass_len as u8;
+    sector[39..39 + creds.pass_len].copy_from_slice(&creds.password[..creds.pass_len]);
+    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        .map_err(|_| CredentialStorageError::KeyUnavailable)?;
+    mac.update(&sector[..RECORD_AUTH_END]);
+    sector[RECORD_TAG_START..RECORD_READ_LEN].copy_from_slice(&mac.finalize().into_bytes());
 
     // Erase the sector first
     storage

@@ -41,6 +41,8 @@ embedded-qr = "0.2"
 # Networking & Storage
 edge-dhcp = { version = "0.8.0", default-features = false }
 libm = "0.2"
+hmac = { version = "0.12.1", default-features = false }
+sha2 = { version = "0.10.9", default-features = false }
 
 [profile.dev]
 opt-level = "s"

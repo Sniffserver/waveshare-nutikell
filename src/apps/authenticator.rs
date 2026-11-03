@@ -375,7 +375,8 @@ impl AuthenticatorApp {
         Ok(())
     }
 
-    pub fn load_default_sample_accounts(&mut self) {
+    #[cfg(test)]
+    fn load_default_sample_accounts(&mut self) {
         self.accounts.clear();
         // Standard RFC 6238 test vectors only (never embed private or personal secrets)
         self.accounts.push(TotpAccount::new(

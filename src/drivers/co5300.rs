@@ -56,6 +56,7 @@ pub struct Co5300Display<'d> {
 #[derive(Debug)]
 pub enum DisplayError {
     BusError,
+    InvalidWindow,
 }
 
 impl<'d> Co5300Display<'d> {
@@ -106,33 +107,72 @@ impl<'d> Co5300Display<'d> {
     }
 
     /// Set the address window for pixel writes.
-    pub fn set_addr_window(&mut self, x: u16, y: u16, w: u16, h: u16) {
-        if w == 0 || h == 0 {
-            return;
+    pub fn set_addr_window(
+        &mut self,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+    ) -> Result<(), DisplayError> {
+        if w == 0
+            || h == 0
+            || x >= self.width
+            || y >= self.height
+            || w > self.width - x
+            || h > self.height - y
+        {
+            return Err(DisplayError::InvalidWindow);
         }
-        let x_start = x.saturating_add(self.col_offset);
-        let x_end = x_start.saturating_add(w.saturating_sub(1));
-        let y_start = y.saturating_add(self.row_offset);
-        let y_end = y_start.saturating_add(h.saturating_sub(1));
+        let x_start = x
+            .checked_add(self.col_offset)
+            .ok_or(DisplayError::InvalidWindow)?;
+        let x_end = x_start
+            .checked_add(w - 1)
+            .ok_or(DisplayError::InvalidWindow)?;
+        let y_start = y
+            .checked_add(self.row_offset)
+            .ok_or(DisplayError::InvalidWindow)?;
+        let y_end = y_start
+            .checked_add(h - 1)
+            .ok_or(DisplayError::InvalidWindow)?;
 
         self.bus.write_c8d16d16(CMD_CASET, x_start, x_end);
         self.bus.write_c8d16d16(CMD_PASET, y_start, y_end);
         self.bus.write_command(CMD_RAMWR);
+        if self.bus.take_error() {
+            return Err(DisplayError::BusError);
+        }
+        Ok(())
     }
 
     /// Fill the entire screen with a single color.
-    pub fn fill_screen(&mut self, color: Rgb565) {
+    pub fn fill_screen(&mut self, color: Rgb565) -> Result<(), DisplayError> {
         let raw: u16 = RawU16::from(color).into_inner();
-        self.set_addr_window(0, 0, self.width, self.height);
+        self.set_addr_window(0, 0, self.width, self.height)?;
         let total = self.width as u32 * self.height as u32;
         self.bus.write_repeat(raw, total);
+        if self.bus.take_error() {
+            return Err(DisplayError::BusError);
+        }
+        Ok(())
     }
 
     /// Fill a rectangular area with a solid color.
-    pub fn write_pixels_area(&mut self, x: u16, y: u16, w: u16, h: u16, color: Rgb565) {
+    pub fn write_pixels_area(
+        &mut self,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        color: Rgb565,
+    ) -> Result<(), DisplayError> {
         let raw: u16 = RawU16::from(color).into_inner();
-        self.set_addr_window(x, y, w, h);
+        self.set_addr_window(x, y, w, h)?;
         self.bus.write_repeat(raw, w as u32 * h as u32);
+        if self.bus.take_error() {
+            return Err(DisplayError::BusError);
+        }
+        Ok(())
     }
 
     /// Get mutable reference to bus (for framebuffer flush).
@@ -188,8 +228,11 @@ impl DrawTarget for Co5300Display<'_> {
             {
                 let raw: u16 = RawU16::from(color).into_inner();
                 // Write 2x2 block (4 pixels)
-                self.set_addr_window(coord.x as u16, coord.y as u16, 2, 2);
+                self.set_addr_window(coord.x as u16, coord.y as u16, 2, 2)?;
                 self.bus.write_pixels(&[raw, raw, raw, raw]);
+                if self.bus.take_error() {
+                    return Err(DisplayError::BusError);
+                }
             }
         }
         Ok(())
@@ -210,21 +253,24 @@ impl DrawTarget for Co5300Display<'_> {
 
         // CO5300 requires minimum 2-line writes.
         // If height is 1, double it and duplicate each row.
+        let actual_w = if area.size.width < 2 { 2 } else { area.size.width as u16 };
         let actual_h = if area.size.height < 2 {
             2
         } else {
             area.size.height as u16
         };
+        let duplicate_column = area.size.width < 2;
         let needs_row_dup = area.size.height < 2;
 
         self.set_addr_window(
             area.top_left.x as u16,
             area.top_left.y as u16,
-            area.size.width as u16,
+            actual_w,
             actual_h,
-        );
+        )?;
 
         let w = area.size.width as usize;
+        let stream_w = actual_w as usize;
         let mut row_buf = [0u16; board::LCD_WIDTH as usize];
         let mut colors = colors.into_iter();
 
@@ -233,16 +279,22 @@ impl DrawTarget for Co5300Display<'_> {
             for pixel in &mut row_buf[..w] {
                 *pixel = RawU16::from(colors.next().unwrap_or(Rgb565::BLACK)).into_inner();
             }
-            for chunk in row_buf[..w].chunks(128) {
+            if duplicate_column {
+                row_buf[1] = row_buf[0];
+            }
+            for chunk in row_buf[..stream_w].chunks(128) {
                 self.bus.stream_pixels(chunk);
             }
             if needs_row_dup {
-                for chunk in row_buf[..w].chunks(128) {
+                for chunk in row_buf[..stream_w].chunks(128) {
                     self.bus.stream_pixels(chunk);
                 }
             }
         }
         self.bus.end_pixels();
+        if self.bus.take_error() {
+            return Err(DisplayError::BusError);
+        }
 
         Ok(())
     }
@@ -258,14 +310,19 @@ impl DrawTarget for Co5300Display<'_> {
         }
 
         let raw: u16 = RawU16::from(color).into_inner();
+        let actual_w = if area.size.width < 2 { 2 } else { area.size.width as u16 };
+        let actual_h = if area.size.height < 2 { 2 } else { area.size.height as u16 };
         self.set_addr_window(
             area.top_left.x as u16,
             area.top_left.y as u16,
-            area.size.width as u16,
-            area.size.height as u16,
-        );
+            actual_w,
+            actual_h,
+        )?;
         self.bus
-            .write_repeat(raw, area.size.width * area.size.height);
+            .write_repeat(raw, actual_w as u32 * actual_h as u32);
+        if self.bus.take_error() {
+            return Err(DisplayError::BusError);
+        }
         Ok(())
     }
 }

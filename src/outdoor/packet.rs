@@ -1,6 +1,11 @@
-//! PositionPacket binary codec (34 bytes) for iPhone BLE GPS telemetry.
+//! Authenticated PositionPacket binary codec for iPhone BLE GPS telemetry.
+
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 pub const POSITION_PACKET_LEN: usize = 34;
+pub const AUTH_TAG_LEN: usize = 16;
+pub const AUTH_POSITION_PACKET_LEN: usize = POSITION_PACKET_LEN + AUTH_TAG_LEN;
 pub const FLAG_COORDS_VALID: u8 = 1 << 0;
 pub const FLAG_ALTITUDE_VALID: u8 = 1 << 1;
 pub const FLAG_SPEED_VALID: u8 = 1 << 2;
@@ -17,6 +22,7 @@ pub enum PositionError {
     InvalidTimestamp,
     InvalidCourse,
     InvalidAccuracy,
+    InvalidAuthentication,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +100,34 @@ impl PositionPacket {
         out[28..30].copy_from_slice(&self.course_cdeg.to_le_bytes());
         out[30..34].copy_from_slice(&self.accuracy_cm.to_le_bytes());
         out
+    }
+
+    /// Encode a packet with a truncated HMAC-SHA-256 authentication tag.
+    /// The key must come from secure provisioning; never hard-code it.
+    pub fn encode_authenticated(&self, key: &[u8]) -> Result<[u8; AUTH_POSITION_PACKET_LEN], PositionError> {
+        let body = self.encode();
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)
+            .map_err(|_| PositionError::InvalidAuthentication)?;
+        mac.update(&body);
+        let tag = mac.finalize().into_bytes();
+        let mut out = [0u8; AUTH_POSITION_PACKET_LEN];
+        out[..POSITION_PACKET_LEN].copy_from_slice(&body);
+        out[POSITION_PACKET_LEN..].copy_from_slice(&tag[..AUTH_TAG_LEN]);
+        Ok(out)
+    }
+
+    /// Decode only authenticated packets. Legacy 34-byte packets are not
+    /// accepted by the BLE ingress path.
+    pub fn decode_authenticated(data: &[u8], key: &[u8]) -> Result<Self, PositionError> {
+        if data.len() != AUTH_POSITION_PACKET_LEN {
+            return Err(PositionError::InvalidLength);
+        }
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)
+            .map_err(|_| PositionError::InvalidAuthentication)?;
+        mac.update(&data[..POSITION_PACKET_LEN]);
+        mac.verify_slice(&data[POSITION_PACKET_LEN..])
+            .map_err(|_| PositionError::InvalidAuthentication)?;
+        Self::decode(&data[..POSITION_PACKET_LEN])
     }
 
     pub fn coords_valid(&self) -> bool {
@@ -185,6 +219,26 @@ mod tests {
         assert_eq!(decoded.speed_mps(), 1.4);
         assert_eq!(decoded.course_deg(), Some(180.0));
         assert_eq!(decoded.accuracy_m(), Some(2.5));
+    }
+
+    #[test]
+    fn authenticated_roundtrip_and_tamper_rejection() {
+        let pkt = sample_packet();
+        let key = b"test-only-position-key";
+        let encoded = pkt.encode_authenticated(key).expect("valid key");
+        assert_eq!(encoded.len(), AUTH_POSITION_PACKET_LEN);
+        assert_eq!(PositionPacket::decode_authenticated(&encoded, key), Ok(pkt));
+        assert_eq!(
+            PositionPacket::decode_authenticated(&encoded, b"wrong-key"),
+            Err(PositionError::InvalidAuthentication)
+        );
+
+        let mut tampered = encoded;
+        tampered[10] ^= 1;
+        assert_eq!(
+            PositionPacket::decode_authenticated(&tampered, key),
+            Err(PositionError::InvalidAuthentication)
+        );
     }
 
     #[test]

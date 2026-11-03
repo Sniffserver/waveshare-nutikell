@@ -58,6 +58,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 
+use embedded_graphics::pixelcolor::Rgb565;
 use esp_hal::delay::Delay;
 use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 use esp_hal::dma_buffers;
@@ -97,7 +98,6 @@ use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
-use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
 use crate::peripherals::session_log::{
     append_session, contains_session_id, next_session_id, session_log_health, LogSeverity,
@@ -258,53 +258,6 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
 }
 
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::RgbColor;
-
-/// Take a cheap snapshot of the current power state into the shared
-/// `PowerStats` struct. Called from the Power page renderer (and from the
-/// swipe preview) so the user sees a live read-out without us adding any
-/// extra sampling. All inputs are already tracked by the main loop.
-fn update_power_stats(
-    stats: &mut PowerStats,
-    screen_state: u8,
-    imu_on: bool,
-    wifi_connected: bool,
-    wifi_on_request: bool,
-    brightness: u8,
-    batt_mv: u16,
-    batt_pct: u8,
-    charging: bool,
-) {
-    stats.display = Some(match screen_state {
-        0 => DisplayState::Off,
-        1 => DisplayState::Aod,
-        2 => DisplayState::Dim,
-        _ => DisplayState::Bright,
-    });
-    stats.wifi = Some(if !wifi_on_request && !wifi_connected {
-        WifiMode::Off
-    } else if wifi_connected {
-        // set_power_save(Maximum) is applied via Config, so once connected
-        // we're in WIFI_PS_MAX_MODEM.
-        WifiMode::PowerSave
-    } else {
-        // Radio up but handshake still in progress.
-        WifiMode::Active
-    });
-    stats.imu_on = imu_on;
-    stats.brightness = brightness;
-    // Audio/SD track "currently drawing current". The codec is in shutdown
-    // except during a beep; the SD is not currently gated (see TODO in
-    // main init). For now, report both off — flip these flags when the
-    // main loop wakes the respective subsystem.
-    stats.audio_on = false;
-    stats.sd_on = false;
-    stats.battery_mv = batt_mv;
-    stats.battery_pct = batt_pct;
-    stats.charging = charging;
-}
-
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     // Heap: 320KB SRAM + PSRAM for large allocs
@@ -417,10 +370,22 @@ async fn main(_spawner: Spawner) {
     // === IMU ===
     let mut imu = Qmi8658Imu::new(RefCellDevice::new(&i2c_ref));
     let _ = imu.probe_addresses();
-    let chip_id = imu.read_chip_id().unwrap_or(0xFF);
-    let init_ok = imu.init().unwrap_or(false);
+    let chip_id = match imu.read_chip_id() {
+        Ok(id) => Some(id),
+        Err(_) => {
+            println!("[IMU] WHO_AM_I read failed");
+            None
+        }
+    };
+    let init_ok = match imu.init() {
+        Ok(ok) => ok,
+        Err(_) => {
+            println!("[IMU] initialization failed");
+            false
+        }
+    };
     println!(
-        "[IMU] WHO_AM_I = 0x{:02X} (expected 0x05), init_ok: {}",
+        "[IMU] WHO_AM_I = {:?} (expected 0x05), init_ok: {}",
         chip_id, init_ok
     );
     imu.dump_config();
@@ -435,7 +400,7 @@ async fn main(_spawner: Spawner) {
     let _ = imu.power_up();
     for i in 1..=5 {
         Timer::after(Duration::from_millis(25)).await;
-        if let Ok(a) = imu.read_accel() {
+        if let Ok(Some(a)) = imu.read_accel_if_ready() {
             let mag = libm::sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
             println!(
                 "[IMU] Rest sample #{}: ax={:+.3}g, ay={:+.3}g, az={:+.3}g | |a|={:.3}g",
@@ -857,14 +822,17 @@ async fn main(_spawner: Spawner) {
     );
 
     // Initial render
-    if let Ok(bat) = power.read_battery() {
-        batt_pct = bat.percent;
-        batt_mv = bat.voltage_mv;
-        charging = bat.charging;
-        watchface.update_battery(batt_pct, batt_mv, charging);
-        outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
-        work_tracker.update_battery(batt_pct, charging);
-        authenticator_app.update_battery(batt_pct, charging);
+    match power.read_battery() {
+        Ok(bat) => {
+            batt_pct = bat.percent;
+            batt_mv = bat.voltage_mv;
+            charging = bat.charging;
+            watchface.update_battery(batt_pct, batt_mv, charging);
+            outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
+            work_tracker.update_battery(batt_pct, charging);
+            authenticator_app.update_battery(batt_pct, charging);
+        }
+        Err(_) => println!("[PMIC] battery telemetry invalid; retaining last valid sample"),
     }
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
@@ -1123,7 +1091,9 @@ async fn main(_spawner: Spawner) {
         }
 
         if need_accel {
-            if let Ok(a) = imu.read_accel() {
+            outdoor_state.level_valid = false;
+            match imu.read_accel_if_ready() {
+                Ok(Some(a)) => {
                 accel = (a.x, a.y, a.z);
                 if screen_state >= 2 {
                     watchface.update_accel(a.x, a.y, a.z);
@@ -1142,16 +1112,23 @@ async fn main(_spawner: Spawner) {
                 outdoor_state.pitch_deg = att.pitch_deg;
                 outdoor_state.level_valid = att.valid;
                 outdoor_state.imu_motion = step_detector.motion_state();
+                }
+                Ok(None) => {}
+                Err(_) => println!("[IMU] accelerometer read failed"),
             }
         }
 
         if need_gyro {
-            if let Ok(g) = imu.read_gyro() {
-                gyro_data = (
-                    (g.x * 10.0) as i16,
-                    (g.y * 10.0) as i16,
-                    (g.z * 10.0) as i16,
-                );
+            match imu.read_gyro_if_ready() {
+                Ok(Some(g)) => {
+                    gyro_data = (
+                        (g.x * 10.0) as i16,
+                        (g.y * 10.0) as i16,
+                        (g.z * 10.0) as i16,
+                    );
+                }
+                Ok(None) => {}
+                Err(_) => println!("[IMU] gyroscope read failed"),
             }
             if let Ok(t) = imu.read_temperature() {
                 imu_temp = (t * 10.0) as i16;
@@ -1273,14 +1250,17 @@ async fn main(_spawner: Spawner) {
 
         // Battery check every 30s
         if now >= next_battery {
-            if let Ok(bat) = power.read_battery() {
-                batt_pct = bat.percent;
-                batt_mv = bat.voltage_mv;
-                charging = bat.charging;
-                watchface.update_battery(batt_pct, batt_mv, charging);
-                outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
-                work_tracker.update_battery(batt_pct, charging);
-                authenticator_app.update_battery(batt_pct, charging);
+            match power.read_battery() {
+                Ok(bat) => {
+                    batt_pct = bat.percent;
+                    batt_mv = bat.voltage_mv;
+                    charging = bat.charging;
+                    watchface.update_battery(batt_pct, batt_mv, charging);
+                    outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
+                    work_tracker.update_battery(batt_pct, charging);
+                    authenticator_app.update_battery(batt_pct, charging);
+                }
+                Err(_) => println!("[PMIC] battery telemetry invalid; retaining last valid sample"),
             }
             next_battery = now + Duration::from_secs(30);
         }
