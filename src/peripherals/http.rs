@@ -273,7 +273,10 @@ fn parse_url(url: &str) -> Result<(&str, u16, &str), ()> {
         None => (url, "/"),
     };
     let (host, port) = match host_port.find(':') {
-        Some(i) => (&host_port[..i], host_port[i + 1..].parse::<u16>().map_err(|_| ())?),
+        Some(i) => (
+            &host_port[..i],
+            host_port[i + 1..].parse::<u16>().map_err(|_| ())?,
+        ),
         None => (host_port, 80),
     };
     if host.is_empty() || path.is_empty() {

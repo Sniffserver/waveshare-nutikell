@@ -59,6 +59,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 
 use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::RgbColor;
 use esp_hal::delay::Delay;
 use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 use esp_hal::dma_buffers;
@@ -466,8 +467,8 @@ async fn main(_spawner: Spawner) {
                                     if !entry.attributes.is_directory() {
                                         let name = core::str::from_utf8(&entry.name.base_name())
                                             .unwrap_or("?");
-                                        let ext =
-                                            core::str::from_utf8(&entry.name.extension()).unwrap_or("");
+                                        let ext = core::str::from_utf8(&entry.name.extension())
+                                            .unwrap_or("");
                                         println!("[SD]   {}.{}", name.trim(), ext.trim());
                                         file_count = file_count.saturating_add(1);
                                     }
@@ -1094,24 +1095,24 @@ async fn main(_spawner: Spawner) {
             outdoor_state.level_valid = false;
             match imu.read_accel_if_ready() {
                 Ok(Some(a)) => {
-                accel = (a.x, a.y, a.z);
-                if screen_state >= 2 {
-                    watchface.update_accel(a.x, a.y, a.z);
-                }
-                step_detector.update(
-                    crate::outdoor::AccelSample {
-                        x_g: a.x,
-                        y_g: a.y,
-                        z_g: a.z,
-                    },
-                    now.as_millis(),
-                );
-                let att = crate::outdoor::estimate_attitude(a.x, a.y, a.z);
-                outdoor_state.steps = step_detector.steps();
-                outdoor_state.roll_deg = att.roll_deg;
-                outdoor_state.pitch_deg = att.pitch_deg;
-                outdoor_state.level_valid = att.valid;
-                outdoor_state.imu_motion = step_detector.motion_state();
+                    accel = (a.x, a.y, a.z);
+                    if screen_state >= 2 {
+                        watchface.update_accel(a.x, a.y, a.z);
+                    }
+                    step_detector.update(
+                        crate::outdoor::AccelSample {
+                            x_g: a.x,
+                            y_g: a.y,
+                            z_g: a.z,
+                        },
+                        now.as_millis(),
+                    );
+                    let att = crate::outdoor::estimate_attitude(a.x, a.y, a.z);
+                    outdoor_state.steps = step_detector.steps();
+                    outdoor_state.roll_deg = att.roll_deg;
+                    outdoor_state.pitch_deg = att.pitch_deg;
+                    outdoor_state.level_valid = att.valid;
+                    outdoor_state.imu_motion = step_detector.motion_state();
                 }
                 Ok(None) => {}
                 Err(_) => println!("[IMU] accelerometer read failed"),
@@ -1310,7 +1311,8 @@ async fn main(_spawner: Spawner) {
                         } else if WatchFace::is_gyro_zone(tp.x, tp.y) {
                             watchface.toggle_gyro();
                             page_dirty = true;
-                        } else if let Some(brightness) = WatchFace::brightness_from_tap(tp.x, tp.y) {
+                        } else if let Some(brightness) = WatchFace::brightness_from_tap(tp.x, tp.y)
+                        {
                             watchface.brightness = brightness;
                             display.set_brightness(brightness);
                             watchface.force_redraw();
@@ -1370,7 +1372,8 @@ async fn main(_spawner: Spawner) {
                     match state {
                         AppState::Outdoor => outdoor_app.setup(),
                         AppState::Settings => {
-                            settings_app.wifi_state = crate::peripherals::wifi::WifiState::Disconnected
+                            settings_app.wifi_state =
+                                crate::peripherals::wifi::WifiState::Disconnected
                         }
                         AppState::WorkTracker => work_tracker.setup(),
                         AppState::Authenticator => authenticator_app.setup(),
@@ -1501,6 +1504,5 @@ async fn main(_spawner: Spawner) {
             page_dirty = false;
             next_watchface_flush = now + Duration::from_millis(100);
         }
-
     }
 }

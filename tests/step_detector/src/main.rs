@@ -704,7 +704,7 @@ mod tests {
             None
         );
     }
-    use super::flash_layout::{FlashRegion, ACTIVE_WORK, CREDENTIALS, REGIONS, SECTOR_SIZE};
+    use super::flash_layout::{FlashRegion, ACTIVE_WORK_A, CREDENTIALS, REGIONS, SECTOR_SIZE};
 
     // ── QMI8658 I2C Mock Tests ─────────────────────────────────────────────
 
@@ -1084,7 +1084,7 @@ mod tests {
     fn flash_contract_rejects_out_of_region_writes_and_preserves_neighbors() {
         let mut flash = FakeFlash::new();
         flash.write_region(CREDENTIALS, b"SBIE").unwrap();
-        flash.erase_region(ACTIVE_WORK).unwrap();
+        flash.erase_region(ACTIVE_WORK_A).unwrap();
         assert_eq!(&flash.bytes[..4], b"SBIE");
         assert!(flash
             .write_region(

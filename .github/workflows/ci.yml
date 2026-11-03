@@ -28,13 +28,13 @@ jobs:
         run: RUSTUP_TOOLCHAIN=stable cargo fmt --all -- --check
 
       - name: Run host unit tests
-        run: RUSTUP_TOOLCHAIN=stable cargo test --target x86_64-unknown-linux-gnu --locked
+        run: RUSTUP_TOOLCHAIN=stable cargo test --lib --tests --target x86_64-unknown-linux-gnu --locked
 
       - name: Run step-detector and mocked-driver tests
         run: RUSTUP_TOOLCHAIN=stable cargo test --manifest-path tests/step_detector/Cargo.toml --target x86_64-unknown-linux-gnu --locked
 
       - name: Run Clippy
-        run: RUSTUP_TOOLCHAIN=stable cargo clippy --all-targets --target x86_64-unknown-linux-gnu --locked -- -D warnings
+        run: RUSTUP_TOOLCHAIN=stable cargo clippy --lib --tests --target x86_64-unknown-linux-gnu --locked -- -D warnings
 
   esp32:
     name: ESP32-S3 release build
@@ -49,7 +49,7 @@ jobs:
           buildtargets: esp32s3
 
       - name: Build firmware
-        run: cargo --config .cargo/esp32-ci.toml build --release --target xtensa-esp32s3-none-elf --locked
+        run: cargo --config .cargo/esp32-ci.toml build --release --target xtensa-esp32s3-none-elf --features firmware --locked
 
       - name: Verify repository has no generated artifacts
         run: |

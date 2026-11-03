@@ -13,8 +13,8 @@ use esp_hal::delay::Delay;
 use esp_hal::gpio::Output;
 
 use crate::board;
-use crate::drivers::qspi_bus::QspiBus;
 use crate::drivers::display_window::DisplayWindow;
+use crate::drivers::qspi_bus::QspiBus;
 
 use embedded_graphics_core::geometry::Point;
 
@@ -108,13 +108,7 @@ impl<'d> Co5300Display<'d> {
     }
 
     /// Set the address window for pixel writes.
-    pub fn set_addr_window(
-        &mut self,
-        x: u16,
-        y: u16,
-        w: u16,
-        h: u16,
-    ) -> Result<(), DisplayError> {
+    pub fn set_addr_window(&mut self, x: u16, y: u16, w: u16, h: u16) -> Result<(), DisplayError> {
         if w == 0
             || h == 0
             || x >= self.width
@@ -136,8 +130,10 @@ impl<'d> Co5300Display<'d> {
         )
         .map_err(|_| DisplayError::InvalidWindow)?;
 
-        self.bus.write_c8d16d16(CMD_CASET, window.x_start, window.x_end);
-        self.bus.write_c8d16d16(CMD_PASET, window.y_start, window.y_end);
+        self.bus
+            .write_c8d16d16(CMD_CASET, window.x_start, window.x_end);
+        self.bus
+            .write_c8d16d16(CMD_PASET, window.y_start, window.y_end);
         self.bus.write_command(CMD_RAMWR);
         if self.bus.take_error() {
             return Err(DisplayError::BusError);
@@ -253,7 +249,11 @@ impl DrawTarget for Co5300Display<'_> {
 
         // CO5300 requires minimum 2-line writes.
         // If height is 1, double it and duplicate each row.
-        let actual_w = if area.size.width < 2 { 2 } else { area.size.width as u16 };
+        let actual_w = if area.size.width < 2 {
+            2
+        } else {
+            area.size.width as u16
+        };
         let actual_h = if area.size.height < 2 {
             2
         } else {
@@ -310,8 +310,16 @@ impl DrawTarget for Co5300Display<'_> {
         }
 
         let raw: u16 = RawU16::from(color).into_inner();
-        let actual_w = if area.size.width < 2 { 2 } else { area.size.width as u16 };
-        let actual_h = if area.size.height < 2 { 2 } else { area.size.height as u16 };
+        let actual_w = if area.size.width < 2 {
+            2
+        } else {
+            area.size.width as u16
+        };
+        let actual_h = if area.size.height < 2 {
+            2
+        } else {
+            area.size.height as u16
+        };
         self.set_addr_window(
             area.top_left.x as u16,
             area.top_left.y as u16,

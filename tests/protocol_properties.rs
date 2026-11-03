@@ -6,8 +6,7 @@
 
 use waveshare_watch_rs::outdoor::packet::{
     PositionError, PositionPacket, FLAG_ACCURACY_VALID, FLAG_ALTITUDE_VALID, FLAG_COORDS_VALID,
-    FLAG_COURSE_VALID, FLAG_SPEED_VALID,
-    POSITION_PACKET_LEN,
+    FLAG_COURSE_VALID, FLAG_SPEED_VALID, POSITION_PACKET_LEN,
 };
 
 fn packet() -> PositionPacket {

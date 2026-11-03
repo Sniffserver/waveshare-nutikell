@@ -43,7 +43,9 @@ const RECORD_READ_LEN: usize = RECORD_TAG_START + 32;
 // Inject this at release build time from the provisioning secret store. There
 // is deliberately no firmware fallback: a missing key makes storage unusable.
 fn credential_key() -> Option<&'static [u8]> {
-    option_env!("SBIE_CREDENTIAL_KEY").map(|key| key.as_bytes()).filter(|key| key.len() >= 16)
+    option_env!("SBIE_CREDENTIAL_KEY")
+        .map(|key| key.as_bytes())
+        .filter(|key| key.len() >= 16)
 }
 
 fn flash_encryption_enabled() -> bool {
@@ -110,7 +112,10 @@ pub fn read_credentials() -> Option<StoredCredentials> {
     let mut buf = [0u8; 144];
 
     // FlashStorage::read requires aligned 4-byte offset and len
-    if storage.read(CRED_FLASH_OFFSET, &mut buf[..RECORD_READ_LEN]).is_err() {
+    if storage
+        .read(CRED_FLASH_OFFSET, &mut buf[..RECORD_READ_LEN])
+        .is_err()
+    {
         return None;
     }
 
@@ -135,7 +140,8 @@ pub fn read_credentials() -> Option<StoredCredentials> {
     creds.ssid_len = ssid_len;
     let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
     mac.update(&buf[..RECORD_AUTH_END]);
-    mac.verify_slice(&buf[RECORD_TAG_START..RECORD_READ_LEN]).ok()?;
+    mac.verify_slice(&buf[RECORD_TAG_START..RECORD_READ_LEN])
+        .ok()?;
     creds.ssid[..ssid_len].copy_from_slice(&buf[6..6 + ssid_len]);
     creds.pass_len = pass_len;
     creds.password[..pass_len].copy_from_slice(&buf[39..39 + pass_len]);
@@ -169,8 +175,8 @@ pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStor
     sector[6..6 + creds.ssid_len].copy_from_slice(&creds.ssid[..creds.ssid_len]);
     sector[38] = creds.pass_len as u8;
     sector[39..39 + creds.pass_len].copy_from_slice(&creds.password[..creds.pass_len]);
-    let mut mac = Hmac::<Sha256>::new_from_slice(key)
-        .map_err(|_| CredentialStorageError::KeyUnavailable)?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(key).map_err(|_| CredentialStorageError::KeyUnavailable)?;
     mac.update(&sector[..RECORD_AUTH_END]);
     sector[RECORD_TAG_START..RECORD_READ_LEN].copy_from_slice(&mac.finalize().into_bytes());
 

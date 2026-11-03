@@ -6,10 +6,15 @@ use embedded_graphics::prelude::DrawTarget;
 use crate::peripherals::touch::{SwipeDirection, TouchPoint};
 
 pub mod authenticator;
+pub mod flappy;
+pub mod game2048;
+pub mod maze;
 pub mod media_controller;
 pub mod outdoor_app;
 pub mod settings;
 pub mod smarthome;
+pub mod snake;
+pub mod tetris;
 pub mod wifi_setup;
 pub mod work_tracker;
 

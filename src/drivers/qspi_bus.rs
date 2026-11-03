@@ -40,13 +40,17 @@ impl<'d> QspiBus<'d> {
 
     pub fn write_command(&mut self, reg: u8) {
         self.cs_low();
-        if self.spi.half_duplex_write(
-            DataMode::Single,
-            Command::_8Bit(0x02, DataMode::Single),
-            Address::_24Bit((reg as u32) << 8, DataMode::Single),
-            0,
-            &[],
-        ).is_err() {
+        if self
+            .spi
+            .half_duplex_write(
+                DataMode::Single,
+                Command::_8Bit(0x02, DataMode::Single),
+                Address::_24Bit((reg as u32) << 8, DataMode::Single),
+                0,
+                &[],
+            )
+            .is_err()
+        {
             self.error_latched = true;
         }
         self.cs_high();
@@ -54,13 +58,17 @@ impl<'d> QspiBus<'d> {
 
     pub fn write_c8d8(&mut self, reg: u8, data: u8) {
         self.cs_low();
-        if self.spi.half_duplex_write(
-            DataMode::Single,
-            Command::_8Bit(0x02, DataMode::Single),
-            Address::_24Bit((reg as u32) << 8, DataMode::Single),
-            0,
-            &[data],
-        ).is_err() {
+        if self
+            .spi
+            .half_duplex_write(
+                DataMode::Single,
+                Command::_8Bit(0x02, DataMode::Single),
+                Address::_24Bit((reg as u32) << 8, DataMode::Single),
+                0,
+                &[data],
+            )
+            .is_err()
+        {
             self.error_latched = true;
         }
         self.cs_high();
@@ -69,13 +77,17 @@ impl<'d> QspiBus<'d> {
     pub fn write_c8d16d16(&mut self, reg: u8, d1: u16, d2: u16) {
         let data = [(d1 >> 8) as u8, d1 as u8, (d2 >> 8) as u8, d2 as u8];
         self.cs_low();
-        if self.spi.half_duplex_write(
-            DataMode::Single,
-            Command::_8Bit(0x02, DataMode::Single),
-            Address::_24Bit((reg as u32) << 8, DataMode::Single),
-            0,
-            &data,
-        ).is_err() {
+        if self
+            .spi
+            .half_duplex_write(
+                DataMode::Single,
+                Command::_8Bit(0x02, DataMode::Single),
+                Address::_24Bit((reg as u32) << 8, DataMode::Single),
+                0,
+                &data,
+            )
+            .is_err()
+        {
             self.error_latched = true;
         }
         self.cs_high();
@@ -83,13 +95,17 @@ impl<'d> QspiBus<'d> {
 
     pub fn begin_pixels(&mut self) {
         self.cs_low();
-        if self.spi.half_duplex_write(
-            DataMode::Quad,
-            Command::_8Bit(0x32, DataMode::Single),
-            Address::_24Bit(0x003C00, DataMode::Single),
-            0,
-            &[],
-        ).is_err() {
+        if self
+            .spi
+            .half_duplex_write(
+                DataMode::Quad,
+                Command::_8Bit(0x32, DataMode::Single),
+                Address::_24Bit(0x003C00, DataMode::Single),
+                0,
+                &[],
+            )
+            .is_err()
+        {
             self.error_latched = true;
         }
     }
@@ -106,13 +122,17 @@ impl<'d> QspiBus<'d> {
                 self.scratch[i * 2] = (px >> 8) as u8;
                 self.scratch[i * 2 + 1] = px as u8;
             }
-            if self.spi.half_duplex_write(
-                DataMode::Quad,
-                Command::None,
-                Address::None,
-                0,
-                &self.scratch[..n * 2],
-            ).is_err() {
+            if self
+                .spi
+                .half_duplex_write(
+                    DataMode::Quad,
+                    Command::None,
+                    Address::None,
+                    0,
+                    &self.scratch[..n * 2],
+                )
+                .is_err()
+            {
                 self.error_latched = true;
             }
             remaining = &remaining[n..];
@@ -138,24 +158,32 @@ impl<'d> QspiBus<'d> {
                 self.scratch[i * 2 + 1] = px as u8;
             }
             if first {
-                if self.spi.half_duplex_write(
-                    DataMode::Quad,
-                    Command::_8Bit(0x32, DataMode::Single),
-                    Address::_24Bit(0x003C00, DataMode::Single),
-                    0,
-                    &self.scratch[..n * 2],
-                ).is_err() {
+                if self
+                    .spi
+                    .half_duplex_write(
+                        DataMode::Quad,
+                        Command::_8Bit(0x32, DataMode::Single),
+                        Address::_24Bit(0x003C00, DataMode::Single),
+                        0,
+                        &self.scratch[..n * 2],
+                    )
+                    .is_err()
+                {
                     self.error_latched = true;
                 }
                 first = false;
             } else {
-                if self.spi.half_duplex_write(
-                    DataMode::Quad,
-                    Command::None,
-                    Address::None,
-                    0,
-                    &self.scratch[..n * 2],
-                ).is_err() {
+                if self
+                    .spi
+                    .half_duplex_write(
+                        DataMode::Quad,
+                        Command::None,
+                        Address::None,
+                        0,
+                        &self.scratch[..n * 2],
+                    )
+                    .is_err()
+                {
                     self.error_latched = true;
                 }
             }
@@ -183,24 +211,32 @@ impl<'d> QspiBus<'d> {
             let n = remaining.min(max_px as u32);
             let bytes = (n as usize) * 2;
             if first {
-                if self.spi.half_duplex_write(
-                    DataMode::Quad,
-                    Command::_8Bit(0x32, DataMode::Single),
-                    Address::_24Bit(0x003C00, DataMode::Single),
-                    0,
-                    &self.scratch[..bytes],
-                ).is_err() {
+                if self
+                    .spi
+                    .half_duplex_write(
+                        DataMode::Quad,
+                        Command::_8Bit(0x32, DataMode::Single),
+                        Address::_24Bit(0x003C00, DataMode::Single),
+                        0,
+                        &self.scratch[..bytes],
+                    )
+                    .is_err()
+                {
                     self.error_latched = true;
                 }
                 first = false;
             } else {
-                if self.spi.half_duplex_write(
-                    DataMode::Quad,
-                    Command::None,
-                    Address::None,
-                    0,
-                    &self.scratch[..bytes],
-                ).is_err() {
+                if self
+                    .spi
+                    .half_duplex_write(
+                        DataMode::Quad,
+                        Command::None,
+                        Address::None,
+                        0,
+                        &self.scratch[..bytes],
+                    )
+                    .is_err()
+                {
                     self.error_latched = true;
                 }
             }

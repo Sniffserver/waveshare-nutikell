@@ -71,7 +71,10 @@ pub fn handle_position_packet(
     status.last_sequence = packet.sequence;
     status.packets_received = status.packets_received.saturating_add(1);
 
-    let _ = outdoor.handle_position_write(&data[..crate::outdoor::packet::POSITION_PACKET_LEN], packet.timestamp_unix);
+    let _ = outdoor.handle_position_write(
+        &data[..crate::outdoor::packet::POSITION_PACKET_LEN],
+        packet.timestamp_unix,
+    );
     true
 }
 

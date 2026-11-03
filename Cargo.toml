@@ -55,6 +55,15 @@ lto = true
 name = "waveshare_watch_rs"
 path = "src/lib.rs"
 
+[features]
+default = []
+firmware = []
+
+[[bin]]
+name = "waveshare-watch-rs"
+path = "src/main.rs"
+required-features = ["firmware"]
+
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 # ESP HAL + Runtime
 esp-hal = { version = "1.0.0", default-features = true, features = ["esp32s3", "unstable", "psram"] }

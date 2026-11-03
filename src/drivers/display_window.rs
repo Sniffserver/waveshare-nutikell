@@ -29,11 +29,7 @@ impl DisplayWindow {
         if w == 0 || h == 0 {
             return Err(WindowError::Empty);
         }
-        if x >= panel_width
-            || y >= panel_height
-            || w > panel_width - x
-            || h > panel_height - y
-        {
+        if x >= panel_width || y >= panel_height || w > panel_width - x || h > panel_height - y {
             return Err(WindowError::OutsidePanel);
         }
         let x_start = x

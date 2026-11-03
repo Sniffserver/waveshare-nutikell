@@ -104,7 +104,10 @@ impl PositionPacket {
 
     /// Encode a packet with a truncated HMAC-SHA-256 authentication tag.
     /// The key must come from secure provisioning; never hard-code it.
-    pub fn encode_authenticated(&self, key: &[u8]) -> Result<[u8; AUTH_POSITION_PACKET_LEN], PositionError> {
+    pub fn encode_authenticated(
+        &self,
+        key: &[u8],
+    ) -> Result<[u8; AUTH_POSITION_PACKET_LEN], PositionError> {
         let body = self.encode();
         let mut mac = Hmac::<Sha256>::new_from_slice(key)
             .map_err(|_| PositionError::InvalidAuthentication)?;
@@ -125,8 +128,17 @@ impl PositionPacket {
         let mut mac = Hmac::<Sha256>::new_from_slice(key)
             .map_err(|_| PositionError::InvalidAuthentication)?;
         mac.update(&data[..POSITION_PACKET_LEN]);
-        mac.verify_slice(&data[POSITION_PACKET_LEN..])
-            .map_err(|_| PositionError::InvalidAuthentication)?;
+        let expected = mac.finalize().into_bytes();
+        let mut difference = 0u8;
+        for (actual, expected) in data[POSITION_PACKET_LEN..]
+            .iter()
+            .zip(expected[..AUTH_TAG_LEN].iter())
+        {
+            difference |= actual ^ expected;
+        }
+        if difference != 0 {
+            return Err(PositionError::InvalidAuthentication);
+        }
         Self::decode(&data[..POSITION_PACKET_LEN])
     }
 
