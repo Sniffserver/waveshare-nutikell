@@ -605,9 +605,7 @@ async fn main(_spawner: Spawner) {
 
     // === WiFi init (OFF by default) ===
     let wifi_config = esp_radio::wifi::Config::default()
-        .with_power_save_mode(esp_radio::wifi::PowerSaveMode::Maximum)
-        .with_rx_buffer(4)
-        .with_tx_buffer(4);
+        .with_power_save_mode(esp_radio::wifi::PowerSaveMode::Maximum);
     let (mut wifi_controller, wifi_interfaces) =
         esp_radio::wifi::new(radio_controller, peripherals.WIFI, wifi_config)
             .expect("WiFi init failed");
@@ -829,8 +827,7 @@ async fn main(_spawner: Spawner) {
     }
     let mut media_controller = MediaController::new();
     let mut smarthome_app = SmartHomeApp::new();
-    let mut last_touch_y: u16 = 0;
-    let mut last_touch_x: u16 = 0;
+
     let mut accel = (0.0f32, 0.0f32, 0.0f32);
     let mut gyro_data = (0i16, 0i16, 0i16);
     let mut imu_temp: i16 = 250;
@@ -838,7 +835,7 @@ async fn main(_spawner: Spawner) {
     let mut batt_mv: u16 = 0;
     let mut charging = false;
     let mut page_dirty = true;
-    let mut swiping = false;
+
     let mut last_interaction = Instant::now();
     // screen_state levels:
     //   3 = full bright (interactive)
@@ -849,8 +846,7 @@ async fn main(_spawner: Spawner) {
     // Tracks the last minute we rendered in AOD so we update the screen exactly
     // once per minute, not faster. Saves both DMA bandwidth and AMOLED current.
     let mut aod_last_minute: u8 = 99;
-    let mut swipe_dir: i32 = 0;
-    let mut swipe_start_x: i32 = 0;
+
     let pixel_count = board::LCD_WIDTH as usize * board::LCD_HEIGHT as usize;
     let mut snap_current: Vec<u16> = vec![0u16; pixel_count];
     let mut snap_target: Vec<u16> = vec![0u16; pixel_count];
@@ -998,11 +994,6 @@ async fn main(_spawner: Spawner) {
     // Power-down the IMU at boot — only enable when a consumer needs it.
     let _ = imu.power_down();
     let mut imu_mode = ImuPowerMode::Off;
-    // Tracks the previous-iteration state of the FT3168 INT line.
-    // We need this to keep polling touch.poll() ONCE more after the finger lifts,
-    // otherwise we miss the swipe-end event and pages stay stuck mid-drag.
-    let mut was_touching = false;
-
     loop {
         // Pick a tick budget based on current state. This is the MAX time we'll
         // sleep without any external wake source.
@@ -1257,56 +1248,41 @@ async fn main(_spawner: Spawner) {
         }
 
         // === Touch / button input ===
-        // Process touch
-        let touch_event = touch.poll();
-        if let Some(ev) = touch_event {
-            match ev {
-                crate::peripherals::touch::TouchEvent::Press(x, y) => {
-                    last_touch_x = x;
-                    last_touch_y = y;
-                    swiping = true;
-                    swipe_start_x = x as i32;
-                    swipe_dir = 0;
-                    last_interaction = now;
-                    // Wake screen if off/AOD
-                    if screen_state < 2 {
-                        screen_state = 3;
+        // The touch driver reports live points while pressed and a classified
+        // SwipeEvent once the finger is lifted.
+        if let Ok((point, swipe_event)) = touch.poll() {
+            if point.is_some() {
+                last_interaction = now;
+                // Wake screen if off/AOD.
+                if screen_state < 2 {
+                    screen_state = 3;
+                    page_dirty = true;
+                }
+            }
+
+            if let Some(event) = swipe_event {
+                match event.direction {
+                    SwipeDirection::Right => {
+                        // Swipe right → previous page.
+                        current_page = match current_page {
+                            Page::Clock => Page::Power,
+                            Page::Sensors => Page::Clock,
+                            Page::System => Page::Sensors,
+                            Page::Power => Page::System,
+                        };
                         page_dirty = true;
                     }
-                }
-                crate::peripherals::touch::TouchEvent::Release => {
-                    swiping = false;
-                    // Handle swipe
-                    let dx = x as i32 - swipe_start_x;
-                    if dx.abs() > 80 {
-                        // Swipe detected — navigate pages
-                        if dx > 0 {
-                            // Swipe right → previous page
-                            match current_page {
-                                Page::Clock => current_page = Page::Power,
-                                Page::Sensors => current_page = Page::Clock,
-                                Page::System => current_page = Page::Sensors,
-                                Page::Power => current_page = Page::System,
-                            }
-                        } else {
-                            // Swipe left → next page
-                            match current_page {
-                                Page::Clock => current_page = Page::Sensors,
-                                Page::Sensors => current_page = Page::System,
-                                Page::System => current_page = Page::Power,
-                                Page::Power => current_page = Page::Clock,
-                            }
-                        }
+                    SwipeDirection::Left => {
+                        // Swipe left → next page.
+                        current_page = match current_page {
+                            Page::Clock => Page::Sensors,
+                            Page::Sensors => Page::System,
+                            Page::System => Page::Power,
+                            Page::Power => Page::Clock,
+                        };
                         page_dirty = true;
                     }
-                }
-                crate::peripherals::touch::TouchEvent::Move(x, y) => {
-                    last_touch_x = x;
-                    last_touch_y = y;
-                    if swiping {
-                        let dx = x as i32 - swipe_start_x;
-                        swipe_dir = dx.signum();
-                    }
+                    SwipeDirection::Up | SwipeDirection::Down | SwipeDirection::Tap => {}
                 }
             }
         }
@@ -1315,7 +1291,6 @@ async fn main(_spawner: Spawner) {
         if page_dirty || now >= next_watchface_flush {
             match app_state {
                 AppState::Watchface => {
-                    watchface.update_time_from_rtc(/* placeholder */);
                     let _ = watchface.render(&mut fb);
                 }
                 _ => {}

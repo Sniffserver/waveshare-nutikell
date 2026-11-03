@@ -1,4 +1,4 @@
-// App Launcher - scrollable list of games
+// App Launcher - scrollable list of apps (games removed for memory optimization)
 // Tap to select, swipe up/down to scroll smoothly, swipe right to go back
 
 use embedded_graphics::mono_font::ascii::FONT_10X20;
@@ -25,48 +25,6 @@ struct MenuItem {
 }
 
 const MENU_ITEMS: &[MenuItem] = &[
-    MenuItem {
-        name: "Snake",
-        state: AppState::Snake,
-        bg_color: Rgb565::new(2, 20, 2),
-        text_color: Rgb565::GREEN,
-    },
-    MenuItem {
-        name: "2048",
-        state: AppState::Game2048,
-        bg_color: Rgb565::new(15, 10, 0),
-        text_color: Rgb565::YELLOW,
-    },
-    MenuItem {
-        name: "Tetris",
-        state: AppState::Tetris,
-        bg_color: Rgb565::new(0, 10, 15),
-        text_color: Rgb565::CYAN,
-    },
-    MenuItem {
-        name: "Flappy Bird",
-        state: AppState::Flappy,
-        bg_color: Rgb565::new(15, 12, 0),
-        text_color: Rgb565::WHITE,
-    },
-    MenuItem {
-        name: "Maze (Tilt)",
-        state: AppState::Maze,
-        bg_color: Rgb565::new(2, 4, 15),
-        text_color: Rgb565::WHITE,
-    },
-    MenuItem {
-        name: "SoundCloud & Music",
-        state: AppState::Mp3Player,
-        bg_color: Rgb565::new(16, 6, 0),
-        text_color: Rgb565::new(31, 21, 0),
-    },
-    MenuItem {
-        name: "Smart Home",
-        state: AppState::SmartHome,
-        bg_color: Rgb565::new(8, 4, 15),
-        text_color: Rgb565::new(20, 10, 31),
-    },
     MenuItem {
         name: "Outdoor / Hike",
         state: AppState::Outdoor,
