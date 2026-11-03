@@ -3,15 +3,15 @@
 
 extern crate alloc;
 
-use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
 use embedded_hal::i2c::ErrorKind;
+use embedded_hal_mock::eh1::i2c::{Mock as I2cMock, Transaction as I2cTransaction};
 
+#[path = "../../../src/outdoor/steps.rs"]
+mod production_steps;
 #[path = "../../../src/peripherals/touch.rs"]
 mod touch_driver;
 #[path = "../../../src/peripherals/wifi.rs"]
 mod wifi_driver;
-#[path = "../../../src/outdoor/steps.rs"]
-mod production_steps;
 
 // Reuse the production flash contract on the host. This deliberately has no
 // ESP HAL dependency, so layout regressions are caught before flashing.
@@ -800,8 +800,7 @@ mod tests {
             now += 32;
         }
         let envelope = [
-            1.00, 1.02, 1.05, 1.10, 1.18, 1.28, 1.38, 1.38, 1.38, 1.30, 1.20, 1.10,
-            1.03, 1.00,
+            1.00, 1.02, 1.05, 1.10, 1.18, 1.28, 1.38, 1.38, 1.38, 1.30, 1.20, 1.10, 1.03, 1.00,
         ];
         for magnitude in envelope {
             detector.update(
@@ -908,8 +907,11 @@ mod tests {
 
     #[test]
     fn axp2101_propagates_i2c_failures() {
-        let expectations = [I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_VBAT_H], vec![0])
-            .with_error(ErrorKind::Other)];
+        let expectations =
+            [
+                I2cTransaction::write_read(AXP2101_ADDR, vec![REG_AXP_VBAT_H], vec![0])
+                    .with_error(ErrorKind::Other),
+            ];
         let i2c = I2cMock::new(&expectations);
         let mut pmic = Axp2101Power::new(i2c);
         assert!(pmic.read_battery().is_err());
