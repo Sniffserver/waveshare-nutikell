@@ -1494,11 +1494,17 @@ async fn main(_spawner: Spawner) {
                 // This is intentionally a one-shot burst: the panel spends the rest of AOD
                 // on its existing black, minute-updated path.
                 for frame in 0..SLEEP_DISSOLVE_FRAMES {
+                    let brightness = 0x40u16
+                        - (frame as u16 * (0x40 - 0x18) as u16
+                            / (SLEEP_DISSOLVE_FRAMES - 1) as u16);
+                    display.set_brightness(brightness as u8);
                     watchface.render_sleep_dissolve(&mut fb, frame);
                     fb.flush_vsync(&mut display, &te_pin);
                     Timer::after(Duration::from_millis(45)).await;
                 }
                 display.set_brightness(0x18); // very dim, ~10% of normal
+                let _ = watchface.render_aod(&mut fb);
+                fb.flush_vsync(&mut display, &te_pin);
                 screen_state = 1;
                 aod_last_minute = 99; // force first AOD frame
             } else {
