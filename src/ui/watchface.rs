@@ -8,6 +8,7 @@ use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRe
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::board;
+use crate::drivers::framebuffer::Framebuffer;
 use crate::ui::segments;
 
 const SCREEN_CX: i32 = board::LCD_WIDTH as i32 / 2;
@@ -58,6 +59,11 @@ const APPS_BTN_X: i32 = 130;
 const APPS_BTN_Y: i32 = 450;
 const APPS_BTN_W: i32 = 140;
 const APPS_BTN_H: i32 = 32;
+
+/// Number of frames in the watchface-to-AOD data-dissolve transition.
+pub const SLEEP_DISSOLVE_FRAMES: u8 = 9;
+const SLEEP_GATHER_FRAMES: u8 = 2;
+const SLEEP_DISSOLVE_TILE: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FlushRegion {
@@ -192,6 +198,73 @@ impl WatchFace {
 
     pub fn force_redraw(&mut self) {
         self.full_redraw = true;
+    }
+
+    /// Turns the visible watchface into a brief gathering and data-dissolve field.
+    /// The normal watchface is redrawn on wake, so this needs no second framebuffer.
+    pub fn render_sleep_dissolve(&mut self, framebuffer: &mut Framebuffer, frame: u8) {
+        let width = board::LCD_WIDTH as usize;
+        let height = board::LCD_HEIGHT as usize;
+        let is_gathering = frame < SLEEP_GATHER_FRAMES;
+        let decay_frame = frame.saturating_sub(SLEEP_GATHER_FRAMES);
+        let decay_frames = SLEEP_DISSOLVE_FRAMES - SLEEP_GATHER_FRAMES;
+        let cutoff = ((decay_frame as usize + 1) * 256 / decay_frames as usize) as u8;
+
+        for tile_y in (0..height).step_by(SLEEP_DISSOLVE_TILE) {
+            for tile_x in (0..width).step_by(SLEEP_DISSOLVE_TILE) {
+                let seed = (tile_x as u32)
+                    .wrapping_mul(0x45D9_F3B)
+                    .wrapping_add((tile_y as u32).wrapping_mul(0x119D_E1F3));
+                let noise = ((seed ^ (seed >> 16) ^ (seed >> 7)) & 0xFF) as u8;
+                let sample = {
+                    let buffer = framebuffer.buffer();
+                    let mut color = 0;
+                    'find_color: for y in tile_y..(tile_y + SLEEP_DISSOLVE_TILE).min(height) {
+                        for x in tile_x..(tile_x + SLEEP_DISSOLVE_TILE).min(width) {
+                            let candidate = buffer[y * width + x];
+                            if candidate != 0 {
+                                color = candidate;
+                                break 'find_color;
+                            }
+                        }
+                    }
+                    color
+                };
+
+                if is_gathering {
+                    if sample != 0 && noise < 96 {
+                        let toward_center_x = ((width / 2) as i32 - tile_x as i32).signum();
+                        let toward_center_y = ((height / 2) as i32 - tile_y as i32).signum();
+                        let px = (tile_x as i32 + toward_center_x * (frame as i32 + 1))
+                            .clamp(0, width as i32 - 1) as usize;
+                        let py = (tile_y as i32 + toward_center_y * (frame as i32 + 1))
+                            .clamp(0, height as i32 - 1) as usize;
+                        framebuffer.fill_rect(px, py, 2, 2, sample);
+                    }
+                    continue;
+                }
+
+                if noise >= cutoff {
+                    continue;
+                }
+                framebuffer.fill_rect(tile_x, tile_y, SLEEP_DISSOLVE_TILE, SLEEP_DISSOLVE_TILE, 0);
+
+                // Sampled fragments drift upward in both horizontal directions.
+                if sample != 0 && noise.wrapping_add(40) >= cutoff {
+                    let drift_x = ((seed >> 8) as i32 % 5) - 2;
+                    let drift_y = ((seed >> 13) as usize % 4) + frame as usize;
+                    let px = (tile_x as i32 + drift_x).clamp(0, width as i32 - 1) as usize;
+                    let py = tile_y.saturating_sub(drift_y);
+                    let dimmed_sample = (sample & 0xF7DE) >> 1;
+                    framebuffer.fill_rect(px, py, 2, 2, dimmed_sample.max(0x0010));
+                }
+            }
+        }
+
+        if frame + 1 == SLEEP_DISSOLVE_FRAMES {
+            framebuffer.clear_color(Rgb565::BLACK);
+            self.force_redraw();
+        }
     }
 
     /// Toggle gyroscope display. Returns new state.

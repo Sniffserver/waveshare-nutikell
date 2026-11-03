@@ -111,7 +111,7 @@ use crate::ui::launcher::Launcher;
 use crate::ui::notification::{Notification, NotificationManager, Urgency};
 use crate::ui::pages::{self, Page};
 use crate::ui::power_page;
-use crate::ui::watchface::WatchFace;
+use crate::ui::watchface::{WatchFace, SLEEP_DISSOLVE_FRAMES};
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task(pool_size = 2)]
@@ -1490,6 +1490,14 @@ async fn main(_spawner: Spawner) {
         // 15 s idle → AOD (was 40 s — faster dim saves ~45 mA×25 s every cycle)
         } else if idle_secs >= 15 && screen_state > 1 {
             if app_state == AppState::Watchface && current_page == Page::Clock {
+                // Let the active face resolve into a short data-dither field before AOD.
+                // This is intentionally a one-shot burst: the panel spends the rest of AOD
+                // on its existing black, minute-updated path.
+                for frame in 0..SLEEP_DISSOLVE_FRAMES {
+                    watchface.render_sleep_dissolve(&mut fb, frame);
+                    fb.flush_vsync(&mut display, &te_pin);
+                    Timer::after(Duration::from_millis(45)).await;
+                }
                 display.set_brightness(0x18); // very dim, ~10% of normal
                 screen_state = 1;
                 aod_last_minute = 99; // force first AOD frame
