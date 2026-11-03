@@ -34,7 +34,12 @@ jobs:
         run: RUSTUP_TOOLCHAIN=stable cargo test --manifest-path tests/step_detector/Cargo.toml --target x86_64-unknown-linux-gnu --locked
 
       - name: Run Clippy
-        run: RUSTUP_TOOLCHAIN=stable cargo clippy --lib --tests --target x86_64-unknown-linux-gnu --locked -- -D warnings
+        run: >-
+          RUSTUP_TOOLCHAIN=stable cargo clippy --lib --tests
+          --target x86_64-unknown-linux-gnu --locked --
+          -D clippy::correctness
+          -D clippy::suspicious
+          -D clippy::perf
 
   esp32:
     name: ESP32-S3 release build

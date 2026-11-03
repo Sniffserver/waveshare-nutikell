@@ -1,4 +1,4 @@
-# Workspace map — 70 file(s)
+# Workspace map — 65 file(s)
 
 A map, not a substitute for reading. Paths are workspace-relative. Use read_file (with
 start_line/end_line) or search_files on these paths instead of re-listing directories.
@@ -10,11 +10,13 @@ start_line/end_line) or search_files on these paths instead of re-listing direct
   rust-toolchain.toml
 .cargo/
   config.toml
+  esp32-ci.toml
 .github/
   acidwiki.json
   FUNDING.yml
   waveshare-watch-rs.png
 .github/workflows/
+  ci.yml
   wiki-sync.yml
 .vscode/
   settings.json
@@ -38,20 +40,10 @@ src/ble_analyzer/
   ui.rs
 src/drivers/
   co5300.rs
+  display_window.rs
   framebuffer.rs
   mod.rs
   qspi_bus.rs
-src/outdoor/
-  attitude.rs
-  battery.rs
-  ble.rs
-  mod.rs
-  packet.rs
-  power_policy.rs
-  solar.rs
-  state.rs
-  steps.rs
-  ui.rs
 src/peripherals/
   active_work.rs
   audio.rs
@@ -81,6 +73,9 @@ src/ui/
   segments.rs
   t9_keyboard.rs
   watchface.rs
+tests/
+  display_window.rs
+  protocol_properties.rs
 tests/step_detector/
   Cargo.toml
   rust-toolchain.toml
@@ -88,5 +83,6 @@ tests/step_detector/.cargo/
   config.toml
 tests/step_detector/src/
   main.rs
-(1 doc file(s) omitted)
+(2 doc file(s) omitted)
 src/apps/ — 13 more file(s) (use list_files to enumerate)
+src/outdoor/ — 10 more file(s) (use list_files to enumerate)
