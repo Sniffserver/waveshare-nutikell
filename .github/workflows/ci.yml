@@ -1,0 +1,54 @@
+name: Firmware CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  host:
+    name: Host checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run host unit tests
+        run: cargo test --lib --target x86_64-unknown-linux-gnu
+
+      - name: Run Clippy
+        run: cargo clippy --lib --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+
+  esp32:
+    name: ESP32-S3 release build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Xtensa Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.6.0
+        with:
+          version: 1.88.0
+          buildtargets: esp32s3
+
+      - name: Build firmware
+        run: cargo build --release --target xtensa-esp32s3-none-elf
+
+      - name: Verify repository has no generated artifacts
+        run: |
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --exit-code -- . ':!Cargo.lock'
