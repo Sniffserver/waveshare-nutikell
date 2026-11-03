@@ -1,4 +1,4 @@
-// App Launcher - scrollable list of apps (games removed for memory optimization)
+// App Launcher - scrollable list of apps and games.
 // Tap to select, swipe up/down to scroll smoothly, swipe right to go back
 
 use embedded_graphics::mono_font::ascii::FONT_10X20;
@@ -54,6 +54,36 @@ const MENU_ITEMS: &[MenuItem] = &[
         state: AppState::Settings,
         bg_color: Rgb565::new(6, 12, 6),
         text_color: Rgb565::WHITE,
+    },
+    MenuItem {
+        name: "Snake",
+        state: AppState::Snake,
+        bg_color: Rgb565::new(12, 3, 3),
+        text_color: Rgb565::YELLOW,
+    },
+    MenuItem {
+        name: "2048",
+        state: AppState::Game2048,
+        bg_color: Rgb565::new(12, 8, 2),
+        text_color: Rgb565::CSS_ORANGE,
+    },
+    MenuItem {
+        name: "Tetris",
+        state: AppState::Tetris,
+        bg_color: Rgb565::new(8, 3, 14),
+        text_color: Rgb565::MAGENTA,
+    },
+    MenuItem {
+        name: "Flappy",
+        state: AppState::Flappy,
+        bg_color: Rgb565::new(2, 10, 14),
+        text_color: Rgb565::CYAN,
+    },
+    MenuItem {
+        name: "Maze",
+        state: AppState::Maze,
+        bg_color: Rgb565::new(3, 10, 6),
+        text_color: Rgb565::GREEN,
     },
 ];
 
@@ -157,5 +187,29 @@ impl Launcher {
             )
             .draw(d);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tap_selects_item_at_release_coordinate() {
+        let mut launcher = Launcher::new();
+        assert_eq!(
+            launcher.update(None, true, START_Y as u16),
+            Some(AppState::Outdoor)
+        );
+    }
+
+    #[test]
+    fn vertical_swipe_changes_scroll_target_without_selecting_an_item() {
+        let mut launcher = Launcher::new();
+        assert_eq!(launcher.update(Some(SwipeDirection::Up), false, 0), None);
+        assert_eq!(
+            launcher.update(None, true, 100),
+            Some(AppState::WorkTracker)
+        );
     }
 }

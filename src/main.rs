@@ -261,11 +261,12 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
 
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
-    // Heap: 320KB SRAM + PSRAM for large allocs
-    // The BLE+WiFi coex radio stack needs ~100KB+ of internal SRAM for
-    // btdm_controller_init tasks and buffers. 64KB was too small and
-    // caused a StoreProhibited panic (null-pointer from failed alloc).
-    esp_alloc::heap_allocator!(size: 320 * 1024);
+    // Reserve a bounded internal heap and keep large allocations in PSRAM.
+    // The ESP32-S3 data region is shared with Wi-Fi/radio statics, so a 320 KiB
+    // heap leaves no room for the firmware image to link. 192 KiB preserves
+    // radio headroom while the framebuffer and application allocations use
+    // the PSRAM allocator below.
+    esp_alloc::heap_allocator!(size: 192 * 1024);
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
@@ -502,7 +503,7 @@ async fn main(_spawner: Spawner) {
     // Only when we actually beep: unmute codec -> raise PA_EN -> write DMA -> lower PA_EN -> mute
     println!("[AUDIO] Init codec...");
     let mut audio_codec = Es8311::new(RefCellDevice::new(&i2c_ref));
-    let mut pa_en = Output::new(peripherals.GPIO46, Level::Low, OutputConfig::default());
+    let _pa_en = Output::new(peripherals.GPIO46, Level::Low, OutputConfig::default());
     match audio_codec.init() {
         Ok(()) => println!("[AUDIO] Codec OK"),
         Err(_) => println!("[AUDIO] Codec FAILED"),
@@ -527,7 +528,7 @@ async fn main(_spawner: Spawner) {
     // manufacturing references to `static mut` storage.
     static I2S_TX_DESC: StaticCell<[DmaDescriptor; 8]> = StaticCell::new();
     let i2s_tx_desc = I2S_TX_DESC.init([DmaDescriptor::EMPTY; 8]);
-    let mut i2s_tx = i2s_periph
+    let _i2s_tx = i2s_periph
         .i2s_tx
         .with_bclk(peripherals.GPIO41)
         .with_ws(peripherals.GPIO45)
@@ -599,7 +600,7 @@ async fn main(_spawner: Spawner) {
 
     // Load persistent watch settings (hourly rate, display prefs, feature flags).
     // Falls back to defaults if flash is blank or CRC fails (first boot).
-    let mut watch_settings = load_settings();
+    let watch_settings = load_settings();
     println!(
         "[SETTINGS] rate={}c/h timeout={}s ble={} wifi={}",
         watch_settings.hourly_rate_cents,
@@ -758,8 +759,6 @@ async fn main(_spawner: Spawner) {
     // explicitly user-activated from the watchface.
     watchface.wifi_on = false;
     let mut current_page = Page::Clock;
-    // Live power-diagnostic snapshot, updated in the main loop and read
-    // by the Power page renderer. Kept as plain POD so reading it is free.
     let mut app_state = AppState::Watchface;
     let mut snake_game = SnakeGame::new();
     let mut game_2048 = Game2048::new();
@@ -769,8 +768,6 @@ async fn main(_spawner: Spawner) {
     let mut launcher = Launcher::new();
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::with_rate(watch_settings.hourly_rate_cents);
-    let mut active_session_persisted = false;
-    let mut active_session_id: Option<u64> = None;
     let mut authenticator_app = AuthenticatorApp::new();
     log_memory("before-analyzer");
     println!(
@@ -796,11 +793,6 @@ async fn main(_spawner: Spawner) {
     let mut smarthome_app = SmartHomeApp::new();
 
     let mut accel = (0.0f32, 0.0f32, 0.0f32);
-    let mut gyro_data = (0i16, 0i16, 0i16);
-    let mut imu_temp: i16 = 250;
-    let mut batt_pct: u8 = 0;
-    let mut batt_mv: u16 = 0;
-    let mut charging = false;
     let mut page_dirty = true;
 
     let mut last_interaction = Instant::now();
@@ -825,13 +817,15 @@ async fn main(_spawner: Spawner) {
     // Initial render
     match power.read_battery() {
         Ok(bat) => {
-            batt_pct = bat.percent;
-            batt_mv = bat.voltage_mv;
-            charging = bat.charging;
-            watchface.update_battery(batt_pct, batt_mv, charging);
-            outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
-            work_tracker.update_battery(batt_pct, charging);
-            authenticator_app.update_battery(batt_pct, charging);
+            watchface.update_battery(bat.percent, bat.voltage_mv, bat.charging);
+            outdoor_state.update_battery(
+                bat.percent,
+                bat.voltage_mv,
+                bat.charging,
+                bat.vbus_present,
+            );
+            work_tracker.update_battery(bat.percent, bat.charging);
+            authenticator_app.update_battery(bat.percent, bat.charging);
         }
         Err(_) => println!("[PMIC] battery telemetry invalid; retaining last valid sample"),
     }
@@ -867,8 +861,6 @@ async fn main(_spawner: Spawner) {
                         ),
                         elapsed_secs,
                     );
-                    active_session_persisted = true;
-                    active_session_id = Some(active.session_id);
                     println!("[WORK] restored active session ({} seconds)", elapsed_secs);
                 } else {
                     println!("[WORK] invalid RTC date; active session retained for recovery");
@@ -935,7 +927,6 @@ async fn main(_spawner: Spawner) {
     let mut next_watchface_flush = Instant::now();
     // Radio state: we track both what the user *wants* and what the radio
     // actually is. They drift apart briefly during connect/disconnect.
-    let mut wifi_on_request: bool = false;
     let mut wifi_started: bool = false; // controller.start() called
     let mut wifi_connected: bool = false; // connect_async succeeded
     let mut ntp_synced: bool = false;
@@ -944,10 +935,6 @@ async fn main(_spawner: Spawner) {
     let mut wifi_attempt: u8 = 0;
     // Request pending from a UI tap on the WiFi button.
     let mut wifi_toggle_request: bool = false;
-    // BLE state & supervisor — BLE disabled until heap stable at 384KB+
-    let mut ble_on: bool = false;
-    let mut ble_status = crate::outdoor::BleStatus::new();
-
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum ImuPowerMode {
         Off,
@@ -1121,19 +1108,11 @@ async fn main(_spawner: Spawner) {
 
         if need_gyro {
             match imu.read_gyro_if_ready() {
-                Ok(Some(g)) => {
-                    gyro_data = (
-                        (g.x * 10.0) as i16,
-                        (g.y * 10.0) as i16,
-                        (g.z * 10.0) as i16,
-                    );
-                }
+                Ok(Some(_)) => {}
                 Ok(None) => {}
                 Err(_) => println!("[IMU] gyroscope read failed"),
             }
-            if let Ok(t) = imu.read_temperature() {
-                imu_temp = (t * 10.0) as i16;
-            }
+            let _ = imu.read_temperature();
         }
 
         // Outdoor & Work Tracker periodic 1 Hz tick
@@ -1176,12 +1155,10 @@ async fn main(_spawner: Spawner) {
                 match wifi_controller.start() {
                     Ok(()) => {
                         wifi_started = true;
-                        wifi_on_request = true;
                     }
                     Err(e) => {
                         println!("[WIFI] Start failed: {:?}", e);
                         wifi_started = false;
-                        wifi_on_request = false;
                         continue;
                     }
                 }
@@ -1229,7 +1206,6 @@ async fn main(_spawner: Spawner) {
                 println!("[WIFI] Stopping radio...");
                 wifi_controller.stop().ok();
                 wifi_started = false;
-                wifi_on_request = false;
                 wifi_connected = false;
                 wifi_retry_at = None;
                 wifi_attempt = 0;
@@ -1253,13 +1229,15 @@ async fn main(_spawner: Spawner) {
         if now >= next_battery {
             match power.read_battery() {
                 Ok(bat) => {
-                    batt_pct = bat.percent;
-                    batt_mv = bat.voltage_mv;
-                    charging = bat.charging;
-                    watchface.update_battery(batt_pct, batt_mv, charging);
-                    outdoor_state.update_battery(batt_pct, batt_mv, charging, bat.vbus_present);
-                    work_tracker.update_battery(batt_pct, charging);
-                    authenticator_app.update_battery(batt_pct, charging);
+                    watchface.update_battery(bat.percent, bat.voltage_mv, bat.charging);
+                    outdoor_state.update_battery(
+                        bat.percent,
+                        bat.voltage_mv,
+                        bat.charging,
+                        bat.vbus_present,
+                    );
+                    work_tracker.update_battery(bat.percent, bat.charging);
+                    authenticator_app.update_battery(bat.percent, bat.charging);
                 }
                 Err(_) => println!("[PMIC] battery telemetry invalid; retaining last valid sample"),
             }
@@ -1380,6 +1358,11 @@ async fn main(_spawner: Spawner) {
                         AppState::BleAnalyzer => ble_analyzer_app.setup(),
                         AppState::Mp3Player => media_controller.setup(),
                         AppState::SmartHome => smarthome_app.setup(),
+                        AppState::Snake => snake_game.setup(),
+                        AppState::Game2048 => game_2048.setup(),
+                        AppState::Tetris => tetris_game.setup(),
+                        AppState::Flappy => flappy_game.setup(),
+                        AppState::Maze => maze_game.setup(),
                         _ => {}
                     }
                     app_state = state;
@@ -1433,12 +1416,12 @@ async fn main(_spawner: Spawner) {
         // Idle display policy. Keep AOD only on the clock page; other apps
         // go directly dark so an unattended app cannot burn the panel.
         let idle = now.duration_since(last_interaction);
-        let target_state = if idle >= Duration::from_secs(600) {
-            0
-        } else if app_state == AppState::Watchface
-            && current_page == Page::Clock
-            && idle >= Duration::from_secs(40)
+        let aod_allowed = app_state == AppState::Watchface && current_page == Page::Clock;
+        let target_state = if idle >= Duration::from_secs(600)
+            || (!aod_allowed && idle >= Duration::from_secs(40))
         {
+            0
+        } else if aod_allowed && idle >= Duration::from_secs(40) {
             1
         } else if idle >= Duration::from_secs(20) {
             2

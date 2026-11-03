@@ -54,4 +54,9 @@ pub enum AppState {
     WorkTracker,
     Authenticator,
     BleAnalyzer,
+    Snake,
+    Game2048,
+    Tetris,
+    Flappy,
+    Maze,
 }

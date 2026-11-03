@@ -187,14 +187,22 @@ impl App for SmartHomeApp {
             _ => {}
         }
 
-        // Tap detection
+        // Use the release coordinates supplied by the touch driver instead of
+        // cycling selection. Network dispatch remains owned by the main loop.
         if input.tap {
-            // Find which button was tapped (use approximate Y from touch)
-            // We'll need the touch Y coordinate passed via the AppInput
-            // For now, cycle through buttons on each tap
-            if self.count > 0 {
-                let next = self.selected.map(|i| (i + 1) % self.count).unwrap_or(0);
-                self.selected = Some(next);
+            if let Some(point) = input.touch {
+                let y = point.y as i32 + self.scroll_offset;
+                for index in 0..self.count {
+                    let button_y = 55 + index as i32 * (BTN_H + BTN_GAP);
+                    if (point.x as i32) >= BTN_MARGIN
+                        && (point.x as i32) < W - BTN_MARGIN
+                        && y >= button_y
+                        && y < button_y + BTN_H
+                    {
+                        self.selected = Some(index);
+                        break;
+                    }
+                }
             }
         }
 
@@ -286,5 +294,30 @@ impl App for SmartHomeApp {
             Alignment::Center,
         )
         .draw(d);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tap_selects_the_button_under_the_release_point() {
+        let mut app = SmartHomeApp::new();
+        app.add_button("Lamp", "https://example.invalid/lamp", HttpMethod::Get);
+        let input = AppInput {
+            touch: Some(crate::peripherals::touch::TouchPoint {
+                x: 100,
+                y: 70,
+                fingers: 0,
+            }),
+            swipe: None,
+            tap: true,
+            accel: (0.0, 0.0, 0.0),
+            dt_ms: 0,
+        };
+
+        assert_eq!(app.update(&input), AppResult::Continue);
+        assert_eq!(app.get_pending_request().map(|(index, _)| index), Some(0));
     }
 }
