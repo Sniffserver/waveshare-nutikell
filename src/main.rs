@@ -56,6 +56,8 @@ use esp_backtrace as _;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 use embassy_executor::Spawner;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -119,17 +121,158 @@ async fn net_task(
     runner.run().await
 }
 
+// ── WiFi connection task ──────────────────────────────────────────────────────
+//
+// Runs the full start → connect sequence off the main loop so touch, rendering
+// and sensor reads are never blocked.  Results are signalled back via two
+// static Signals:
+//
+//   WIFI_RESULT  — posted once per connection attempt:
+//       Ok(())    = connected
+//       Err(true) = failed but should retry (attempt < MAX_WIFI_ATTEMPTS)
+//       Err(false)= failed, max retries reached, user must intervene
+//
+//   WIFI_DISCONNECT_REQ — set by the main loop to request a graceful stop.
+//
+// The task exits after a successful connect OR after exhausting retries OR
+// after receiving a disconnect request.
+
+/// Maximum automatic retries before giving up and requiring the user to
+/// manually toggle WiFi again.
+const MAX_WIFI_ATTEMPTS: u8 = 5;
+
+static WIFI_RESULT: Signal<CriticalSectionRawMutex, Result<(), bool>> = Signal::new();
+static WIFI_DISCONNECT_REQ: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+#[embassy_executor::task(pool_size = 1)]
+async fn wifi_connect_task(
+    controller: &'static mut esp_radio::wifi::WifiController<'static>,
+) {
+    use embassy_futures::select::{select, Either};
+
+    for attempt in 1u8..=MAX_WIFI_ATTEMPTS {
+        // Honour a disconnect request that arrived while we were sleeping
+        // between retry backoffs.
+        if WIFI_DISCONNECT_REQ.signaled() {
+            WIFI_DISCONNECT_REQ.reset();
+            println!("[WIFI-TASK] disconnect requested before attempt {}", attempt);
+            controller.stop().ok();
+            WIFI_RESULT.signal(Err(false));
+            return;
+        }
+
+        println!("[WIFI-TASK] attempt {}/{}", attempt, MAX_WIFI_ATTEMPTS);
+
+        if let Err(e) = controller.start() {
+            println!("[WIFI-TASK] start failed: {:?}", e);
+            // Fall through to backoff / retry
+        } else {
+            // Brief settle delay, interruptible by a disconnect request.
+            match select(
+                Timer::after(Duration::from_secs(2)),
+                WIFI_DISCONNECT_REQ.wait(),
+            )
+            .await
+            {
+                Either::Second(_) => {
+                    println!("[WIFI-TASK] disconnect requested during settle");
+                    controller.stop().ok();
+                    WIFI_RESULT.signal(Err(false));
+                    return;
+                }
+                Either::First(_) => {}
+            }
+
+            // Attempt connect, interruptible by disconnect request.
+            let connect_fut = embassy_time::with_timeout(
+                Duration::from_secs(15),
+                controller.connect_async(),
+            );
+            match select(connect_fut, WIFI_DISCONNECT_REQ.wait()).await {
+                Either::Second(_) => {
+                    println!("[WIFI-TASK] disconnect requested during connect");
+                    controller.stop().ok();
+                    WIFI_RESULT.signal(Err(false));
+                    return;
+                }
+                Either::First(Ok(Ok(()))) => {
+                    println!("[WIFI-TASK] connected on attempt {}", attempt);
+                    WIFI_RESULT.signal(Ok(()));
+                    return;
+                }
+                Either::First(Ok(Err(e))) => {
+                    println!("[WIFI-TASK] connect failed: {:?}", e);
+                }
+                Either::First(Err(_)) => {
+                    println!("[WIFI-TASK] connect timeout");
+                }
+            }
+            controller.stop().ok();
+        }
+
+        if attempt == MAX_WIFI_ATTEMPTS {
+            println!("[WIFI-TASK] max retries reached — giving up");
+            WIFI_RESULT.signal(Err(false)); // no more auto-retry
+            return;
+        }
+
+        // Exponential backoff (1 s, 2 s, 4 s, 8 s, 16 s), interruptible.
+        let backoff_secs = (1u64 << attempt.min(4)).min(16);
+        println!("[WIFI-TASK] retry in {} s", backoff_secs);
+        match select(
+            Timer::after(Duration::from_secs(backoff_secs)),
+            WIFI_DISCONNECT_REQ.wait(),
+        )
+        .await
+        {
+            Either::Second(_) => {
+                println!("[WIFI-TASK] disconnect requested during backoff");
+                WIFI_RESULT.signal(Err(false));
+                return;
+            }
+            Either::First(_) => {}
+        }
+
+        // Signal "retrying" so the UI can keep showing "connecting…"
+        WIFI_RESULT.signal(Err(true));
+    }
+}
+
+// ── NTP sync task ─────────────────────────────────────────────────────────────
+//
+// Runs the full NTP exchange off the main loop so the 5-second UDP timeout
+// never blocks touch, rendering, or sensor reads.
+// Posts the parsed DateTime via NTP_RESULT when done.
+
+static NTP_RESULT: Signal<CriticalSectionRawMutex, Option<crate::peripherals::rtc::DateTime>> =
+    Signal::new();
+
+#[embassy_executor::task(pool_size = 1)]
+async fn ntp_task(stack: embassy_net::Stack<'static>) {
+    match ntp_sync_inner(stack).await {
+        Ok(dt) => {
+            println!(
+                "[NTP-TASK] synced {:02}:{:02}:{:02} {:02}/{:02}/{}",
+                dt.hours, dt.minutes, dt.seconds, dt.day, dt.month, dt.year
+            );
+            NTP_RESULT.signal(Some(dt));
+        }
+        Err(()) => {
+            println!("[NTP-TASK] sync failed");
+            NTP_RESULT.signal(None);
+        }
+    }
+}
+
 fn report_display(result: Result<(), DisplayError>) {
     if let Err(error) = result {
         println!("[DISPLAY] runtime operation failed: {:?}", error);
     }
 }
 
-// Simple NTP sync (UDP to pool.ntp.org:123)
-async fn ntp_sync(
-    stack: embassy_net::Stack<'static>,
-    rtc: &mut crate::peripherals::rtc::Pcf85063aRtc<impl embedded_hal::i2c::I2c>,
-) -> Result<(), ()> {
+// NTP sync — returns a parsed DateTime on success, Err(()) on failure.
+// Called by ntp_task; runs fully off the main loop.
+async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<crate::peripherals::rtc::DateTime, ()> {
     use embassy_net::udp::{PacketMetadata, UdpSocket};
 
     let mut rx_meta = [PacketMetadata::EMPTY; 1];
@@ -138,7 +281,8 @@ async fn ntp_sync(
     let mut tx_buf = [0u8; 256];
 
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
-    socket.bind(12345).map_err(|_| ())?;
+    // Port 0 → kernel assigns a free ephemeral port automatically.
+    socket.bind(0).map_err(|_| ())?;
 
     // NTP request packet (simplified: 48 bytes, first byte = 0x1B for client mode)
     let mut ntp_request = [0u8; 48];
@@ -200,16 +344,17 @@ async fn ntp_sync(
                 println!("[NTP] rejected RTC-unrepresentable year {}", year);
                 return Err(());
             }
-            // Set RTC only after all validity checks pass.
-            let dt = crate::peripherals::rtc::DateTime::new(
+            // Build the validated DateTime and return it to the caller.
+            // The main loop is responsible for writing it to the RTC so this
+            // task does not need to hold a mutable reference to the peripheral.
+            Ok(crate::peripherals::rtc::DateTime::new(
                 (year - 2000) as u8,
                 month as u8,
                 day as u8,
                 hours,
                 minutes,
                 seconds,
-            );
-            rtc.set_time(&dt).map_err(|_| ())
+            ))
         }
         Ok(Ok((len, addr))) => {
             println!("[NTP] short response: {} bytes from {:?}", len, addr);
@@ -556,12 +701,25 @@ async fn main(_spawner: Spawner) {
     // manufacturing references to `static mut` storage.
     static I2S_TX_DESC: StaticCell<[DmaDescriptor; 8]> = StaticCell::new();
     let i2s_tx_desc = I2S_TX_DESC.init([DmaDescriptor::EMPTY; 8]);
-    let _i2s_tx = i2s_periph
-        .i2s_tx
-        .with_bclk(peripherals.GPIO41)
-        .with_ws(peripherals.GPIO45)
-        .with_dout(peripherals.GPIO40)
-        .build(i2s_tx_desc);
+    // Store the I2S TX handle in a StaticCell so it lives for the duration of
+    // the program and can be passed into an audio task when MP3 playback is
+    // wired up.  Using `_i2s_tx` (underscore prefix) would let the value drop
+    // at end-of-scope and silently disable DMA — do NOT rename it back.
+    static I2S_TX_HANDLE: StaticCell<esp_hal::i2s::master::I2sTx<'static, esp_hal::Blocking>> =
+        StaticCell::new();
+    let i2s_tx = I2S_TX_HANDLE.init(
+        i2s_periph
+            .i2s_tx
+            .with_bclk(peripherals.GPIO41)
+            .with_ws(peripherals.GPIO45)
+            .with_dout(peripherals.GPIO40)
+            .build(i2s_tx_desc),
+    );
+    // `i2s_tx` is a `&'static mut I2sTx` obtained from the StaticCell.
+    // Pass it to the audio task when needed.  It is intentionally unused
+    // until MP3 decoding is wired; the `#[allow]` prevents a spurious warning.
+    #[allow(unused_variables)]
+    let i2s_tx = i2s_tx;
 
     // Pre-generate beep sound (800Hz, 50ms, stereo 16-bit @ 16kHz = 3200 bytes)
     static BEEP_BUF: StaticCell<[u8; 4000]> = StaticCell::new();
@@ -678,7 +836,10 @@ async fn main(_spawner: Spawner) {
     if !wifi_has_creds {
         println!("[PROVISION] No WiFi creds — starting AP provisioning");
 
-        let ap_password = alloc::format!("sbie-{:08X}", Instant::now().as_millis() as u32);
+        // Generate a random 8-hex-digit suffix using hardware RNG so the
+        // provisioning password is not guessable from boot timing.
+        let rand_suffix: u32 = esp_hal::rng::Rng::new().random();
+        let ap_password = alloc::format!("sbie-{:08X}", rand_suffix);
 
         // Reconfigure WiFi controller as Access Point
         // Never expose credential provisioning on an open AP. The password is
@@ -773,6 +934,13 @@ async fn main(_spawner: Spawner) {
         .expect("WiFi config failed");
     // NOTE: we do NOT call wifi_controller.start() here. The radio stays
     // fully idle until the user taps the WiFi button.
+
+    // Move the controller into a StaticCell so the wifi_connect_task can hold
+    // a `&'static mut` reference.  After this point `wifi_controller` is gone;
+    // all interaction with the radio goes through the Signal channels.
+    static WIFI_CTRL: StaticCell<esp_radio::wifi::WifiController<'static>> = StaticCell::new();
+    let wifi_ctrl_static: &'static mut esp_radio::wifi::WifiController<'static> =
+        WIFI_CTRL.init(wifi_controller);
 
     // === Network Stack scaffolding (idle until radio starts) ===
     let net_config = NetConfig::dhcpv4(Default::default());
@@ -960,14 +1128,23 @@ async fn main(_spawner: Spawner) {
     let mut next_battery = Instant::now();
     let mut last_frame = Instant::now();
     let mut next_watchface_flush = Instant::now();
-    // Radio state: we track both what the user *wants* and what the radio
-    // actually is. They drift apart briefly during connect/disconnect.
-    let mut wifi_started: bool = false; // controller.start() called
-    let mut wifi_connected: bool = false; // connect_async succeeded
+
+    // ── WiFi / NTP state ─────────────────────────────────────────────────────
+    //
+    // The heavy lifting (start, connect_async, NTP UDP exchange) is now done
+    // inside dedicated Embassy tasks so the main loop is never blocked.
+    // The main loop only manages these boolean flags and spawns/resets tasks.
+    //
+    //   wifi_task_running  : a wifi_connect_task is currently executing
+    //   wifi_connected     : last WIFI_RESULT was Ok(())
+    //   ntp_task_running   : an ntp_task is currently executing
+    //   ntp_synced         : NTP_RESULT returned Some(dt) at least once
+    //   wifi_toggle_request: user tapped the WiFi button
+    let mut wifi_task_running: bool = false;
+    let mut wifi_connected: bool = false;
+    let mut ntp_task_running: bool = false;
     let mut ntp_synced: bool = false;
     let mut last_wifi_toggle = Instant::now();
-    let mut wifi_retry_at: Option<Instant> = None;
-    let mut wifi_attempt: u8 = 0;
     // Request pending from a UI tap on the WiFi button.
     let mut wifi_toggle_request: bool = false;
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1174,87 +1351,100 @@ async fn main(_spawner: Spawner) {
             next_rtc = now + Duration::from_secs(1);
         }
 
-        // WiFi toggle logic
-        let retry_ready = wifi_retry_at.map_or(true, |deadline| now >= deadline);
+        // ── WiFi toggle ──────────────────────────────────────────────────────
+        //
+        // The actual radio bring-up runs in wifi_connect_task.  The main loop
+        // only spawns / cancels the task and reads results from WIFI_RESULT.
+        // This means the loop is never blocked for the ~17 s that
+        // start + connect_async used to take.
+
+        // Poll for a result if a task is in flight.
+        if wifi_task_running && WIFI_RESULT.signaled() {
+            match WIFI_RESULT.wait().await {
+                Ok(()) => {
+                    // Task connected successfully.
+                    wifi_connected = true;
+                    wifi_task_running = false;
+                    ntp_synced = false; // trigger NTP
+                    watchface.wifi_connected = true;
+                    println!("[WIFI] connected");
+                }
+                Err(true) => {
+                    // Task is retrying; stay in task_running state.
+                    // The UI already shows "connecting…" via wifi_on=true.
+                }
+                Err(false) => {
+                    // Task gave up (max retries or disconnect request).
+                    wifi_connected = false;
+                    wifi_task_running = false;
+                    watchface.wifi_on = false;
+                    watchface.wifi_connected = false;
+                    println!("[WIFI] task ended without connection — user must retry");
+                }
+            }
+        }
+
+        // Handle a user toggle request (debounced: 2 s minimum between toggles).
         if wifi_toggle_request
-            && retry_ready
             && now.duration_since(last_wifi_toggle) > Duration::from_secs(2)
         {
             last_wifi_toggle = now;
             wifi_toggle_request = false;
 
-            if !wifi_started {
-                // Start WiFi radio
-                println!("[WIFI] Starting radio...");
-                match wifi_controller.start() {
-                    Ok(()) => {
-                        wifi_started = true;
-                    }
-                    Err(e) => {
-                        println!("[WIFI] Start failed: {:?}", e);
-                        wifi_started = false;
-                        continue;
-                    }
-                }
-
-                // Give it a moment, then attempt connect
-                Timer::after(Duration::from_secs(2)).await;
-
-                // Try connecting
-                match embassy_time::with_timeout(
-                    Duration::from_secs(15),
-                    wifi_controller.connect_async(),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {
-                        println!("[WIFI] Connected!");
-                        wifi_connected = true;
-                        ntp_synced = false; // will sync in next cycle
-                        wifi_attempt = 0;
-                        wifi_retry_at = None;
-                    }
-                    Ok(Err(e)) => {
-                        println!("[WIFI] Connect failed: {:?}", e);
-                        wifi_connected = false;
-                        wifi_controller.stop().ok();
-                        wifi_started = false;
-                        wifi_attempt = wifi_attempt.saturating_add(1);
-                        let backoff = (1u64 << wifi_attempt.min(5)).min(30);
-                        wifi_retry_at = Some(now + Duration::from_secs(backoff));
-                        wifi_toggle_request = true;
-                    }
-                    Err(_) => {
-                        println!("[WIFI] Connect timeout");
-                        wifi_connected = false;
-                        wifi_controller.stop().ok();
-                        wifi_started = false;
-                        wifi_attempt = wifi_attempt.saturating_add(1);
-                        let backoff = (1u64 << wifi_attempt.min(5)).min(30);
-                        wifi_retry_at = Some(now + Duration::from_secs(backoff));
-                        wifi_toggle_request = true;
-                    }
-                }
-            } else {
-                // Stop WiFi radio
-                println!("[WIFI] Stopping radio...");
-                wifi_controller.stop().ok();
-                wifi_started = false;
+            if !wifi_task_running && !wifi_connected {
+                // User wants WiFi on: spawn the connect task.
+                println!("[WIFI] spawning connect task");
+                watchface.wifi_on = true;
+                wifi_task_running = true;
+                _spawner.spawn(wifi_connect_task(wifi_ctrl_static)).ok();
+            } else if wifi_connected || wifi_task_running {
+                // User wants WiFi off: signal the running task to stop, or
+                // mark as disconnected if no task is running.
+                println!("[WIFI] requesting disconnect");
+                WIFI_DISCONNECT_REQ.signal(());
                 wifi_connected = false;
-                wifi_retry_at = None;
-                wifi_attempt = 0;
+                wifi_task_running = false; // task will exit on next iteration
+                watchface.wifi_on = false;
+                watchface.wifi_connected = false;
+                ntp_synced = false;
             }
         }
 
-        // NTP sync after WiFi connects
-        if wifi_connected && !ntp_synced {
-            match ntp_sync(stack, &mut rtc).await {
-                Ok(()) => {
+        // ── NTP sync ─────────────────────────────────────────────────────────
+        //
+        // The 5-second UDP exchange runs in ntp_task.  The main loop spawns it
+        // once after WiFi connects and applies the result when it arrives.
+        if wifi_connected && !ntp_synced && !ntp_task_running {
+            println!("[NTP] spawning NTP task");
+            ntp_task_running = true;
+            _spawner.spawn(ntp_task(stack)).ok();
+        }
+
+        if ntp_task_running && NTP_RESULT.signaled() {
+            ntp_task_running = false;
+            match NTP_RESULT.wait().await {
+                Some(dt) => {
                     ntp_synced = true;
-                    println!("[NTP] synchronized");
+                    if rtc.set_time(&dt).is_ok() {
+                        println!("[NTP] RTC updated");
+                    }
+                    // Immediately push fresh time to watchface / apps.
+                    watchface.update_time(dt.hours, dt.minutes, dt.seconds);
+                    watchface.update_date(dt.day, dt.month, dt.year);
+                    outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
+                    outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
+                    work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
+                    work_tracker.update_date((2000 + dt.year as u16, dt.month, dt.day));
+                    authenticator_app.update_time(
+                        (dt.hours, dt.minutes, dt.seconds),
+                        (2000 + dt.year as u16, dt.month, dt.day),
+                    );
+                    watchface.force_redraw();
+                    page_dirty = true;
                 }
-                Err(()) => {
-                    println!("[NTP] synchronization failed; will retry");
+                None => {
+                    println!("[NTP] sync failed; will retry on next WiFi connect");
+                    // ntp_synced stays false → will retry if still connected
                 }
             }
         }
@@ -1451,10 +1641,17 @@ async fn main(_spawner: Spawner) {
             match write_credentials(&creds) {
                 Ok(()) => {
                     settings_app.set_stored_ssid(config.ssid_str());
-                    if wifi_started {
-                        let _ = wifi_controller.stop();
-                        wifi_started = false;
+
+                    // If the connect task is running, tell it to stop so we
+                    // can reconfigure the controller for the new SSID.
+                    if wifi_task_running {
+                        WIFI_DISCONNECT_REQ.signal(());
+                        // Task will drain and signal Err(false); we reset below.
+                        wifi_task_running = false;
+                        wifi_connected = false;
                     }
+
+                    // Reconfigure with new credentials via the static handle.
                     let client = ClientConfig::default()
                         .with_ssid(alloc::string::String::from(config.ssid_str()))
                         .with_password(alloc::string::String::from(config.pass_str()))
@@ -1463,13 +1660,13 @@ async fn main(_spawner: Spawner) {
                         } else {
                             AuthMethod::WpaWpa2Personal
                         });
-                    if wifi_controller
+                    if wifi_ctrl_static
                         .set_config(&ModeConfig::Client(client))
                         .is_ok()
                     {
                         wifi_connected = false;
-                        wifi_attempt = 0;
-                        wifi_retry_at = None;
+                        ntp_synced = false;
+                        // Trigger a fresh connect via the task.
                         wifi_toggle_request = true;
                     } else {
                         settings_app.wifi_state = crate::peripherals::wifi::WifiState::Error;
