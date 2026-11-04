@@ -304,11 +304,15 @@ async fn main(_spawner: Spawner) {
 
     // === Power ===
     let mut power = Axp2101Power::new(RefCellDevice::new(&i2c_ref));
-    let _ = power.init();
+    if power.init().is_err() {
+        println!("[POWER] initialization failed");
+        return;
+    }
     // Drop the die-temp ADC channel we never show on the UI — shaves a
     // few hundred µA off the AXP2101 housekeeping load.
     let _ = power.trim_adc_channels();
     println!("[POWER] OK");
+    println!("[HIL][PASS] pmic");
 
     // === Display 80MHz DMA ===
     let spi_config = SpiConfig::default()
@@ -339,6 +343,7 @@ async fn main(_spawner: Spawner) {
     display.bus_mut().write_c8d8(0x35, 0x00);
     let te_pin = Input::new(peripherals.GPIO13, InputConfig::default());
     println!("[DISPLAY] OK (TE VSync enabled)");
+    println!("[HIL][PASS] display");
 
     // === Framebuffer PSRAM ===
     let mut fb = Framebuffer::new();
@@ -363,8 +368,12 @@ async fn main(_spawner: Spawner) {
     touch_rst.set_high();
     delay.delay_millis(50);
     let mut touch = Ft3168Touch::new(RefCellDevice::new(&i2c_ref));
-    let _ = touch.init();
+    if touch.init().is_err() {
+        println!("[TOUCH] initialization failed");
+        return;
+    }
     println!("[TOUCH] OK");
+    println!("[HIL][PASS] touch");
     let mut boot_button = Input::new(
         peripherals.GPIO0,
         InputConfig::default().with_pull(Pull::Up),
@@ -372,8 +381,12 @@ async fn main(_spawner: Spawner) {
 
     // === RTC ===
     let mut rtc = Pcf85063aRtc::new(RefCellDevice::new(&i2c_ref));
-    let _ = rtc.init();
+    if rtc.init().is_err() {
+        println!("[RTC] initialization failed");
+        return;
+    }
     println!("[RTC] OK");
+    println!("[HIL][PASS] rtc");
 
     // === I2C Bus Scan ===
     {
@@ -408,6 +421,9 @@ async fn main(_spawner: Spawner) {
             "[IMU] Raw accel bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]
         );
+        if init_ok {
+            println!("[HIL][PASS] imu");
+        }
     }
 
     // Sample resting acceleration to verify scale and |a| ~ 1.0g
@@ -595,6 +611,7 @@ async fn main(_spawner: Spawner) {
     )
     .expect("BLE init failed");
     println!("[BLE] HCI connector ready");
+    println!("[HIL][PASS] ble-hci");
     log_memory("after-radio");
 
     // === NVS: load stored WiFi credentials ===
@@ -672,8 +689,11 @@ async fn main(_spawner: Spawner) {
             .with_password(ap_password.clone())
             .with_auth_method(AuthMethod::WpaWpa2Personal);
         let ap_mode = ModeConfig::AccessPoint(ap_config);
-        wifi_controller.set_config(&ap_mode).ok();
-        wifi_controller.start().ok();
+        if wifi_controller.set_config(&ap_mode).is_err() || wifi_controller.start().is_err() {
+            println!("[WIFI] provisioning AP initialization failed");
+            return;
+        }
+        println!("[HIL][PASS] wifi-radio");
 
         // AP embassy-net stack with static IP 192.168.4.1/24
         let ap_net_config = NetConfig::ipv4_static(embassy_net::StaticConfigV4 {
