@@ -40,6 +40,90 @@ impl DateTime {
             year,
         }
     }
+
+    /// Shift this DateTime by a timezone offset in minutes.
+    pub fn with_timezone_offset(&self, offset_mins: i16) -> DateTime {
+        if offset_mins == 0 {
+            return *self;
+        }
+        let total_mins = (self.hours as i32) * 60 + (self.minutes as i32) + (offset_mins as i32);
+        let (day_delta, rem_mins) = if total_mins >= 0 {
+            (total_mins / 1440, total_mins % 1440)
+        } else {
+            let d = (total_mins - 1439) / 1440;
+            (d, total_mins - d * 1440)
+        };
+        let hours = (rem_mins / 60) as u8;
+        let minutes = (rem_mins % 60) as u8;
+
+        if day_delta == 0 {
+            DateTime {
+                hours,
+                minutes,
+                seconds: self.seconds,
+                day: self.day,
+                weekday: self.weekday,
+                month: self.month,
+                year: self.year,
+            }
+        } else {
+            let days_in_month = match self.month {
+                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                4 | 6 | 9 | 11 => 30,
+                2 => {
+                    let y = 2000 + self.year as u32;
+                    if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                        29
+                    } else {
+                        28
+                    }
+                }
+                _ => 31,
+            };
+            let mut day = self.day as i32 + day_delta;
+            let mut month = self.month as i32;
+            let mut year = self.year as i32;
+
+            if day > days_in_month {
+                day -= days_in_month;
+                month += 1;
+                if month > 12 {
+                    month = 1;
+                    year += 1;
+                }
+            } else if day < 1 {
+                month -= 1;
+                if month < 1 {
+                    month = 12;
+                    year -= 1;
+                }
+                let prev_days = match month {
+                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                    4 | 6 | 9 | 11 => 30,
+                    2 => {
+                        let y = 2000 + year as u32;
+                        if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                            29
+                        } else {
+                            28
+                        }
+                    }
+                    _ => 31,
+                };
+                day += prev_days;
+            }
+
+            DateTime {
+                hours,
+                minutes,
+                seconds: self.seconds,
+                day: day as u8,
+                weekday: self.weekday,
+                month: month as u8,
+                year: year as u8,
+            }
+        }
+    }
 }
 
 pub struct Pcf85063aRtc<I> {

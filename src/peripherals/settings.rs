@@ -101,12 +101,15 @@ pub struct WatchSettings {
     /// 24-hour clock display
     pub clock_24h: bool, // 1
 
+    /// Timezone offset from UTC in minutes (e.g. +120 for UTC+2, -300 for UTC-5)
+    pub timezone_offset_mins: i16, // 2
+
     // padding to 44 bytes
-    _pad: [u8; 32],
+    _pad: [u8; 30],
 }
 
-impl WatchSettings {
-    pub fn default() -> Self {
+impl Default for WatchSettings {
+    fn default() -> Self {
         Self {
             hourly_rate_cents: 5000,
             display_timeout_secs: 30,
@@ -116,10 +119,13 @@ impl WatchSettings {
             wifi_enabled: false,
             ble_enabled: true,
             clock_24h: true,
-            _pad: [0u8; 32],
+            timezone_offset_mins: 0,
+            _pad: [0u8; 30],
         }
     }
+}
 
+impl WatchSettings {
     fn to_bytes(self) -> [u8; BLOB_LEN] {
         let mut out = [0u8; BLOB_LEN];
         out[0..4].copy_from_slice(&self.hourly_rate_cents.to_le_bytes());
@@ -130,7 +136,8 @@ impl WatchSettings {
         out[9] = self.wifi_enabled as u8;
         out[10] = self.ble_enabled as u8;
         out[11] = self.clock_24h as u8;
-        // bytes 12..44 stay 0 (padding / future fields)
+        out[12..14].copy_from_slice(&self.timezone_offset_mins.to_le_bytes());
+        // bytes 14..44 stay 0 (padding / future fields)
         out
     }
 
@@ -144,7 +151,8 @@ impl WatchSettings {
             wifi_enabled: b[9] != 0,
             ble_enabled: b[10] != 0,
             clock_24h: b[11] != 0,
-            _pad: [0u8; 32],
+            timezone_offset_mins: i16::from_le_bytes([b[12], b[13]]),
+            _pad: [0u8; 30],
         }
     }
 }
@@ -299,7 +307,8 @@ mod tests {
             wifi_enabled: true,
             ble_enabled: false,
             clock_24h: false,
-            _pad: [0; 32],
+            timezone_offset_mins: 120,
+            _pad: [0; 30],
         };
         let sector = encode_sector(s);
         let recovered = decode_sector(&sector).expect("decode_sector should succeed");

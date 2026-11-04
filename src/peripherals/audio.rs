@@ -97,7 +97,7 @@ impl<I: I2c> Es8311<I> {
 
     /// Mute: power down DAC + disable HP output
     pub fn mute(&mut self) -> Result<(), I::Error> {
-        self.write_reg(0x12, 0x00)?; // DAC power down
+        self.write_reg(0x12, 0x20)?; // DAC power down (0x20 = PDN_DAC bit 5)
         self.write_reg(0x13, 0x00)?; // Disable HP drive
         self.write_reg(0x32, 0x00) // Volume 0
     }

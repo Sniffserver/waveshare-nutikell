@@ -21,70 +21,94 @@ const HEIGHT: usize = board::LCD_HEIGHT as usize;
 const PIXEL_COUNT: usize = WIDTH * HEIGHT;
 
 pub struct Framebuffer {
-    buf: Vec<u16>,
+    front: Vec<u16>,
+    back: Vec<u16>,
 }
 
 impl Framebuffer {
-    /// Allocate single framebuffer in PSRAM (via global allocator).
-    /// Saves ~402KB PSRAM versus unused double-buffering.
+    /// Allocate true front and back framebuffers in PSRAM (via global allocator).
+    /// Provides zero-tearing double-buffered rendering for games and animations.
     pub fn new() -> Self {
-        let buf = vec![0u16; PIXEL_COUNT];
-        Self { buf }
+        let front = vec![0u16; PIXEL_COUNT];
+        let back = vec![0u16; PIXEL_COUNT];
+        Self { front, back }
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.buf.capacity() * core::mem::size_of::<u16>()
+        (self.front.capacity() + self.back.capacity()) * core::mem::size_of::<u16>()
     }
 
-    /// Clear the entire framebuffer with a color.
+    /// Clear the back framebuffer with a color.
     pub fn clear_color(&mut self, color: Rgb565) {
         let raw = RawU16::from(color).into_inner();
-        self.buf.fill(raw);
+        self.back.fill(raw);
     }
 
-    /// Set a single pixel (no bounds check for speed).
+    /// Set a single pixel in back buffer (no bounds check for speed).
     #[inline(always)]
     pub fn set_pixel(&mut self, x: usize, y: usize, color: u16) {
         if x < WIDTH && y < HEIGHT {
-            self.buf[y * WIDTH + x] = color;
+            self.back[y * WIDTH + x] = color;
         }
     }
 
-    /// Fill a rectangular region.
+    /// Fill a rectangular region in back buffer.
     pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u16) {
         let x_end = x.saturating_add(w).min(WIDTH);
         let y_end = y.saturating_add(h).min(HEIGHT);
         for row in y..y_end {
             let start = row * WIDTH + x;
             let end = row * WIDTH + x_end;
-            self.buf[start..end].fill(color);
+            self.back[start..end].fill(color);
         }
     }
 
-    /// Double-buffer swap + VSync flush.
-    /// 1. Swap front/back buffers (instant)
-    /// 2. Wait for TE signal (VBlank)
-    /// 3. Flush the new front buffer to display
+    /// Wait for TE VSync signal (rising edge / VBlank) asynchronously without CPU busy-wait.
+    pub async fn wait_vsync(&self, te: &mut esp_hal::gpio::Input<'_>) {
+        let _ = embassy_time::with_timeout(
+            embassy_time::Duration::from_millis(20),
+            te.wait_for_rising_edge(),
+        )
+        .await;
+    }
+
+    /// True double-buffer swap + async VSync flush.
+    /// 1. Swap front and back buffers (instant Vec pointer swap)
+    /// 2. Wait for TE signal (VBlank) asynchronously (executor remains unblocked)
+    /// 3. Flush the new front buffer to display via DMA QSPI
+    /// 4. Synchronize back buffer to maintain baseline for partial redraws
     /// Result: display always shows a complete frame, zero tearing.
-    /// Fast VSync flush for games. No copy, just sync + send.
-    pub fn swap_and_flush(&mut self, display: &mut Co5300Display, te: &esp_hal::gpio::Input<'_>) {
-        self.flush_vsync(display, te);
-    }
-
-    /// VSync flush for watchface / menus. Same as swap_and_flush but kept distinct for clarity.
-    pub fn flush_vsync(&self, display: &mut Co5300Display, te: &esp_hal::gpio::Input<'_>) {
-        for _ in 0..400 {
-            if te.is_high() {
-                break;
-            }
-        }
-        let _ = self.flush(display);
-    }
-
-    /// Flush the entire framebuffer to the display via DMA QSPI.
-    pub fn flush(&self, display: &mut Co5300Display) -> Result<(), DisplayError> {
+    pub async fn swap_and_flush(
+        &mut self,
+        display: &mut Co5300Display<'_>,
+        te: &mut esp_hal::gpio::Input<'_>,
+    ) -> Result<(), DisplayError> {
+        core::mem::swap(&mut self.front, &mut self.back);
+        self.wait_vsync(te).await;
         display.set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16)?;
-        display.bus_mut().write_pixels(&self.buf);
+        display.bus_mut().write_pixels(&self.front);
+        self.back.copy_from_slice(&self.front);
+        if display.bus_mut().take_error() {
+            Err(DisplayError::BusError)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// VSync flush for watchface / menus using async edge wait.
+    pub async fn flush_vsync(
+        &mut self,
+        display: &mut Co5300Display<'_>,
+        te: &mut esp_hal::gpio::Input<'_>,
+    ) -> Result<(), DisplayError> {
+        self.wait_vsync(te).await;
+        self.flush(display)
+    }
+
+    /// Flush the entire back framebuffer to the display via DMA QSPI.
+    pub fn flush(&self, display: &mut Co5300Display<'_>) -> Result<(), DisplayError> {
+        display.set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16)?;
+        display.bus_mut().write_pixels(&self.back);
         if display.bus_mut().take_error() {
             Err(DisplayError::BusError)
         } else {
@@ -93,7 +117,7 @@ impl Framebuffer {
     }
 
     /// Flush only a rectangular region (dirty rect optimization).
-    pub fn flush_region(&self, display: &mut Co5300Display, x: u16, y: u16, w: u16, h: u16) {
+    pub fn flush_region(&self, display: &mut Co5300Display<'_>, x: u16, y: u16, w: u16, h: u16) {
         if w == 0 || h == 0 {
             return;
         }
@@ -150,19 +174,19 @@ impl Framebuffer {
         for row in y0..(y0 + flush_h) {
             let start = row * WIDTH + x0;
             let end = start + flush_w;
-            display.bus_mut().stream_pixels(&self.buf[start..end]);
+            display.bus_mut().stream_pixels(&self.back[start..end]);
         }
         display.bus_mut().end_pixels();
     }
 
-    /// Get raw buffer for direct access.
+    /// Get raw back buffer for direct access.
     pub fn buffer(&self) -> &[u16] {
-        &self.buf
+        &self.back
     }
 
-    /// Get mutable raw buffer for direct access (snapshot restore).
+    /// Get mutable raw back buffer for direct access (snapshot restore).
     pub fn buffer_mut(&mut self) -> &mut [u16] {
-        &mut self.buf
+        &mut self.back
     }
 }
 
@@ -183,7 +207,7 @@ impl DrawTarget for Framebuffer {
         for Pixel(coord, color) in pixels.into_iter() {
             if coord.x >= 0 && coord.x < WIDTH as i32 && coord.y >= 0 && coord.y < HEIGHT as i32 {
                 let raw = RawU16::from(color).into_inner();
-                self.buf[coord.y as usize * WIDTH + coord.x as usize] = raw;
+                self.back[coord.y as usize * WIDTH + coord.x as usize] = raw;
             }
         }
         Ok(())
@@ -209,7 +233,7 @@ impl DrawTarget for Framebuffer {
 
         for color in colors.into_iter() {
             if col < w && row < HEIGHT {
-                self.buf[row * WIDTH + x + col] = RawU16::from(color).into_inner();
+                self.back[row * WIDTH + x + col] = RawU16::from(color).into_inner();
             }
             col += 1;
             if col >= w {

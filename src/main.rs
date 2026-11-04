@@ -509,7 +509,7 @@ async fn main(_spawner: Spawner) {
     // Enable Tearing Effect output on CO5300 (TE pin = GPIO13)
     // Command 0x35 = TEARON, param 0x00 = VBlank only
     display.bus_mut().write_c8d8(0x35, 0x00);
-    let te_pin = Input::new(peripherals.GPIO13, InputConfig::default());
+    let mut te_pin = Input::new(peripherals.GPIO13, InputConfig::default());
     println!("[DISPLAY] OK (TE VSync enabled)");
     println!("[HIL][PASS] display");
 
@@ -750,8 +750,8 @@ async fn main(_spawner: Spawner) {
     let beep_len = fill_beep_buffer(beep_buf, 800, 16000, 50);
     println!("[AUDIO] I2S OK ({} bytes beep)", beep_len);
 
-    static CHIME_BUF: StaticCell<[u8; 4000]> = StaticCell::new();
-    let chime_buf = CHIME_BUF.init([0u8; 4000]);
+    static CHIME_BUF: StaticCell<[u8; 4480]> = StaticCell::new();
+    let chime_buf = CHIME_BUF.init([0u8; 4480]);
     let chime_len = fill_chime_buffer(chime_buf, 16000);
     println!("[AUDIO] Chime OK ({} bytes chime)", chime_len);
 
@@ -805,7 +805,7 @@ async fn main(_spawner: Spawner) {
 
     // Load persistent watch settings (hourly rate, display prefs, feature flags).
     // Falls back to defaults if flash is blank or CRC fails (first boot).
-    let watch_settings = load_settings();
+    let mut watch_settings = load_settings();
     println!(
         "[SETTINGS] rate={}c/h timeout={}s ble={} wifi={}",
         watch_settings.hourly_rate_cents,
@@ -885,8 +885,10 @@ async fn main(_spawner: Spawner) {
         });
         static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
         let ap_resources = AP_RESOURCES.init(StackResources::new());
+        let ap_seed = ((esp_hal::rng::Rng::new().random() as u64) << 32)
+            | (esp_hal::rng::Rng::new().random() as u64);
         let (ap_stack, ap_runner) =
-            embassy_net::new(wifi_interfaces.access_point, ap_net_config, ap_resources, 54321u64);
+            embassy_net::new(wifi_interfaces.access_point, ap_net_config, ap_resources, ap_seed);
         if let Ok(token) = net_task(ap_runner) {
             _spawner.spawn(token);
         }
@@ -970,7 +972,9 @@ async fn main(_spawner: Spawner) {
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     let resources = RESOURCES.init(StackResources::new());
 
-    let (stack, runner) = embassy_net::new(wifi_interfaces.station, net_config, resources, 12345u64);
+    let sta_seed = ((esp_hal::rng::Rng::new().random() as u64) << 32)
+        | (esp_hal::rng::Rng::new().random() as u64);
+    let (stack, runner) = embassy_net::new(wifi_interfaces.station, net_config, resources, sta_seed);
 
     // Spawn network runner task. It does nothing useful until the radio
     // has been started, but spawning it here avoids having to hot-spawn
@@ -1010,7 +1014,7 @@ async fn main(_spawner: Spawner) {
     let mut outdoor_state = crate::outdoor::OutdoorState::new();
     let mut step_detector = crate::outdoor::StepDetector::default();
     let mut next_outdoor_tick = Instant::now();
-    let mut settings_app = SettingsApp::new();
+    let mut settings_app = SettingsApp::with_settings(watch_settings);
     if let Some(ref creds) = nvs_creds {
         if creds.is_configured() {
             settings_app.set_stored_ssid(creds.ssid_str());
@@ -1057,7 +1061,8 @@ async fn main(_spawner: Spawner) {
         }
         Err(_) => println!("[PMIC] battery telemetry invalid; retaining last valid sample"),
     }
-    if let Ok(dt) = rtc.get_time() {
+    if let Ok(raw_dt) = rtc.get_time() {
+        let dt = raw_dt.with_timezone_offset(watch_settings.timezone_offset_mins);
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
         outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
@@ -1170,8 +1175,8 @@ async fn main(_spawner: Spawner) {
     let mut ntp_task_running: bool = false;
     let mut ntp_synced: bool = false;
     let mut last_wifi_toggle = Instant::now();
-    // Request pending from a UI tap on the WiFi button.
-    let mut wifi_toggle_request: bool = false;
+    // Request pending from persistent settings or a UI tap on the WiFi button.
+    let mut wifi_toggle_request: bool = watch_settings.wifi_enabled;
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum ImuPowerMode {
         Off,
@@ -1361,7 +1366,8 @@ async fn main(_spawner: Spawner) {
         // RTC: keep the model current in AOD as well, so the next minute is
         // rendered correctly after a long display-off interval.
         if screen_state >= 1 && now >= next_rtc {
-            if let Ok(dt) = rtc.get_time() {
+            if let Ok(raw_dt) = rtc.get_time() {
+                let dt = raw_dt.with_timezone_offset(watch_settings.timezone_offset_mins);
                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                 watchface.update_date(dt.day, dt.month, dt.year);
                 outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
@@ -1424,6 +1430,8 @@ async fn main(_spawner: Spawner) {
                 println!("[WIFI] spawning connect task");
                 watchface.wifi_on = true;
                 wifi_task_running = true;
+                watch_settings.wifi_enabled = true;
+                let _ = crate::peripherals::settings::save_settings(watch_settings);
                 if let Ok(token) = wifi_connect_task() {
                     _spawner.spawn(token);
                 }
@@ -1437,6 +1445,8 @@ async fn main(_spawner: Spawner) {
                 watchface.wifi_on = false;
                 watchface.wifi_connected = false;
                 ntp_synced = false;
+                watch_settings.wifi_enabled = false;
+                let _ = crate::peripherals::settings::save_settings(watch_settings);
             }
         }
 
@@ -1632,6 +1642,10 @@ async fn main(_spawner: Spawner) {
                 } else if app_input.tap {
                     if let Some(tp) = app_touch {
                         settings_app.handle_tap(tp.x, tp.y);
+                        if let Some(updated) = settings_app.take_settings_update() {
+                            watch_settings = updated;
+                            page_dirty = true;
+                        }
                     }
                     None
                 } else {
@@ -1654,13 +1668,33 @@ async fn main(_spawner: Spawner) {
             AppState::Authenticator => Some(authenticator_app.update(&app_input)),
             AppState::BleAnalyzer => Some(ble_analyzer_app.update(&app_input)),
             AppState::Mp3Player => Some(media_controller.update(&app_input)),
-            AppState::Snake => Some(snake_game.update(&app_input)),
-            AppState::Game2048 => Some(game_2048.update(&app_input)),
-            AppState::Tetris => Some(tetris_game.update(&app_input)),
-            AppState::Flappy => Some(flappy_game.update(&app_input)),
-            AppState::Maze => Some(maze_game.update(&app_input)),
+            AppState::Snake => {
+                page_dirty = true;
+                Some(snake_game.update(&app_input))
+            }
+            AppState::Game2048 => {
+                page_dirty = true;
+                Some(game_2048.update(&app_input))
+            }
+            AppState::Tetris => {
+                page_dirty = true;
+                Some(tetris_game.update(&app_input))
+            }
+            AppState::Flappy => {
+                page_dirty = true;
+                Some(flappy_game.update(&app_input))
+            }
+            AppState::Maze => {
+                page_dirty = true;
+                Some(maze_game.update(&app_input))
+            }
             AppState::Watchface => None,
         };
+
+        if work_tracker.hourly_rate_cents != watch_settings.hourly_rate_cents {
+            watch_settings.hourly_rate_cents = work_tracker.hourly_rate_cents;
+            let _ = crate::peripherals::settings::save_settings(watch_settings);
+        }
 
         // Settings owns the editing UX; the main loop owns radio lifecycle and
         // persistence. Apply a validated request atomically before retrying.
@@ -1673,6 +1707,8 @@ async fn main(_spawner: Spawner) {
             match write_credentials(&creds) {
                 Ok(()) => {
                     settings_app.set_stored_ssid(config.ssid_str());
+                    watch_settings.wifi_enabled = true;
+                    let _ = crate::peripherals::settings::save_settings(watch_settings);
 
                     // If the connect task is running, tell it to stop so we
                     // can reconfigure the controller for the new SSID.
@@ -1795,9 +1831,23 @@ async fn main(_spawner: Spawner) {
                 AppState::Flappy => flappy_game.render(&mut fb),
                 AppState::Maze => maze_game.render(&mut fb),
             }
-            report_display(fb.flush(&mut display));
-            page_dirty = false;
-            next_watchface_flush = now + Duration::from_millis(100);
+            let is_game = matches!(
+                app_state,
+                AppState::Snake
+                    | AppState::Game2048
+                    | AppState::Tetris
+                    | AppState::Flappy
+                    | AppState::Maze
+            );
+            if is_game {
+                report_display(fb.swap_and_flush(&mut display, &mut te_pin).await);
+                page_dirty = false;
+                next_watchface_flush = now + Duration::from_millis(33);
+            } else {
+                report_display(fb.flush(&mut display));
+                page_dirty = false;
+                next_watchface_flush = now + Duration::from_millis(100);
+            }
         }
     }
 }

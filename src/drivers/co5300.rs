@@ -20,6 +20,7 @@ use embedded_graphics_core::geometry::Point;
 
 // CO5300 commands (from Arduino_CO5300.h)
 const CMD_SWRESET: u8 = 0x01;
+const CMD_SLPIN: u8 = 0x10;
 const CMD_SLPOUT: u8 = 0x11;
 const CMD_INVOFF: u8 = 0x20;
 const CMD_INVON: u8 = 0x21;
@@ -40,7 +41,8 @@ const CMD_WCE: u8 = 0x58;
 const MADCTL_RGB: u8 = 0x00;
 
 // Delays
-const RST_DELAY_MS: u32 = 200;
+const RST_ASSERT_MS: u32 = 10;
+const RST_RELEASE_MS: u32 = 120;
 const SLPOUT_DELAY_MS: u32 = 120;
 const SLPIN_DELAY_MS: u32 = 120;
 
@@ -80,9 +82,9 @@ impl<'d> Co5300Display<'d> {
         self.reset.set_high();
         self.delay.delay_millis(10);
         self.reset.set_low();
-        self.delay.delay_millis(RST_DELAY_MS);
+        self.delay.delay_millis(RST_ASSERT_MS);
         self.reset.set_high();
-        self.delay.delay_millis(RST_DELAY_MS);
+        self.delay.delay_millis(RST_RELEASE_MS);
 
         // Sleep Out
         self.bus.write_command(CMD_SLPOUT);
@@ -209,7 +211,7 @@ impl<'d> Co5300Display<'d> {
     pub fn display_off(&mut self) -> Result<(), DisplayError> {
         self.bus.write_command(CMD_DISPOFF);
         self.delay.delay_millis(20);
-        self.bus.write_command(0x10); // SLPIN
+        self.bus.write_command(CMD_SLPIN);
         self.delay.delay_millis(SLPIN_DELAY_MS);
         if self.bus.take_error() {
             Err(DisplayError::BusError)

@@ -1,5 +1,6 @@
 // Settings app - WiFi config with T9 keyboard input & WiFi reset
 
+use alloc::format;
 use embedded_graphics::geometry::Point as EgPoint;
 use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
@@ -8,6 +9,7 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::text::{Alignment, Text};
 
+use crate::peripherals::settings::{save_settings, WatchSettings};
 use crate::peripherals::wifi::{WifiConfig, WifiState};
 use crate::ui::t9_keyboard::T9Keyboard;
 
@@ -24,9 +26,11 @@ pub struct SettingsApp {
     pub keyboard: T9Keyboard,
     pub stored_ssid: [u8; 32],
     pub stored_ssid_len: usize,
+    pub watch_settings: WatchSettings,
     active_field: SettingsField,
     editing: bool,
     connect_requested: bool,
+    settings_changed: bool,
 }
 
 impl SettingsApp {
@@ -37,9 +41,26 @@ impl SettingsApp {
             keyboard: T9Keyboard::new(),
             stored_ssid: [0; 32],
             stored_ssid_len: 0,
+            watch_settings: WatchSettings::default(),
             active_field: SettingsField::Ssid,
             editing: false,
             connect_requested: false,
+            settings_changed: false,
+        }
+    }
+
+    pub fn with_settings(settings: WatchSettings) -> Self {
+        let mut app = Self::new();
+        app.watch_settings = settings;
+        app
+    }
+
+    pub fn take_settings_update(&mut self) -> Option<WatchSettings> {
+        if self.settings_changed {
+            self.settings_changed = false;
+            Some(self.watch_settings)
+        } else {
+            None
         }
     }
 
@@ -116,6 +137,34 @@ impl SettingsApp {
             }
             return true;
         }
+
+        // Timezone adjustment: y in 312..358
+        if !self.keyboard.is_active() && y >= 312 && y <= 358 {
+            if x >= 40 && x < 120 {
+                // Decrement timezone by 1 hour (down to -12h = -720m)
+                self.watch_settings.timezone_offset_mins =
+                    (self.watch_settings.timezone_offset_mins - 60).max(-720);
+                let _ = save_settings(self.watch_settings);
+                self.settings_changed = true;
+                return true;
+            } else if x >= 290 && x <= 370 {
+                // Increment timezone by 1 hour (up to +14h = +840m)
+                self.watch_settings.timezone_offset_mins =
+                    (self.watch_settings.timezone_offset_mins + 60).min(840);
+                let _ = save_settings(self.watch_settings);
+                self.settings_changed = true;
+                return true;
+            }
+        }
+
+        // 24H Clock toggle: y in 366..412 && x in 40..370
+        if !self.keyboard.is_active() && y >= 366 && y <= 412 && x >= 40 && x <= 370 {
+            self.watch_settings.clock_24h = !self.watch_settings.clock_24h;
+            let _ = save_settings(self.watch_settings);
+            self.settings_changed = true;
+            return true;
+        }
+
         false
     }
 
@@ -276,6 +325,85 @@ impl SettingsApp {
         let _ = Text::with_alignment(
             "RESET WIFI (PROVISION)",
             EgPoint::new(205, 280),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+            Alignment::Center,
+        )
+        .draw(d);
+
+        // --- Timezone Card ---
+        let _ = RoundedRectangle::with_equal_corners(
+            Rectangle::new(EgPoint::new(40, 312), Size::new(330, 44)),
+            Size::new(8, 8),
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 4, 6)))
+        .draw(d);
+
+        // [ < ] button
+        let _ = RoundedRectangle::with_equal_corners(
+            Rectangle::new(EgPoint::new(48, 316), Size::new(44, 36)),
+            Size::new(6, 6),
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 8, 12)))
+        .draw(d);
+        let _ = Text::with_alignment(
+            "<",
+            EgPoint::new(70, 340),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN),
+            Alignment::Center,
+        )
+        .draw(d);
+
+        // [ > ] button
+        let _ = RoundedRectangle::with_equal_corners(
+            Rectangle::new(EgPoint::new(318, 316), Size::new(44, 36)),
+            Size::new(6, 6),
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 8, 12)))
+        .draw(d);
+        let _ = Text::with_alignment(
+            ">",
+            EgPoint::new(340, 340),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN),
+            Alignment::Center,
+        )
+        .draw(d);
+
+        let offset_hours = self.watch_settings.timezone_offset_mins / 60;
+        let offset_rem = (self.watch_settings.timezone_offset_mins % 60).abs();
+        let tz_text = if self.watch_settings.timezone_offset_mins == 0 {
+            format!("TZ: UTC")
+        } else if offset_rem == 0 {
+            format!("TZ: UTC{:+}", offset_hours)
+        } else {
+            format!("TZ: UTC{:+}:{:02}", offset_hours, offset_rem)
+        };
+        let _ = Text::with_alignment(
+            &tz_text,
+            EgPoint::new(205, 340),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+            Alignment::Center,
+        )
+        .draw(d);
+
+        // --- 24H Clock Toggle Button ---
+        let _ = RoundedRectangle::with_equal_corners(
+            Rectangle::new(EgPoint::new(40, 366), Size::new(330, 44)),
+            Size::new(8, 8),
+        )
+        .into_styled(PrimitiveStyle::with_fill(if self.watch_settings.clock_24h {
+            Rgb565::new(2, 8, 4)
+        } else {
+            Rgb565::new(4, 4, 4)
+        }))
+        .draw(d);
+        let clk_text = if self.watch_settings.clock_24h {
+            "CLOCK: 24-HOUR"
+        } else {
+            "CLOCK: 12-HOUR"
+        };
+        let _ = Text::with_alignment(
+            clk_text,
+            EgPoint::new(205, 394),
             MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
             Alignment::Center,
         )
