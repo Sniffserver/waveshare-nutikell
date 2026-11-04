@@ -55,7 +55,7 @@ fn key_from_record(record: &[u8]) -> Option<&[u8]> {
 fn flash_encryption_enabled() -> bool {
     #[cfg(target_arch = "xtensa")]
     {
-        esp_hal::efuse::Efuse::flash_encryption()
+        esp_hal::efuse::flash_encryption()
     }
     #[cfg(not(target_arch = "xtensa"))]
     {

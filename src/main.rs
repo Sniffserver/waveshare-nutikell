@@ -116,7 +116,7 @@ use crate::ui::watchface::{WatchFace, SLEEP_DISSOLVE_FRAMES};
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task(pool_size = 1)]
 async fn net_task(
-    mut runner: embassy_net::Runner<'static, esp_radio::wifi::WifiDevice<'static>>,
+    mut runner: embassy_net::Runner<'static, esp_radio::wifi::Interface<'static>>,
 ) -> ! {
     runner.run().await
 }
@@ -171,7 +171,9 @@ async fn wifi_connect_task() {
             println!("[WIFI-TASK] disconnect requested before attempt {}", attempt);
             {
                 let mut g = WIFI_CTRL_MUTEX.lock().await;
-                if let Some(c) = g.as_mut() { c.stop().ok(); }
+                if let Some(c) = g.as_mut() {
+                    c.disconnect_async().await.ok();
+                }
             }
             WIFI_RESULT.signal(Err(false));
             return;
@@ -179,96 +181,54 @@ async fn wifi_connect_task() {
 
         println!("[WIFI-TASK] attempt {}/{}", attempt, MAX_WIFI_ATTEMPTS);
 
-        // ── start() — synchronous, lock then immediately drop ──────────────
-        let start_ok = {
+        // ── connect_async() — WiFi is started automatically when
+        //    WifiController was created via esp_radio::wifi::new().
+        //    No explicit start() call is needed in esp-radio 0.18.0.
+        //
+        //    We hold the MutexGuard across connect_async() because the
+        //    future borrows &mut WifiController.  The only other locker
+        //    is the settings reconnect path, which runs only after the
+        //    task has exited (after WIFI_DISCONNECT_REQ + wifi_task_running
+        //    cleared), so there is no real contention.
+        let connect_result = {
             let mut g = WIFI_CTRL_MUTEX.lock().await;
-            match g.as_mut() {
-                Some(c) => c.start().is_ok(),
-                None => false,
+            if let Some(c) = g.as_mut() {
+                let connect_fut = embassy_time::with_timeout(
+                    Duration::from_secs(15),
+                    c.connect_async(),
+                );
+                // Interruptible by a disconnect request.
+                Some(select(connect_fut, WIFI_DISCONNECT_REQ.wait()).await)
+            } else {
+                None
             }
         };
 
-        if !start_ok {
-            println!("[WIFI-TASK] start failed");
-            // Fall through to backoff / retry
-        } else {
-            // Brief settle delay (2 s), interruptible by a disconnect request.
-            // Lock is NOT held during the await.
-            match select(
-                Timer::after(Duration::from_secs(2)),
-                WIFI_DISCONNECT_REQ.wait(),
-            )
-            .await
-            {
-                Either::Second(_) => {
-                    println!("[WIFI-TASK] disconnect requested during settle");
-                    {
-                        let mut g = WIFI_CTRL_MUTEX.lock().await;
-                        if let Some(c) = g.as_mut() { c.stop().ok(); }
-                    }
-                    WIFI_RESULT.signal(Err(false));
-                    return;
-                }
-                Either::First(_) => {}
+        match connect_result {
+            None => {
+                println!("[WIFI-TASK] controller missing");
             }
-
-            // ── connect_async() — the future itself is awaited without
-            //    holding the mutex so other async tasks can observe state.
-            //    We lock → extract the future → drop the lock → await it.
-            //
-            //    WifiController::connect_async() returns a Future that
-            //    borrows from &mut self.  To avoid holding the MutexGuard
-            //    across the await we wrap the whole timed connect inside
-            //    with_timeout and use an interruptible select.
-            //
-            //    Because connect_async borrows the controller we lock the
-            //    mutex for the full duration of that await.  This is safe:
-            //    the only other thing that ever locks WIFI_CTRL_MUTEX is
-            //    the settings reconnect path, which only runs AFTER the
-            //    task has exited (after signaling WIFI_DISCONNECT_REQ and
-            //    waiting for wifi_task_running to clear).
-            let connect_result = {
-                let mut g = WIFI_CTRL_MUTEX.lock().await;
-                if let Some(c) = g.as_mut() {
-                    let connect_fut = embassy_time::with_timeout(
-                        Duration::from_secs(15),
-                        c.connect_async(),
-                    );
-                    // We hold the guard across this await.  See comment above.
-                    Some(select(connect_fut, WIFI_DISCONNECT_REQ.wait()).await)
-                } else {
-                    None
-                }
-            };
-
-            match connect_result {
-                None => {
-                    println!("[WIFI-TASK] controller missing");
-                }
-                Some(Either::Second(_)) => {
-                    println!("[WIFI-TASK] disconnect requested during connect");
-                    {
-                        let mut g = WIFI_CTRL_MUTEX.lock().await;
-                        if let Some(c) = g.as_mut() { c.stop().ok(); }
+            Some(Either::Second(_)) => {
+                println!("[WIFI-TASK] disconnect requested during connect");
+                {
+                    let mut g = WIFI_CTRL_MUTEX.lock().await;
+                    if let Some(c) = g.as_mut() {
+                        c.disconnect_async().await.ok();
                     }
-                    WIFI_RESULT.signal(Err(false));
-                    return;
                 }
-                Some(Either::First(Ok(Ok(())))) => {
-                    println!("[WIFI-TASK] connected on attempt {}", attempt);
-                    WIFI_RESULT.signal(Ok(()));
-                    return;
-                }
-                Some(Either::First(Ok(Err(e)))) => {
-                    println!("[WIFI-TASK] connect failed: {:?}", e);
-                }
-                Some(Either::First(Err(_))) => {
-                    println!("[WIFI-TASK] connect timeout");
-                }
+                WIFI_RESULT.signal(Err(false));
+                return;
             }
-            {
-                let mut g = WIFI_CTRL_MUTEX.lock().await;
-                if let Some(c) = g.as_mut() { c.stop().ok(); }
+            Some(Either::First(Ok(Ok(_info)))) => {
+                println!("[WIFI-TASK] connected on attempt {}", attempt);
+                WIFI_RESULT.signal(Ok(()));
+                return;
+            }
+            Some(Either::First(Ok(Err(e)))) => {
+                println!("[WIFI-TASK] connect failed: {:?}", e);
+            }
+            Some(Either::First(Err(_))) => {
+                println!("[WIFI-TASK] connect timeout");
             }
         }
 
@@ -492,7 +452,8 @@ async fn main(_spawner: Spawner) {
 
     // Embassy timer
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let software_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, software_interrupt.software_interrupt0);
 
     esp_println::logger::init_logger_from_env();
     println!("=== Waveshare Watch RS v0.4 (Embassy) ===");
@@ -794,7 +755,7 @@ async fn main(_spawner: Spawner) {
     let chime_len = fill_chime_buffer(chime_buf, 16000);
     println!("[AUDIO] Chime OK ({} bytes chime)", chime_len);
 
-    // === WiFi init (esp-radio) — RADIO STAYS OFF AT BOOT ===
+    // === WiFi + BLE init (esp-radio 0.18.0) — RADIO STAYS IDLE AT BOOT ===
     //
     // POWER BUDGET NOTE:
     // Up to v0.4 the watch booted straight into a connected WiFi STA with
@@ -802,30 +763,30 @@ async fn main(_spawner: Spawner) {
     // ~90 mA continuous — the single biggest drain by far, roughly half
     // of the total ~1-hour runtime the user complained about.
     //
-    // We now keep the esp-radio stack *initialized* (so we can spin it up
-    // at any time without re-allocating 300 KB of radio buffers) but we
-    // never call `wifi_controller.start()` on boot. The user toggles the
-    // radio on/off with the 'W' button in the top-left of the watchface.
-    // When toggled on, we also immediately set PowerSave::MaxModem so the
-    // radio sleeps between DTIM beacons (~20 mA average instead of 90).
+    // In esp-radio 0.18.0 there is no separate start()/stop() on
+    // WifiController.  The controller is created once here; the radio is
+    // activated by calling connect_async() (STA) or set_config(AP) and is
+    // deactivated by calling disconnect_async().  Power save is set
+    // immediately after creation so every transmission uses DTIM-based sleep.
     //
-    // DHCP + NTP are deferred to the first wake of the radio, so a watch
-    // that never toggles WiFi pays exactly zero network cost.
+    // DHCP + NTP are deferred to the first user-toggle of the WiFi button,
+    // so a watch that never touches WiFi pays exactly zero network cost.
     println!("[RADIO] Init radio stack (WiFi OFF, BLE OFF)");
-    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
-    // Coerce &'static mut → &'static so both WiFi and BLE can share the controller.
-    let radio_controller: &'static esp_radio::Controller<'static> =
-        RADIO.init(esp_radio::init().expect("esp-radio init failed"));
 
     // === WiFi init (OFF by default) ===
-    let wifi_config = esp_radio::wifi::Config::default()
-        .with_power_save_mode(esp_radio::wifi::PowerSaveMode::Maximum);
+    use embassy_net::{Config as NetConfig, StackResources};
+    use esp_radio::wifi::{
+        ap::AccessPointConfig, AuthenticationMethod, Config as WifiConfig,
+        ControllerConfig, PowerSaveMode, sta::StationConfig,
+    };
     let (mut wifi_controller, wifi_interfaces) =
-        esp_radio::wifi::new(radio_controller, peripherals.WIFI, wifi_config)
+        esp_radio::wifi::new(peripherals.WIFI, ControllerConfig::default())
             .expect("WiFi init failed");
+    // Enable DTIM-based power save immediately — reduces idle radio current
+    // from ~90 mA to ~20 mA average.
+    wifi_controller.set_power_saving(PowerSaveMode::Maximum).ok();
 
     let mut ble_connector = esp_radio::ble::controller::BleConnector::new(
-        radio_controller,
         peripherals.BT,
         esp_radio::ble::Config::default(),
     )
@@ -836,8 +797,6 @@ async fn main(_spawner: Spawner) {
 
     // === NVS: load stored WiFi credentials ===
     // If no credentials are stored, enter AP provisioning mode.
-    use embassy_net::{Config as NetConfig, StackResources};
-    use esp_radio::wifi::{AccessPointConfig, AuthMethod, ClientConfig, ModeConfig};
     let nvs_creds: Option<StoredCredentials> = read_credentials();
     let wifi_has_nvs_creds = nvs_creds
         .as_ref()
@@ -910,9 +869,9 @@ async fn main(_spawner: Spawner) {
         let ap_config = AccessPointConfig::default()
             .with_ssid(alloc::string::String::from(AP_SSID))
             .with_password(ap_password.clone())
-            .with_auth_method(AuthMethod::WpaWpa2Personal);
-        let ap_mode = ModeConfig::AccessPoint(ap_config);
-        if wifi_controller.set_config(&ap_mode).is_err() || wifi_controller.start().is_err() {
+            .with_auth_method(AuthenticationMethod::Wpa2Personal);
+        let ap_mode = WifiConfig::AccessPoint(ap_config);
+        if wifi_controller.set_config(&ap_mode).is_err() {
             println!("[WIFI] provisioning AP initialization failed");
             return;
         }
@@ -927,8 +886,10 @@ async fn main(_spawner: Spawner) {
         static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
         let ap_resources = AP_RESOURCES.init(StackResources::new());
         let (ap_stack, ap_runner) =
-            embassy_net::new(wifi_interfaces.ap, ap_net_config, ap_resources, 54321u64);
-        _spawner.spawn(net_task(ap_runner)).ok();
+            embassy_net::new(wifi_interfaces.access_point, ap_net_config, ap_resources, 54321u64);
+        if let Ok(token) = net_task(ap_runner) {
+            _spawner.spawn(token);
+        }
 
         // Provisioning UI
         let mut setup_app = WifiSetupApp::new(&ap_password);
@@ -946,7 +907,7 @@ async fn main(_spawner: Spawner) {
             // Check for touch tap or boot button to skip provisioning
             if boot_button.is_low() {
                 println!("[PROVISION] Button pressed — skipping WiFi setup");
-                wifi_controller.stop().ok();
+                wifi_controller.disconnect_async().await.ok();
                 break;
             }
             // Animate spinner and check AP services
@@ -982,20 +943,21 @@ async fn main(_spawner: Spawner) {
 
     // === Normal STA mode setup ===
     // Credentials are available (NVS or compile-time). Pre-fill STA config.
-    let client_config = ClientConfig::default()
+    let client_config = StationConfig::default()
         .with_ssid(wifi_ssid)
         .with_password(wifi_pass.clone())
         .with_auth_method(if wifi_pass.is_empty() {
-            AuthMethod::None
+            AuthenticationMethod::None
         } else {
-            AuthMethod::WpaWpa2Personal
+            AuthenticationMethod::Wpa2Personal
         });
-    let mode_config = ModeConfig::Client(client_config);
+    let mode_config = WifiConfig::Station(client_config);
     wifi_controller
         .set_config(&mode_config)
         .expect("WiFi config failed");
-    // NOTE: we do NOT call wifi_controller.start() here. The radio stays
-    // fully idle until the user taps the WiFi button.
+    // NOTE: In esp-radio 0.18.0 there is no separate start() — the radio is
+    // activated by connect_async().  The controller is idle until the user
+    // taps the WiFi button.
 
     // Place the controller in WIFI_CTRL_MUTEX so both wifi_connect_task and
     // the settings-reconnect path in the main loop can reach it without
@@ -1008,12 +970,14 @@ async fn main(_spawner: Spawner) {
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     let resources = RESOURCES.init(StackResources::new());
 
-    let (stack, runner) = embassy_net::new(wifi_interfaces.sta, net_config, resources, 12345u64);
+    let (stack, runner) = embassy_net::new(wifi_interfaces.station, net_config, resources, 12345u64);
 
     // Spawn network runner task. It does nothing useful until the radio
     // has been started, but spawning it here avoids having to hot-spawn
     // a task from inside the main loop.
-    _spawner.spawn(net_task(runner)).ok();
+    if let Ok(token) = net_task(runner) {
+        _spawner.spawn(token);
+    }
 
     println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
 
@@ -1460,7 +1424,9 @@ async fn main(_spawner: Spawner) {
                 println!("[WIFI] spawning connect task");
                 watchface.wifi_on = true;
                 wifi_task_running = true;
-                _spawner.spawn(wifi_connect_task()).ok();
+                if let Ok(token) = wifi_connect_task() {
+                    _spawner.spawn(token);
+                }
             } else if wifi_connected || wifi_task_running {
                 // User wants WiFi off: signal the running task to stop, or
                 // mark as disconnected if no task is running.
@@ -1481,7 +1447,9 @@ async fn main(_spawner: Spawner) {
         if wifi_connected && !ntp_synced && !ntp_task_running {
             println!("[NTP] spawning NTP task");
             ntp_task_running = true;
-            _spawner.spawn(ntp_task(stack)).ok();
+            if let Ok(token) = ntp_task(stack) {
+                _spawner.spawn(token);
+            }
         }
 
         if ntp_task_running && NTP_RESULT.signaled() {
@@ -1715,19 +1683,25 @@ async fn main(_spawner: Spawner) {
                         wifi_connected = false;
                     }
 
-                    // Reconfigure with new credentials via the static handle.
-                    let client = ClientConfig::default()
+                    // Reconfigure with new credentials via the shared mutex.
+                    // The connect task is not running at this point (we cleared
+                    // wifi_task_running above), so the mutex is uncontested.
+                    let client = StationConfig::default()
                         .with_ssid(alloc::string::String::from(config.ssid_str()))
                         .with_password(alloc::string::String::from(config.pass_str()))
                         .with_auth_method(if config.pass_len == 0 {
-                            AuthMethod::None
+                            AuthenticationMethod::None
                         } else {
-                            AuthMethod::WpaWpa2Personal
+                            AuthenticationMethod::Wpa2Personal
                         });
-                    if wifi_ctrl_static
-                        .set_config(&ModeConfig::Client(client))
-                        .is_ok()
-                    {
+                    let reconfig_ok = {
+                        let mut g = WIFI_CTRL_MUTEX.lock().await;
+                        match g.as_mut() {
+                            Some(c) => c.set_config(&WifiConfig::Station(client)).is_ok(),
+                            None => false,
+                        }
+                    };
+                    if reconfig_ok {
                         wifi_connected = false;
                         ntp_synced = false;
                         // Trigger a fresh connect via the task.
