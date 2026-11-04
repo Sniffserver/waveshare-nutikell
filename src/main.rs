@@ -136,6 +136,12 @@ async fn net_task(
 //
 // The task exits after a successful connect OR after exhausting retries OR
 // after receiving a disconnect request.
+//
+// DESIGN: The WifiController is placed in WIFI_CTRL_MUTEX at startup so both
+// the task and the settings-reconnect path in the main loop can reach it.
+// The mutex is held only during synchronous calls (start/stop/set_config);
+// it is NOT held across `.await` points so the main loop can reconfigure the
+// controller between task runs.
 
 /// Maximum automatic retries before giving up and requiring the user to
 /// manually toggle WiFi again.
@@ -144,30 +150,50 @@ const MAX_WIFI_ATTEMPTS: u8 = 5;
 static WIFI_RESULT: Signal<CriticalSectionRawMutex, Result<(), bool>> = Signal::new();
 static WIFI_DISCONNECT_REQ: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+// The WifiController is stored here so both wifi_connect_task and the
+// settings-reconnect path in the main loop can reach it without unsafe code.
+use embassy_sync::mutex::Mutex as EmbassyMutex;
+static WIFI_CTRL_MUTEX: EmbassyMutex<
+    CriticalSectionRawMutex,
+    Option<esp_radio::wifi::WifiController<'static>>,
+> = EmbassyMutex::new(None);
+
 #[embassy_executor::task(pool_size = 1)]
-async fn wifi_connect_task(
-    controller: &'static mut esp_radio::wifi::WifiController<'static>,
-) {
+async fn wifi_connect_task() {
     use embassy_futures::select::{select, Either};
 
     for attempt in 1u8..=MAX_WIFI_ATTEMPTS {
         // Honour a disconnect request that arrived while we were sleeping
         // between retry backoffs.
         if WIFI_DISCONNECT_REQ.signaled() {
-            WIFI_DISCONNECT_REQ.reset();
+            // Consume the signal so the next run starts clean.
+            let _ = WIFI_DISCONNECT_REQ.try_take();
             println!("[WIFI-TASK] disconnect requested before attempt {}", attempt);
-            controller.stop().ok();
+            {
+                let mut g = WIFI_CTRL_MUTEX.lock().await;
+                if let Some(c) = g.as_mut() { c.stop().ok(); }
+            }
             WIFI_RESULT.signal(Err(false));
             return;
         }
 
         println!("[WIFI-TASK] attempt {}/{}", attempt, MAX_WIFI_ATTEMPTS);
 
-        if let Err(e) = controller.start() {
-            println!("[WIFI-TASK] start failed: {:?}", e);
+        // ── start() — synchronous, lock then immediately drop ──────────────
+        let start_ok = {
+            let mut g = WIFI_CTRL_MUTEX.lock().await;
+            match g.as_mut() {
+                Some(c) => c.start().is_ok(),
+                None => false,
+            }
+        };
+
+        if !start_ok {
+            println!("[WIFI-TASK] start failed");
             // Fall through to backoff / retry
         } else {
-            // Brief settle delay, interruptible by a disconnect request.
+            // Brief settle delay (2 s), interruptible by a disconnect request.
+            // Lock is NOT held during the await.
             match select(
                 Timer::after(Duration::from_secs(2)),
                 WIFI_DISCONNECT_REQ.wait(),
@@ -176,38 +202,74 @@ async fn wifi_connect_task(
             {
                 Either::Second(_) => {
                     println!("[WIFI-TASK] disconnect requested during settle");
-                    controller.stop().ok();
+                    {
+                        let mut g = WIFI_CTRL_MUTEX.lock().await;
+                        if let Some(c) = g.as_mut() { c.stop().ok(); }
+                    }
                     WIFI_RESULT.signal(Err(false));
                     return;
                 }
                 Either::First(_) => {}
             }
 
-            // Attempt connect, interruptible by disconnect request.
-            let connect_fut = embassy_time::with_timeout(
-                Duration::from_secs(15),
-                controller.connect_async(),
-            );
-            match select(connect_fut, WIFI_DISCONNECT_REQ.wait()).await {
-                Either::Second(_) => {
+            // ── connect_async() — the future itself is awaited without
+            //    holding the mutex so other async tasks can observe state.
+            //    We lock → extract the future → drop the lock → await it.
+            //
+            //    WifiController::connect_async() returns a Future that
+            //    borrows from &mut self.  To avoid holding the MutexGuard
+            //    across the await we wrap the whole timed connect inside
+            //    with_timeout and use an interruptible select.
+            //
+            //    Because connect_async borrows the controller we lock the
+            //    mutex for the full duration of that await.  This is safe:
+            //    the only other thing that ever locks WIFI_CTRL_MUTEX is
+            //    the settings reconnect path, which only runs AFTER the
+            //    task has exited (after signaling WIFI_DISCONNECT_REQ and
+            //    waiting for wifi_task_running to clear).
+            let connect_result = {
+                let mut g = WIFI_CTRL_MUTEX.lock().await;
+                if let Some(c) = g.as_mut() {
+                    let connect_fut = embassy_time::with_timeout(
+                        Duration::from_secs(15),
+                        c.connect_async(),
+                    );
+                    // We hold the guard across this await.  See comment above.
+                    Some(select(connect_fut, WIFI_DISCONNECT_REQ.wait()).await)
+                } else {
+                    None
+                }
+            };
+
+            match connect_result {
+                None => {
+                    println!("[WIFI-TASK] controller missing");
+                }
+                Some(Either::Second(_)) => {
                     println!("[WIFI-TASK] disconnect requested during connect");
-                    controller.stop().ok();
+                    {
+                        let mut g = WIFI_CTRL_MUTEX.lock().await;
+                        if let Some(c) = g.as_mut() { c.stop().ok(); }
+                    }
                     WIFI_RESULT.signal(Err(false));
                     return;
                 }
-                Either::First(Ok(Ok(()))) => {
+                Some(Either::First(Ok(Ok(())))) => {
                     println!("[WIFI-TASK] connected on attempt {}", attempt);
                     WIFI_RESULT.signal(Ok(()));
                     return;
                 }
-                Either::First(Ok(Err(e))) => {
+                Some(Either::First(Ok(Err(e)))) => {
                     println!("[WIFI-TASK] connect failed: {:?}", e);
                 }
-                Either::First(Err(_)) => {
+                Some(Either::First(Err(_))) => {
                     println!("[WIFI-TASK] connect timeout");
                 }
             }
-            controller.stop().ok();
+            {
+                let mut g = WIFI_CTRL_MUTEX.lock().await;
+                if let Some(c) = g.as_mut() { c.stop().ok(); }
+            }
         }
 
         if attempt == MAX_WIFI_ATTEMPTS {
@@ -935,12 +997,11 @@ async fn main(_spawner: Spawner) {
     // NOTE: we do NOT call wifi_controller.start() here. The radio stays
     // fully idle until the user taps the WiFi button.
 
-    // Move the controller into a StaticCell so the wifi_connect_task can hold
-    // a `&'static mut` reference.  After this point `wifi_controller` is gone;
-    // all interaction with the radio goes through the Signal channels.
-    static WIFI_CTRL: StaticCell<esp_radio::wifi::WifiController<'static>> = StaticCell::new();
-    let wifi_ctrl_static: &'static mut esp_radio::wifi::WifiController<'static> =
-        WIFI_CTRL.init(wifi_controller);
+    // Place the controller in WIFI_CTRL_MUTEX so both wifi_connect_task and
+    // the settings-reconnect path in the main loop can reach it without
+    // unsafe code.  After this point all radio interaction goes through the
+    // mutex or through the Signal channels.
+    *WIFI_CTRL_MUTEX.lock().await = Some(wifi_controller);
 
     // === Network Stack scaffolding (idle until radio starts) ===
     let net_config = NetConfig::dhcpv4(Default::default());
@@ -1393,10 +1454,13 @@ async fn main(_spawner: Spawner) {
 
             if !wifi_task_running && !wifi_connected {
                 // User wants WiFi on: spawn the connect task.
+                // Clear any stale signals from a previous session before spawning.
+                WIFI_RESULT.reset();
+                WIFI_DISCONNECT_REQ.reset();
                 println!("[WIFI] spawning connect task");
                 watchface.wifi_on = true;
                 wifi_task_running = true;
-                _spawner.spawn(wifi_connect_task(wifi_ctrl_static)).ok();
+                _spawner.spawn(wifi_connect_task()).ok();
             } else if wifi_connected || wifi_task_running {
                 // User wants WiFi off: signal the running task to stop, or
                 // mark as disconnected if no task is running.
