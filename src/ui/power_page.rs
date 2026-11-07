@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Live power-consumption diagnostic page.
 //!
 //! This is a swipeable page on the watchface (Clock → Sensors → System →

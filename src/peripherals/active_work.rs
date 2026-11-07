@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CRC-protected A/B recovery records for an in-progress work session.
 //!
 //! A replacement is written to an erased peer record and read back before it

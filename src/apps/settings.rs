@@ -105,7 +105,6 @@ impl SettingsApp {
             let _ = crate::peripherals::nvs::erase_credentials();
             println!("[SETTINGS] Credentials erased! Rebooting...");
             esp_hal::system::software_reset();
-            return true;
         }
 
         // Field selection

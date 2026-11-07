@@ -42,6 +42,7 @@ const SLOT_B: u32 = SETTINGS_B.start;
 const SECTOR_SIZE: u32 = SETTINGS_A.len;
 const BLOB_OFFSET: usize = 12;
 const BLOB_LEN: usize = 44;
+#[allow(dead_code)]
 const HEADER_LEN: usize = 12; // magic(4) + version(4) + crc(4)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

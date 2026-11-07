@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Work-session persistent log — append-only binary buffer in one 4 KB sector.
 //
 // Flash offset: 0xD000  (sector 13, immediately after settings slots B at 0xC000)

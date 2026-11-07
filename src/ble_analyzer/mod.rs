@@ -1,3 +1,4 @@
+#![allow(dead_code, async_fn_in_trait)]
 //! BLE Analyzer & Read-Only GATT Explorer module for TrouBLE / Embassy.
 
 pub mod ad;

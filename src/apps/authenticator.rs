@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // 2FA / TOTP Authenticator App (Wristkey-RS)
 // Implements RFC 6238 (TOTP) and RFC 4226 (HOTP) in pure no_std Rust.
 // Features:
@@ -345,7 +346,7 @@ pub struct AuthenticatorApp {
 
 impl AuthenticatorApp {
     pub fn new() -> Self {
-        let mut app = Self {
+        let app = Self {
             accounts: Vec::new(),
             selected_index: 0,
             time_hms: (12, 0, 0),

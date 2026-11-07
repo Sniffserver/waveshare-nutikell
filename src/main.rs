@@ -48,7 +48,6 @@ mod ui;
 
 use core::cell::RefCell;
 
-use embedded_graphics_core::prelude::RawData;
 use embedded_hal_bus::i2c::RefCellDevice;
 use esp_alloc as _;
 use esp_backtrace as _;
@@ -80,7 +79,7 @@ use crate::apps::authenticator::AuthenticatorApp;
 use crate::apps::flappy::FlappyGame;
 use crate::apps::game2048::Game2048;
 use crate::apps::maze::MazeGame;
-use crate::apps::media_controller::{MediaAction, MediaCommand, MediaController};
+use crate::apps::media_controller::MediaController;
 use crate::apps::settings::SettingsApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
@@ -93,25 +92,21 @@ use crate::drivers::co5300::DisplayError;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::active_work::{
-    calendar_to_unix, clear_active_session, load_active_session, save_active_session,
-    ActiveWorkSession,
+    calendar_to_unix, clear_active_session, load_active_session,
 };
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
-use crate::peripherals::captive::run_ap_services;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, write_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
-use crate::peripherals::rtc::{DateTime, Pcf85063aRtc};
+use crate::peripherals::rtc::Pcf85063aRtc;
 use crate::peripherals::session_log::{
-    append_session, contains_session_id, next_session_id, session_log_health, LogSeverity,
-    SessionRecord,
+    contains_session_id, session_log_health, LogSeverity,
 };
 use crate::peripherals::settings::load_settings;
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection, TouchPoint};
 use crate::ui::launcher::Launcher;
-use crate::ui::pages::{self, Page};
-use crate::ui::power_page;
-use crate::ui::watchface::{WatchFace, SLEEP_DISSOLVE_FRAMES};
+use crate::ui::pages::Page;
+use crate::ui::watchface::WatchFace;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task(pool_size = 1)]
@@ -310,9 +305,31 @@ async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<crate::per
     let mut ntp_request = [0u8; 48];
     ntp_request[0] = 0x1B; // LI=0, VN=3, Mode=3 (client)
 
-    // Resolve pool.ntp.org (use Google's NTP IP directly: 216.239.35.0)
-    let ntp_addr = embassy_net::Ipv4Address::new(216, 239, 35, 0);
-    println!("[NTP] sending request");
+    // Try resolving pool.ntp.org via DNS first, falling back to static Google NTP IP.
+    let fallback_ntp = embassy_net::Ipv4Address::new(216, 239, 35, 0);
+    let ntp_addr = match embassy_time::with_timeout(
+        Duration::from_secs(3),
+        stack.dns_query("pool.ntp.org", embassy_net::dns::DnsQueryType::A),
+    )
+    .await
+    {
+        Ok(Ok(addrs)) => {
+            let mut resolved = None;
+            for addr in addrs {
+                if let embassy_net::IpAddress::Ipv4(ipv4) = addr {
+                    println!("[NTP] resolved pool.ntp.org -> {:?}", ipv4);
+                    resolved = Some(ipv4);
+                    break;
+                }
+            }
+            resolved.unwrap_or(fallback_ntp)
+        }
+        _ => {
+            println!("[NTP] DNS query timed out or failed, using static fallback {:?}", fallback_ntp);
+            fallback_ntp
+        }
+    };
+    println!("[NTP] sending request to {:?}", ntp_addr);
 
     socket
         .send_to(&ntp_request, (ntp_addr, 123))
@@ -627,7 +644,7 @@ async fn main(_spawner: Spawner) {
 
     use embedded_hal_bus::spi::ExclusiveDevice;
     let sd_spi_dev = ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
-    let mut sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
+    let sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
     let mut _sd_ok = false;
     match sd_card.num_bytes() {
         Ok(size) => {

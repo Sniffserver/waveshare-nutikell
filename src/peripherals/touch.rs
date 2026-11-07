@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // FT3168 Touch Controller driver
 // Reference: Arduino_FT3x68.h - I2C address 0x38
 
@@ -5,7 +6,6 @@ use embedded_hal::i2c::I2c;
 
 const FT3168_ADDR: u8 = 0x38;
 
-#[allow(dead_code)]
 // Registers
 const REG_FINGER_NUM: u8 = 0x02;
 const REG_X1_H: u8 = 0x03;
@@ -62,6 +62,7 @@ pub struct Ft3168Touch<I> {
     start_y: u16,
     last_x: u16,
     last_y: u16,
+    start_time: Option<embassy_time::Instant>,
 }
 
 impl<I: I2c> Ft3168Touch<I> {
@@ -73,6 +74,7 @@ impl<I: I2c> Ft3168Touch<I> {
             start_y: 0,
             last_x: 0,
             last_y: 0,
+            start_time: None,
         }
     }
 
@@ -124,6 +126,7 @@ impl<I: I2c> Ft3168Touch<I> {
                     self.tracking = true;
                     self.start_x = tp.x;
                     self.start_y = tp.y;
+                    self.start_time = Some(embassy_time::Instant::now());
                 }
                 self.last_x = tp.x;
                 self.last_y = tp.y;
@@ -133,14 +136,28 @@ impl<I: I2c> Ft3168Touch<I> {
                 if self.tracking {
                     // Finger lifted - determine swipe
                     self.tracking = false;
+                    let duration_ms = self
+                        .start_time
+                        .take()
+                        .map(|t| t.elapsed().as_millis())
+                        .unwrap_or(0);
+
                     let dx = self.last_x as i32 - self.start_x as i32;
                     let dy = self.last_y as i32 - self.start_y as i32;
                     let abs_dx = dx.unsigned_abs();
                     let abs_dy = dy.unsigned_abs();
 
+                    // Intentional swipes must be fast flicks (duration <= 600 ms).
+                    // Slow drags (> 600 ms) are classified as Tap (or ignored)
+                    // so users can hold or drag without triggering accidental page changes.
+                    let is_flick = duration_ms <= 600;
+
                     // Require dominant axis to be at least 1.5x the other
                     // to prevent diagonal swipes from triggering left/right
                     let direction = if abs_dx < 30 && abs_dy < 30 {
+                        SwipeDirection::Tap
+                    } else if !is_flick {
+                        // Slow drag - do not trigger a directional swipe
                         SwipeDirection::Tap
                     } else if abs_dx > abs_dy * 3 / 2 {
                         // Clearly horizontal
