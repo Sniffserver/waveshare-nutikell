@@ -106,6 +106,16 @@ impl StoredCredentials {
     }
 }
 
+impl Drop for StoredCredentials {
+    fn drop(&mut self) {
+        // Zeroize password and SSID material when dropping from RAM
+        self.password.fill(0);
+        self.ssid.fill(0);
+        self.pass_len = 0;
+        self.ssid_len = 0;
+    }
+}
+
 /// Read credentials from flash. Returns `None` if no valid record found.
 pub fn read_credentials() -> Option<StoredCredentials> {
     if !flash_encryption_enabled() {

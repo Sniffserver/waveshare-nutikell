@@ -157,6 +157,13 @@ impl<I: I2c> Pcf85063aRtc<I> {
         Ok(())
     }
 
+    /// Check whether the oscillator stop flag (OS) is set, indicating
+    /// that oscillator stopped (e.g. power loss or battery depletion).
+    pub fn is_oscillator_stopped(&mut self) -> Result<bool, I::Error> {
+        let sec = self.read_reg(REG_SECONDS)?;
+        Ok(sec & 0x80 != 0)
+    }
+
     /// Read current date/time.
     pub fn get_time(&mut self) -> Result<DateTime, I::Error> {
         // Read all time registers in one burst (7 bytes from 0x04)
@@ -175,20 +182,25 @@ impl<I: I2c> Pcf85063aRtc<I> {
         })
     }
 
-    /// Set date/time.
+    /// Set date/time using an atomic 7-byte burst write.
     pub fn set_time(&mut self, dt: &DateTime) -> Result<(), I::Error> {
         // Stop oscillator
         let ctrl1 = self.read_reg(REG_CTRL1)?;
         self.write_reg(REG_CTRL1, ctrl1 | 0x20)?;
 
-        // Write time registers
-        self.write_reg(REG_SECONDS, dec_to_bcd(dt.seconds))?;
-        self.write_reg(REG_MINUTES, dec_to_bcd(dt.minutes))?;
-        self.write_reg(REG_HOURS, dec_to_bcd(dt.hours))?;
-        self.write_reg(REG_DAYS, dec_to_bcd(dt.day))?;
-        self.write_reg(REG_WEEKDAYS, dt.weekday)?;
-        self.write_reg(REG_MONTHS, dec_to_bcd(dt.month))?;
-        self.write_reg(REG_YEARS, dec_to_bcd(dt.year))?;
+        // Write time registers atomically in a single I2C burst transaction.
+        // Bit 7 of seconds is written as 0, clearing the OS (oscillator stop) flag.
+        let payload = [
+            REG_SECONDS,
+            dec_to_bcd(dt.seconds),
+            dec_to_bcd(dt.minutes),
+            dec_to_bcd(dt.hours),
+            dec_to_bcd(dt.day),
+            dt.weekday,
+            dec_to_bcd(dt.month),
+            dec_to_bcd(dt.year),
+        ];
+        self.i2c.write(PCF85063A_ADDR, &payload)?;
 
         // Restart oscillator
         self.write_reg(REG_CTRL1, ctrl1 & !0x20)?;

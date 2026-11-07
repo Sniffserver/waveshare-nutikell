@@ -132,7 +132,44 @@ impl<I: I2c> Es8311<I> {
     }
 }
 
-/// Fill a buffer with a square wave beep (stereo 16-bit LE).
+// 64-point normalized sine lookup table (scaled to ±10000)
+const SINE64: [i16; 64] = [
+    0, 980, 1951, 2903, 3827, 4714, 5556, 6344,
+    7071, 7730, 8315, 8819, 9239, 9569, 9808, 9952,
+    10000, 9952, 9808, 9569, 9239, 8819, 8315, 7730,
+    7071, 6344, 5556, 4714, 3827, 2903, 1951, 980,
+    0, -980, -1951, -2903, -3827, -4714, -5556, -6344,
+    -7071, -7730, -8315, -8819, -9239, -9569, -9808, -9952,
+    -10000, -9952, -9808, -9569, -9239, -8819, -8315, -7730,
+    -7071, -6344, -5556, -4714, -3827, -2903, -1951, -980,
+];
+
+#[inline(always)]
+fn lookup_sine(phase: u32, period: u32, amplitude: i16) -> i16 {
+    if period == 0 {
+        return 0;
+    }
+    let idx = ((phase as u64 * 64) / period as u64) as usize % 64;
+    let base = SINE64[idx] as i32;
+    ((base * amplitude as i32) / 10000) as i16
+}
+
+#[inline(always)]
+fn compute_envelope(sample_idx: usize, total_samples: usize, ramp_samples: usize) -> i32 {
+    if ramp_samples == 0 || total_samples == 0 {
+        return 256;
+    }
+    if sample_idx < ramp_samples {
+        ((sample_idx as u32 * 256) / ramp_samples as u32) as i32
+    } else if sample_idx >= total_samples.saturating_sub(ramp_samples) {
+        let rem = total_samples.saturating_sub(1 + sample_idx);
+        ((rem as u32 * 256) / ramp_samples as u32) as i32
+    } else {
+        256
+    }
+}
+
+/// Fill a buffer with a sine wave beep with smooth attack/decay envelope (stereo 16-bit LE).
 pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration_ms: u32) -> usize {
     let total_samples = (sample_rate * duration_ms / 1000) as usize;
     let period = if freq_hz > 0 {
@@ -140,7 +177,7 @@ pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration
     } else {
         1
     };
-    let half = period / 2;
+    let ramp_samples = (sample_rate * 5 / 1000) as usize; // 5ms attack/decay
     let amplitude: i16 = 10000;
     let mut pos = 0;
     for i in 0..total_samples {
@@ -148,7 +185,9 @@ pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration
             break;
         }
         let phase = (i as u32) % period;
-        let sample = if phase < half { amplitude } else { -amplitude };
+        let raw = lookup_sine(phase, period, amplitude) as i32;
+        let env = compute_envelope(i, total_samples, ramp_samples);
+        let sample = ((raw * env) / 256) as i16;
         let bytes = sample.to_le_bytes();
         buf[pos] = bytes[0];
         buf[pos + 1] = bytes[1]; // L
@@ -159,25 +198,27 @@ pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration
     pos
 }
 
-/// Fill a buffer with a 2-tone melodic notification chime.
+/// Fill a buffer with a 2-tone melodic notification chime with smooth envelopes.
 /// Tone 1: 650 Hz (35ms), Tone 2: 980 Hz (35ms), stereo 16-bit LE @ 16kHz
 pub fn fill_chime_buffer(buf: &mut [u8], sample_rate: u32) -> usize {
     let tone1_freq = 650;
     let tone1_samples = (sample_rate * 35 / 1000) as usize;
     let tone2_freq = 980;
     let tone2_samples = (sample_rate * 35 / 1000) as usize;
+    let ramp_samples = (sample_rate * 4 / 1000) as usize; // 4ms attack/decay
     let amplitude: i16 = 12000;
     let mut pos = 0;
 
     // Tone 1: 650 Hz
     let period1 = sample_rate / tone1_freq;
-    let half1 = period1 / 2;
     for i in 0..tone1_samples {
         if pos + 4 > buf.len() {
             break;
         }
         let phase = (i as u32) % period1;
-        let sample = if phase < half1 { amplitude } else { -amplitude };
+        let raw = lookup_sine(phase, period1, amplitude) as i32;
+        let env = compute_envelope(i, tone1_samples, ramp_samples);
+        let sample = ((raw * env) / 256) as i16;
         let bytes = sample.to_le_bytes();
         buf[pos] = bytes[0];
         buf[pos + 1] = bytes[1];
@@ -188,13 +229,14 @@ pub fn fill_chime_buffer(buf: &mut [u8], sample_rate: u32) -> usize {
 
     // Tone 2: 980 Hz
     let period2 = sample_rate / tone2_freq;
-    let half2 = period2 / 2;
     for i in 0..tone2_samples {
         if pos + 4 > buf.len() {
             break;
         }
         let phase = (i as u32) % period2;
-        let sample = if phase < half2 { amplitude } else { -amplitude };
+        let raw = lookup_sine(phase, period2, amplitude) as i32;
+        let env = compute_envelope(i, tone2_samples, ramp_samples);
+        let sample = ((raw * env) / 256) as i16;
         let bytes = sample.to_le_bytes();
         buf[pos] = bytes[0];
         buf[pos + 1] = bytes[1];

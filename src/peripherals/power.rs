@@ -29,7 +29,6 @@ const REG_IRQ_STATUS0: u8 = 0x48;
 const REG_IRQ_STATUS1: u8 = 0x49;
 const REG_IRQ_STATUS2: u8 = 0x4A;
 const REG_BAT_PERCENT: u8 = 0xA4;
-const REG_CHG_STATUS: u8 = 0x01;
 
 pub struct Axp2101Power<I> {
     i2c: I,
@@ -51,9 +50,16 @@ impl<I: I2c> Axp2101Power<I> {
     }
 
     fn read_adc14(&mut self, high_reg: u8, low_reg: u8) -> Result<u16, I::Error> {
-        let high = self.read_reg(high_reg)? as u16;
-        let low = self.read_reg(low_reg)? as u16;
-        Ok(((high << 8) | low) & 0x3FFF)
+        if low_reg == high_reg + 1 {
+            // Atomic 2-byte burst read prevents high/low byte skew across ADC updates.
+            let mut buf = [0u8; 2];
+            self.i2c.write_read(AXP2101_ADDR, &[high_reg], &mut buf)?;
+            Ok((((buf[0] as u16) << 8) | (buf[1] as u16)) & 0x3FFF)
+        } else {
+            let high = self.read_reg(high_reg)? as u16;
+            let low = self.read_reg(low_reg)? as u16;
+            Ok(((high << 8) | low) & 0x3FFF)
+        }
     }
 
     /// Initialize the AXP2101: enable power rails, disable IRQs, enable ADC.
@@ -118,7 +124,7 @@ impl<I: I2c> Axp2101Power<I> {
 
     /// Check if charging.
     pub fn is_charging(&mut self) -> Result<bool, I::Error> {
-        let status = self.read_reg(REG_CHG_STATUS)?;
+        let status = self.read_reg(REG_STATUS2)?;
         // Bits [7:5] = charger status, 001/010/011 = charging
         let chg = (status >> 5) & 0x07;
         Ok(chg >= 1 && chg <= 3)

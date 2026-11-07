@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-pub fn log_memory(label: &'static str) {
+fn log_memory(label: &'static str) {
     let stats = esp_alloc::HEAP.stats();
     let mut internal_free = 0;
     let mut internal_used = 0;
@@ -394,10 +394,16 @@ async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<crate::per
 }
 
 fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
+    if days_since_epoch < 0 {
+        return (2000, 1, 1);
+    }
     // Simplified date calculation from days since 1970-01-01
     let mut y = 1970i32;
     let mut remaining = days_since_epoch;
     loop {
+        if y > 2255 {
+            return (2000, 1, 1);
+        }
         let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
             366
         } else {
@@ -945,10 +951,11 @@ async fn main(_spawner: Spawner) {
 
     // === Normal STA mode setup ===
     // Credentials are available (NVS or compile-time). Pre-fill STA config.
+    let is_open_network = wifi_pass.is_empty();
     let client_config = StationConfig::default()
         .with_ssid(wifi_ssid)
-        .with_password(wifi_pass.clone())
-        .with_auth_method(if wifi_pass.is_empty() {
+        .with_password(wifi_pass)
+        .with_auth_method(if is_open_network {
             AuthenticationMethod::None
         } else {
             AuthenticationMethod::Wpa2Personal
@@ -1515,16 +1522,21 @@ async fn main(_spawner: Spawner) {
         // SwipeEvent once the finger is lifted.
         let mut frame_touch = None;
         let mut frame_swipe = None;
-        if let Ok((point, swipe_event)) = touch.poll() {
+        if touch_int.is_low() || touch.is_tracking() {
+            if let Ok((point, swipe_event)) = touch.poll() {
             if point.is_some() {
                 frame_touch = point;
                 last_interaction = now;
-                // Wake screen if off/AOD.
+                // Wake screen if off/AOD or restore full brightness from dim.
                 if screen_state < 2 {
                     screen_state = 3;
                     page_dirty = true;
                     report_display(display.display_on());
                     report_display(display.set_brightness(watchface.brightness));
+                } else if screen_state == 2 {
+                    screen_state = 3;
+                    report_display(display.set_brightness(watchface.brightness));
+                    page_dirty = true;
                 }
             }
 
@@ -1540,6 +1552,10 @@ async fn main(_spawner: Spawner) {
                 if screen_state < 2 {
                     screen_state = 3;
                     report_display(display.display_on());
+                    report_display(display.set_brightness(watchface.brightness));
+                    page_dirty = true;
+                } else if screen_state == 2 {
+                    screen_state = 3;
                     report_display(display.set_brightness(watchface.brightness));
                     page_dirty = true;
                 }
@@ -1593,6 +1609,7 @@ async fn main(_spawner: Spawner) {
                 }
             }
         }
+    }
 
         // Dispatch the normalized input to the active application. The
         // release point is retained so taps can hit-test app controls.

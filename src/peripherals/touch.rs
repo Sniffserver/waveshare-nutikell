@@ -194,6 +194,11 @@ impl<I: I2c> Ft3168Touch<I> {
 }
 
 impl<I> Ft3168Touch<I> {
+    /// Return whether a gesture/touch is currently being actively tracked.
+    pub fn is_tracking(&self) -> bool {
+        self.tracking
+    }
+
     /// Release the underlying bus device for host tests and bus ownership
     /// transitions.
     pub fn release(self) -> I {

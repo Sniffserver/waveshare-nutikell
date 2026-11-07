@@ -8,12 +8,18 @@ use esp_hal::spi::master::{Address, Command, DataMode, SpiDmaBus};
 use esp_hal::Blocking;
 
 // Max bytes per DMA transfer (must fit in DMA TX buffer)
+//
+// ARCHITECTURAL NOTE:
+// On ESP32-S3, SPI GDMA descriptors require buffers located in internal SRAM.
+// External PSRAM cannot be directly addressed by the GDMA controller for SPI master
+// transfers. Therefore, this 8 KB scratch buffer MUST be allocated in internal SRAM
+// (160 KB total heap), while full framebuffers reside in PSRAM.
 const DMA_CHUNK: usize = 8000;
 
 pub struct QspiBus<'d> {
     spi: SpiDmaBus<'d, Blocking>,
     cs: Output<'d>,
-    scratch: Vec<u8>, // heap-allocated scratch buffer for pixel conversion
+    scratch: Vec<u8>, // heap-allocated scratch buffer for pixel conversion (internal SRAM)
     error_latched: bool,
 }
 
@@ -32,6 +38,9 @@ impl<'d> QspiBus<'d> {
     }
 
     fn cs_low(&mut self) {
+        // Clear any latched errors from previous transactions so stale failures
+        // do not poison new operations.
+        self.error_latched = false;
         self.cs.set_low();
     }
     fn cs_high(&mut self) {
@@ -118,10 +127,7 @@ impl<'d> QspiBus<'d> {
         let mut remaining = pixels;
         while !remaining.is_empty() {
             let n = remaining.len().min(max_px);
-            for (i, &px) in remaining[..n].iter().enumerate() {
-                self.scratch[i * 2] = (px >> 8) as u8;
-                self.scratch[i * 2 + 1] = px as u8;
-            }
+            copy_swap_pixels(&remaining[..n], &mut self.scratch[..n * 2]);
             if self
                 .spi
                 .half_duplex_write(
@@ -153,10 +159,7 @@ impl<'d> QspiBus<'d> {
         let mut first = true;
         while !remaining.is_empty() {
             let n = remaining.len().min(max_px);
-            for (i, &px) in remaining[..n].iter().enumerate() {
-                self.scratch[i * 2] = (px >> 8) as u8;
-                self.scratch[i * 2 + 1] = px as u8;
-            }
+            copy_swap_pixels(&remaining[..n], &mut self.scratch[..n * 2]);
             if first {
                 if self
                     .spi
@@ -251,5 +254,37 @@ impl<'d> QspiBus<'d> {
         let failed = self.error_latched;
         self.error_latched = false;
         failed
+    }
+}
+
+/// Convert native little-endian `u16` RGB565 pixels to big-endian bytes for the AMOLED panel.
+/// Unrolled 4 pixels (8 bytes) at a time to eliminate per-element bounds checks and allow
+/// the compiler to use 32-bit word stores on Xtensa.
+#[inline(always)]
+fn copy_swap_pixels(src: &[u16], dst: &mut [u8]) {
+    let chunks_src = src.chunks_exact(4);
+    let mut chunks_dst = dst.chunks_exact_mut(8);
+    let rem_src = chunks_src.remainder();
+
+    for (s, d) in chunks_src.zip(&mut chunks_dst) {
+        let b0 = s[0].to_be_bytes();
+        let b1 = s[1].to_be_bytes();
+        let b2 = s[2].to_be_bytes();
+        let b3 = s[3].to_be_bytes();
+        d[0] = b0[0];
+        d[1] = b0[1];
+        d[2] = b1[0];
+        d[3] = b1[1];
+        d[4] = b2[0];
+        d[5] = b2[1];
+        d[6] = b3[0];
+        d[7] = b3[1];
+    }
+
+    let rem_dst = chunks_dst.into_remainder();
+    for (i, &px) in rem_src.iter().enumerate() {
+        let b = px.to_be_bytes();
+        rem_dst[i * 2] = b[0];
+        rem_dst[i * 2 + 1] = b[1];
     }
 }
