@@ -314,15 +314,12 @@ async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<crate::per
     .await
     {
         Ok(Ok(addrs)) => {
-            let mut resolved = None;
-            for addr in addrs {
-                if let embassy_net::IpAddress::Ipv4(ipv4) = addr {
-                    println!("[NTP] resolved pool.ntp.org -> {:?}", ipv4);
-                    resolved = Some(ipv4);
-                    break;
-                }
+            if let Some(embassy_net::IpAddress::Ipv4(ipv4)) = addrs.into_iter().next() {
+                println!("[NTP] resolved pool.ntp.org -> {:?}", ipv4);
+                ipv4
+            } else {
+                fallback_ntp
             }
-            resolved.unwrap_or(fallback_ntp)
         }
         _ => {
             println!("[NTP] DNS query timed out or failed, using static fallback {:?}", fallback_ntp);

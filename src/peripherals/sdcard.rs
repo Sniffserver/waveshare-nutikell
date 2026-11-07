@@ -1,8 +1,7 @@
+#![allow(dead_code)]
 // SD Card driver via SPI (SPI3)
 // Pins: MOSI=GPIO1(CMD), SCK=GPIO2(CLK), MISO=GPIO3(DATA), CS=GPIO17(SDCS)
 // Uses embedded-sdmmc for FAT filesystem
-
-use embedded_hal::spi::SpiDevice;
 
 /// SD card state
 pub enum SdState {

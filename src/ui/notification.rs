@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 // Pop-up Notification Overlay Engine
 // Displays animated modal notification cards over any screen (Watchface, Outdoor, Apps)
 // Features:
