@@ -17,7 +17,9 @@ static_cell = "2.1"
 # Graphics
 embedded-graphics = "0.8"
 embedded-graphics-core = "0.4"
-heapless = "0.8"
+heapless = { version = "0.8", features = ["serde"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde-json-core = "0.6"
 
 # HAL traits
 embedded-hal = "1.0"
@@ -25,7 +27,13 @@ embedded-hal-bus = "0.3"
 embedded-storage = "0.3"
 
 # WiFi / Networking
-embassy-net = { version = "0.9.0", features = ["dhcpv4", "medium-ethernet", "tcp", "udp", "dns"] }
+embassy-net = { version = "0.9.0", features = [
+    "dhcpv4",
+    "medium-ethernet",
+    "tcp",
+    "udp",
+    "dns",
+] }
 
 # Peripheral drivers
 axp2101-embedded = "0.3"
@@ -67,12 +75,31 @@ required-features = ["firmware"]
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 # ESP HAL + Runtime
-esp-hal = { version = "1.1.0-rc.0", default-features = true, features = ["esp32s3", "unstable"] }
+esp-hal = { version = "1.1.0-rc.0", default-features = true, features = [
+    "esp32s3",
+    "unstable",
+] }
 esp-rtos = { version = "0.3.0", features = ["esp32s3", "embassy", "esp-radio"] }
+bt-hci = "0.8.1"
 esp-alloc = "0.10.0"
 esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
-esp-backtrace = { version = "0.19.0", features = ["esp32s3", "panic-handler", "println"] }
+esp-backtrace = { version = "0.19.0", features = [
+    "esp32s3",
+    "panic-handler",
+    "println",
+] }
 esp-bootloader-esp-idf = { version = "0.4", features = ["esp32s3"] }
-esp-radio = { version = "0.18.0", features = ["esp32s3", "wifi", "ble", "unstable", "log-04"] }
-trouble-host = { version = "0.6.0", default-features = false, features = ["peripheral", "gatt", "derive", "default-packet-pool"] }
+esp-radio = { version = "0.18.0", features = [
+    "esp32s3",
+    "wifi",
+    "ble",
+    "unstable",
+    "log-04",
+] }
+trouble-host = { version = "0.6.0", default-features = false, features = [
+    "peripheral",
+    "gatt",
+    "derive",
+    "default-packet-pool",
+] }
 esp-storage = { version = "0.6.0", features = ["esp32s3"] }

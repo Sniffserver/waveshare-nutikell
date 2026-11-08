@@ -1433,6 +1433,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
  "hash32",
+ "serde",
  "stable_deref_trait",
 ]
 
@@ -1952,6 +1953,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-json-core"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b81787e655bd59cecadc91f7b6b8651330b2be6c33246039a65e5cd6f4e0828"
+dependencies = [
+ "heapless 0.8.0",
+ "ryu",
+ "serde",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2405,6 +2417,7 @@ name = "waveshare-watch-rs"
 version = "0.4.0"
 dependencies = [
  "axp2101-embedded",
+ "bt-hci",
  "edge-dhcp",
  "embassy-executor",
  "embassy-futures",
@@ -2433,6 +2446,8 @@ dependencies = [
  "libm",
  "log",
  "nanomp3",
+ "serde",
+ "serde-json-core",
  "sha2",
  "static_cell",
  "trouble-host",

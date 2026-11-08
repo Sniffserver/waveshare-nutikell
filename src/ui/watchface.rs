@@ -24,6 +24,12 @@ const BATTERY_Y: i32 = 175;
 const BATTERY_PAD_Y: i32 = 4;
 const BATTERY_REGION_W: i32 = 240;
 const BATTERY_REGION_H: i32 = 92;
+const CONTEXT_ROW_X: i32 = 405;
+const CONTEXT_ROW_Y: i32 = 246;
+const CONTEXT_ROW_CLEAR_X: i32 = 140;
+const CONTEXT_ROW_CLEAR_Y: i32 = 222;
+const CONTEXT_ROW_CLEAR_W: i32 = 270;
+const CONTEXT_ROW_CLEAR_H: i32 = 30;
 const GYRO_CX: i32 = 205;
 const GYRO_CY: i32 = 370;
 const GYRO_R: i32 = 50;
@@ -99,6 +105,7 @@ pub struct RenderOutcome {
     pub time_region: Option<FlushRegion>,
     pub battery_region: Option<FlushRegion>,
     pub gyro_region: Option<FlushRegion>,
+    pub context_region: Option<FlushRegion>,
 }
 
 pub struct WatchFace {
@@ -120,6 +127,8 @@ pub struct WatchFace {
     time_changed: bool,
     battery_changed: bool,
     gyro_changed: bool,
+    context_changed: bool,
+    context_row: heapless::String<{ crate::peripherals::companion_sync::MAX_CONTEXT_ROW_BYTES }>,
     pub wifi_connected: bool,
     pub wifi_on: bool,
     pub ble_on: bool,
@@ -152,6 +161,8 @@ impl WatchFace {
             time_changed: false,
             battery_changed: false,
             gyro_changed: false,
+            context_changed: true,
+            context_row: heapless::String::new(),
             wifi_connected: false,
             wifi_on: false,
             ble_on: false,
@@ -186,6 +197,28 @@ impl WatchFace {
             self.battery_voltage = mv;
             self.is_charging = chg;
             self.battery_changed = true;
+        }
+    }
+
+    pub fn set_context_row(&mut self, value: &str) {
+        let end = if value.len() <= crate::peripherals::companion_sync::MAX_CONTEXT_ROW_BYTES {
+            value.len()
+        } else {
+            value
+                .char_indices()
+                .take_while(|(index, character)| {
+                    index + character.len_utf8()
+                        <= crate::peripherals::companion_sync::MAX_CONTEXT_ROW_BYTES
+                })
+                .map(|(index, character)| index + character.len_utf8())
+                .last()
+                .unwrap_or(0)
+        };
+        let next = &value[..end];
+        if self.context_row.as_str() != next {
+            self.context_row.clear();
+            let _ = self.context_row.push_str(next);
+            self.context_changed = true;
         }
     }
 
@@ -610,7 +643,11 @@ impl WatchFace {
     }
 
     pub fn needs_render(&self) -> bool {
-        self.full_redraw || self.time_changed || self.battery_changed || self.gyro_changed
+        self.full_redraw
+            || self.time_changed
+            || self.battery_changed
+            || self.gyro_changed
+            || self.context_changed
     }
 
     /// Always-On-Display renderer.
@@ -674,7 +711,12 @@ impl WatchFace {
         &mut self,
         d: &mut D,
     ) -> Result<RenderOutcome, D::Error> {
-        if !self.full_redraw && !self.time_changed && !self.battery_changed && !self.gyro_changed {
+        if !self.full_redraw
+            && !self.time_changed
+            && !self.battery_changed
+            && !self.gyro_changed
+            && !self.context_changed
+        {
             return Ok(RenderOutcome::default());
         }
 
@@ -736,6 +778,7 @@ impl WatchFace {
 
             // Battery bar + percentage (more space below date)
             self.draw_battery(d, cx, 175)?;
+            self.draw_context_row(d)?;
 
             // Gyro section (only when enabled)
             if self.gyro_enabled {
@@ -770,6 +813,7 @@ impl WatchFace {
             self.time_changed = false;
             self.battery_changed = false;
             self.gyro_changed = false;
+            self.context_changed = false;
             return Ok(RenderOutcome {
                 full_redraw: true,
                 ..RenderOutcome::default()
@@ -815,6 +859,23 @@ impl WatchFace {
             self.draw_battery(d, cx, BATTERY_Y)?;
             self.battery_changed = false;
             outcome.battery_region = Some(Self::battery_region());
+        }
+
+        if self.context_changed {
+            Rectangle::new(
+                Point::new(CONTEXT_ROW_CLEAR_X, CONTEXT_ROW_CLEAR_Y),
+                Size::new(CONTEXT_ROW_CLEAR_W as u32, CONTEXT_ROW_CLEAR_H as u32),
+            )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            .draw(d)?;
+            self.draw_context_row(d)?;
+            self.context_changed = false;
+            outcome.context_region = Some(FlushRegion::new(
+                CONTEXT_ROW_CLEAR_X,
+                CONTEXT_ROW_CLEAR_Y,
+                CONTEXT_ROW_CLEAR_W,
+                CONTEXT_ROW_CLEAR_H,
+            ));
         }
 
         if self.gyro_changed && self.gyro_enabled {
@@ -902,6 +963,29 @@ impl WatchFace {
             MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE)
         };
         Text::with_alignment(s, Point::new(cx, y + bh + 25), st, Alignment::Center).draw(d)?;
+        Ok(())
+    }
+
+    fn draw_context_row<D: DrawTarget<Color = Rgb565>>(
+        &self,
+        d: &mut D,
+    ) -> Result<(), D::Error> {
+        if self.context_row.is_empty() {
+            return Ok(());
+        }
+        let color = if self.context_row.contains('~') || self.context_row.contains("offline") {
+            Rgb565::YELLOW
+        } else {
+            Rgb565::CSS_GRAY
+        };
+        let style = MonoTextStyle::new(&FONT_10X20, color);
+        Text::with_alignment(
+            self.context_row.as_str(),
+            Point::new(CONTEXT_ROW_X, CONTEXT_ROW_Y),
+            style,
+            Alignment::Right,
+        )
+        .draw(d)?;
         Ok(())
     }
 

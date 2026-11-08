@@ -14,8 +14,30 @@
 
 use embedded_io::Write;
 
+#[cfg(target_arch = "xtensa")]
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    signal::Signal,
+};
+#[cfg(target_arch = "xtensa")]
+use static_cell::StaticCell;
+#[cfg(target_arch = "xtensa")]
+use trouble_host::prelude::*;
+
 use crate::outdoor::ble::handle_position_packet;
 use crate::outdoor::{BleStatus, OutdoorState};
+
+#[cfg(target_arch = "xtensa")]
+use crate::outdoor::packet::PositionPacket;
+#[cfg(target_arch = "xtensa")]
+use crate::peripherals::companion_sync::{SnapshotAssembler, SyncSnapshot};
+#[cfg(target_arch = "xtensa")]
+use crate::peripherals::nvs::DeviceAuthKey;
+
+#[cfg(target_arch = "xtensa")]
+pub static SNAPSHOT_RESULT: Signal<CriticalSectionRawMutex, SyncSnapshot> = Signal::new();
+#[cfg(target_arch = "xtensa")]
+pub static POSITION_RESULT: Signal<CriticalSectionRawMutex, PositionPacket> = Signal::new();
 
 /// Authenticated GATT write dispatcher for the companion position
 /// characteristic. The pinned radio crate supplies HCI transport only; a
@@ -96,4 +118,153 @@ pub fn stop_advertising<W: Write>(hci: &mut W) -> Result<(), W::Error> {
         0x00, // disable
     ])?;
     Ok(())
+}
+
+#[cfg(target_arch = "xtensa")]
+#[gatt_server]
+struct OutdoorGattServer {
+    outdoor: OutdoorGattService,
+}
+
+#[cfg(target_arch = "xtensa")]
+#[gatt_service(uuid = "7A7E0001-5B8A-4C9C-9A4C-6B5E5F001001")]
+struct OutdoorGattService {
+    #[characteristic(
+        uuid = "7A7E0002-5B8A-4C9C-9A4C-6B5E5F001001",
+        write,
+        write_without_response,
+        value = [0; 50]
+    )]
+    position: [u8; 50],
+    #[characteristic(
+        uuid = "7A7E0004-5B8A-4C9C-9A4C-6B5E5F001001",
+        read,
+        notify,
+        value = 0
+    )]
+    status: u8,
+    #[characteristic(
+        uuid = "7A7E0005-5B8A-4C9C-9A4C-6B5E5F001001",
+        write,
+        write_without_response,
+        value = [0; 512]
+    )]
+    snapshot: [u8; 512],
+}
+
+#[cfg(target_arch = "xtensa")]
+#[embassy_executor::task(pool_size = 1)]
+pub async fn companion_sync_task(
+    connector: esp_radio::ble::controller::BleConnector<'static>,
+    auth_key: DeviceAuthKey,
+) -> ! {
+    const SERVICE_UUID_LE: [[u8; 16]; 1] = [[
+        0x01, 0x10, 0x00, 0x5f, 0x5e, 0x6b, 0x4c, 0x9a, 0x9c, 0x4c, 0x8a, 0x5b, 0x01, 0x00,
+        0x7e, 0x7a,
+    ]];
+    const CONNECTIONS: usize = 1;
+    const CHANNELS: usize = 2;
+
+    static RESOURCES: StaticCell<HostResources<DefaultPacketPool, CONNECTIONS, CHANNELS>> =
+        StaticCell::new();
+
+    let controller = bt_hci::controller::ExternalController::<_, 4>::new(connector);
+    let resources = RESOURCES.init(HostResources::new());
+    let stack = trouble_host::new(controller, resources);
+    let host = stack.build();
+    let mut peripheral = host.peripheral;
+    let mut runner = host.runner;
+    let server = OutdoorGattServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: "Rust Watch",
+        appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
+    }))
+    .expect("valid GATT service configuration");
+
+    let runner_task = async move {
+        loop {
+            let _ = runner.run().await;
+        }
+    };
+    let peripheral_task = async move {
+        let mut assembler = SnapshotAssembler::new();
+        let mut status = BleStatus::new();
+        let mut outdoor = OutdoorState::new();
+        let position = server.outdoor.position;
+        let snapshot = server.outdoor.snapshot;
+        loop {
+            let mut adv_data = [0; 31];
+            let structures = [
+                AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                AdStructure::ServiceUuids128(&SERVICE_UUID_LE),
+                AdStructure::ShortenedLocalName(b"SBIE"),
+            ];
+            let Ok(adv_len) = AdStructure::encode_slice(&structures, &mut adv_data) else {
+                continue;
+            };
+            let advertiser = match peripheral
+                .advertise(
+                    &Default::default(),
+                    Advertisement::ConnectableScannableUndirected {
+                        adv_data: &adv_data[..adv_len],
+                        scan_data: &[],
+                    },
+                )
+                .await
+            {
+                Ok(advertiser) => advertiser,
+                Err(_) => continue,
+            };
+            let connection = match advertiser.accept().await {
+                Ok(connection) => connection,
+                Err(_) => continue,
+            };
+            let connection = match connection.with_attribute_server(&server) {
+                Ok(connection) => connection,
+                Err(_) => continue,
+            };
+
+            loop {
+                match connection.next().await {
+                    GattConnectionEvent::Disconnected { .. } => {
+                        assembler.reset();
+                        break;
+                    }
+                    GattConnectionEvent::Gatt { event } => {
+                        if let GattEvent::Write(write) = &event {
+                            if write.handle() == snapshot.handle {
+                                if let Ok(Some(value)) =
+                                    assembler.push_fragment(write.data(), auth_key.as_bytes())
+                                {
+                                    SNAPSHOT_RESULT.signal(value);
+                                }
+                            } else if write.handle() == position.handle
+                                && dispatch_position_write(
+                                    write.data(),
+                                    auth_key.as_bytes(),
+                                    &mut status,
+                                    &mut outdoor,
+                                )
+                            {
+                                if let Ok(packet) = PositionPacket::decode_authenticated(
+                                    write.data(),
+                                    auth_key.as_bytes(),
+                                ) {
+                                    POSITION_RESULT.signal(packet);
+                                }
+                            }
+                        }
+                        if let Ok(reply) = event.accept() {
+                            reply.send().await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    let _ = embassy_futures::join::join(runner_task, peripheral_task).await;
+    loop {
+        embassy_time::Timer::after_secs(60).await;
+    }
 }

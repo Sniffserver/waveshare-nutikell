@@ -160,6 +160,47 @@ pub fn read_credentials() -> Option<StoredCredentials> {
     Some(creds)
 }
 
+pub struct DeviceAuthKey([u8; DEVICE_KEY_LEN]);
+
+impl DeviceAuthKey {
+    pub fn as_bytes(&self) -> &[u8; DEVICE_KEY_LEN] {
+        &self.0
+    }
+}
+
+impl Drop for DeviceAuthKey {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+pub fn read_device_auth_key() -> Option<DeviceAuthKey> {
+    if !flash_encryption_enabled() {
+        return None;
+    }
+    let mut storage = FlashStorage::new();
+    let mut record = [0u8; DEVICE_RECORD_READ_LEN];
+    if storage.read(CRED_FLASH_OFFSET, &mut record).is_err()
+        || &record[0..4] != &MAGIC
+        || record[4] != RECORD_VERSION
+        || record[5] as usize > 32
+        || record[38] as usize > 63
+    {
+        return None;
+    }
+
+    let key = key_from_record(&record)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+    mac.update(&record[..RECORD_AUTH_END]);
+    mac.verify_slice(&record[RECORD_TAG_START..RECORD_READ_LEN])
+        .ok()?;
+
+    let mut device_key = [0u8; DEVICE_KEY_LEN];
+    device_key.copy_from_slice(key);
+    record.fill(0);
+    Some(DeviceAuthKey(device_key))
+}
+
 /// Write credentials to flash. Erases the sector and rewrites.
 /// Returns Ok(()) on success.
 pub fn write_credentials(creds: &StoredCredentials) -> Result<(), CredentialStorageError> {
