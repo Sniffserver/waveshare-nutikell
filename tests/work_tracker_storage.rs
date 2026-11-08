@@ -1,9 +1,10 @@
 use std::vec;
 use std::vec::Vec;
-use waveshare_watch_rs::apps::work_tracker::WorkSession;
+use waveshare_watch_rs::apps::work_tracker::{TrackerState, WorkSession, WorkTracker};
 use waveshare_watch_rs::apps::work_tracker_storage::{
     finish_work_session_to, start_work_session_to, WorkSessionStoreError,
 };
+use waveshare_watch_rs::apps::{App, AppInput, AppResult};
 use waveshare_watch_rs::peripherals::active_work::{
     load_active_session_from, ActiveWorkError, ActiveWorkFlash,
 };
@@ -12,6 +13,7 @@ use waveshare_watch_rs::peripherals::session_log::{
     append_session_to, contains_session_id_from, SessionLogError, SessionLogFlash, SessionRecord,
     MAX_SESSION_RECORDS,
 };
+use waveshare_watch_rs::peripherals::touch::TouchPoint;
 
 const LOG_HEADER_SIZE: usize = 12;
 const LOG_RECORD_SIZE: usize = 48;
@@ -192,4 +194,25 @@ fn erase_failure_retry_does_not_duplicate_completed_record() {
         contains_session_id_from(&mut flash, active.session_id),
         Ok(true)
     );
+}
+
+#[test]
+fn tracker_actions_wait_for_a_classified_tap() {
+    let mut tracker = WorkTracker::new();
+    let held_touch = AppInput {
+        touch: Some(TouchPoint { x: 200, y: 350 }),
+        swipe: None,
+        tap: false,
+        accel: (0.0, 0.0, 0.0),
+        dt_ms: 100,
+    };
+    assert!(matches!(tracker.update(&held_touch), AppResult::Continue));
+    assert_eq!(tracker.state, TrackerState::Idle);
+
+    let tap = AppInput {
+        tap: true,
+        ..held_touch
+    };
+    assert!(matches!(tracker.update(&tap), AppResult::Continue));
+    assert_eq!(tracker.state, TrackerState::Working);
 }

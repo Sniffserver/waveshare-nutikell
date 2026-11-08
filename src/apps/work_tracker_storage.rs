@@ -84,4 +84,3 @@ pub fn finish_work_session(
 
     finish_work_session_to(&mut FlashStorage::new(), session_id, session)
 }
-
