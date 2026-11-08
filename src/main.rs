@@ -97,7 +97,10 @@ use crate::apps::settings::SettingsApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
-use crate::apps::work_tracker::WorkTracker;
+use crate::apps::work_tracker::{WorkSession, WorkTracker, TrackerState};
+use crate::apps::work_tracker_storage::{
+    finish_work_session, start_work_session, WorkSessionStoreError,
+};
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::ble_analyzer::BleAnalyzerApp;
 use crate::drivers::co5300::Co5300Display;
@@ -113,7 +116,7 @@ use crate::peripherals::nvs::{read_credentials, write_credentials, StoredCredent
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::rtc::Pcf85063aRtc;
 use crate::peripherals::session_log::{
-    contains_session_id, session_log_health, LogSeverity,
+    contains_session_id, session_log_health, LogSeverity, SessionLogError,
 };
 use crate::peripherals::settings::load_settings;
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection, TouchPoint};
@@ -1037,6 +1040,8 @@ async fn main(_spawner: Spawner) {
     let mut launcher = Launcher::new();
     let mut outdoor_app = crate::apps::outdoor_app::OutdoorApp::new();
     let mut work_tracker = WorkTracker::with_rate(watch_settings.hourly_rate_cents);
+    let mut active_work_session_id = None;
+    let mut active_recovery_blocked = false;
     let mut authenticator_app = AuthenticatorApp::new();
     log_memory("before-analyzer");
     println!(
@@ -1114,8 +1119,12 @@ async fn main(_spawner: Spawner) {
             if contains_session_id(active.session_id) {
                 // A power loss after append but before active-record erase is
                 // already committed. Reconciliation prevents a duplicate.
-                let _ = clear_active_session();
-                println!("[WORK] reconciled completed session after interrupted stop");
+                if clear_active_session().is_ok() {
+                    println!("[WORK] reconciled completed session after interrupted stop");
+                } else {
+                    active_recovery_blocked = true;
+                    println!("[WORK] recovery record could not be cleared; clock-in blocked");
+                }
             } else {
                 if let Some(now_unix) = calendar_to_unix(
                     (2000 + dt.year as u16, dt.month, dt.day),
@@ -1130,8 +1139,10 @@ async fn main(_spawner: Spawner) {
                         ),
                         elapsed_secs,
                     );
+                    active_work_session_id = Some(active.session_id);
                     println!("[WORK] restored active session ({} seconds)", elapsed_secs);
                 } else {
+                    active_recovery_blocked = true;
                     println!("[WORK] invalid RTC date; active session retained for recovery");
                 }
             }
@@ -1139,6 +1150,11 @@ async fn main(_spawner: Spawner) {
     }
     let worklog_health = session_log_health();
     work_tracker.set_log_health(worklog_health);
+    work_tracker.set_start_allowed(
+        !active_recovery_blocked
+            && worklog_health.free_records > 0
+            && worklog_health.severity() != LogSeverity::Error,
+    );
     println!(
         "[WORKLOG] v{} valid={} corrupt={} free={} tail={} dup_ids={} dup_records={} scan={}",
         crate::peripherals::session_log::LOG_FORMAT_VERSION,
@@ -1710,7 +1726,103 @@ async fn main(_spawner: Spawner) {
                     None
                 }
             }
-            AppState::WorkTracker => Some(work_tracker.update(&app_input)),
+            AppState::WorkTracker => {
+                let touched_work_button = app_input.tap
+                    && app_touch.is_some_and(|touch| {
+                        (50..=360).contains(&(touch.x as i32))
+                            && (330..=400).contains(&(touch.y as i32))
+                    });
+                if touched_work_button && work_tracker.state == TrackerState::Idle {
+                    if let Some(session) = work_tracker.pending_completed_session() {
+                        match active_work_session_id {
+                            Some(session_id) => match finish_work_session(session_id, session) {
+                                Ok(()) => {
+                                    active_work_session_id = None;
+                                    work_tracker.confirm_completed_session_saved();
+                                    let health = session_log_health();
+                                    work_tracker.set_log_health(health);
+                                    work_tracker.set_start_allowed(
+                                        health.free_records > 0
+                                            && health.severity() != LogSeverity::Error,
+                                    );
+                                }
+                                Err(error) => {
+                                    work_tracker.set_storage_error(true);
+                                    println!("[WORK] completion retry failed: {:?}", error);
+                                }
+                            },
+                            None => {
+                                work_tracker.set_storage_error(true);
+                                println!("[WORK] pending completion has no active session ID");
+                            }
+                        }
+                    } else if work_tracker.start_allowed {
+                        match start_work_session(
+                            work_tracker.date_ymd,
+                            work_tracker.time_hms,
+                            work_tracker.hourly_rate_cents,
+                        ) {
+                            Ok(active) => {
+                                let session = WorkSession::new(
+                                    active.start_date_ymd,
+                                    active.start_time_hms,
+                                    active.hourly_rate_cents,
+                                );
+                                active_work_session_id = Some(active.session_id);
+                                if !work_tracker.clock_in_with_session(session) {
+                                    work_tracker.restore_active_session(session, 0);
+                                    println!("[WORK] tracker rejected a committed start; restored it");
+                                }
+                            }
+                            Err(error) => {
+                                work_tracker.set_storage_error(true);
+                                if matches!(
+                                    error,
+                                    WorkSessionStoreError::SessionLog(SessionLogError::Full)
+                                ) {
+                                    let health = session_log_health();
+                                    work_tracker.set_log_health(health);
+                                    work_tracker.set_start_allowed(false);
+                                }
+                                println!("[WORK] clock-in persistence failed: {:?}", error);
+                            }
+                        }
+                    }
+                    page_dirty = true;
+                    Some(AppResult::Continue)
+                } else {
+                    let had_pending_session = work_tracker.pending_completed_session().is_some();
+                    let result = work_tracker.update(&app_input);
+                    if !had_pending_session {
+                        if let Some(session) = work_tracker.pending_completed_session() {
+                            match active_work_session_id {
+                                Some(session_id) => match finish_work_session(session_id, session) {
+                                    Ok(()) => {
+                                        active_work_session_id = None;
+                                        work_tracker.confirm_completed_session_saved();
+                                        let health = session_log_health();
+                                        work_tracker.set_log_health(health);
+                                        work_tracker.set_start_allowed(
+                                            health.free_records > 0
+                                                && health.severity() != LogSeverity::Error,
+                                        );
+                                    }
+                                    Err(error) => {
+                                        work_tracker.set_storage_error(true);
+                                        println!("[WORK] completion save failed: {:?}", error);
+                                    }
+                                },
+                                None => {
+                                    work_tracker.set_storage_error(true);
+                                    println!("[WORK] completed session has no active session ID");
+                                }
+                            }
+                            page_dirty = true;
+                        }
+                    }
+                    Some(result)
+                }
+            }
             AppState::Authenticator => Some(authenticator_app.update(&app_input)),
             AppState::BleAnalyzer => Some(ble_analyzer_app.update(&app_input)),
             AppState::Mp3Player => Some(media_controller.update(&app_input)),

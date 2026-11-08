@@ -19,6 +19,7 @@ pub mod snake;
 pub mod tetris;
 pub mod wifi_setup;
 pub mod work_tracker;
+pub mod work_tracker_storage;
 
 /// Input state passed to apps each frame
 pub struct AppInput {

@@ -86,6 +86,8 @@ pub struct WorkTracker {
     pub is_charging: bool,
     /// Set by the storage layer before clock-in to preserve existing history.
     pub start_allowed: bool,
+    /// The last storage operation failed and can be retried from the tracker.
+    pub storage_error: bool,
     /// Non-destructive integrity diagnostics from persistent work history.
     pub duplicate_session_ids: u16,
     pub duplicate_records: u16,
@@ -111,6 +113,7 @@ impl WorkTracker {
             battery_percent: 100,
             is_charging: false,
             start_allowed: true,
+            storage_error: false,
             duplicate_session_ids: 0,
             duplicate_records: 0,
             corrupt_log_records: 0,
@@ -127,14 +130,24 @@ impl WorkTracker {
     }
 
     pub fn clock_in(&mut self) {
-        if self.state == TrackerState::Idle && self.pending_session.is_none() && self.start_allowed
-        {
-            self.active_session = Some(WorkSession::new(
+        self.clock_in_with_session(WorkSession::new(
                 self.date_ymd,
                 self.time_hms,
                 self.hourly_rate_cents,
             ));
+    }
+
+    /// Start tracking only after the caller has durably saved this session.
+    pub fn clock_in_with_session(&mut self, session: WorkSession) -> bool {
+        if self.state == TrackerState::Idle && self.pending_session.is_none() && self.start_allowed
+        {
+            self.hourly_rate_cents = session.hourly_rate_cents;
+            self.active_session = Some(session);
             self.state = TrackerState::Working;
+            self.storage_error = false;
+            true
+        } else {
+            false
         }
     }
 
@@ -183,6 +196,7 @@ impl WorkTracker {
 
     pub fn confirm_completed_session_saved(&mut self) {
         self.pending_session = None;
+        self.storage_error = false;
     }
 
     pub fn tick_1s(&mut self) {
@@ -230,6 +244,10 @@ impl WorkTracker {
 
     pub fn set_start_allowed(&mut self, allowed: bool) {
         self.start_allowed = allowed;
+    }
+
+    pub fn set_storage_error(&mut self, failed: bool) {
+        self.storage_error = failed;
     }
 
     pub fn set_log_health(&mut self, health: SessionLogHealth) {
@@ -368,12 +386,14 @@ impl App for WorkTracker {
             }
         }
 
-        if let Some(touch) = input.touch {
+        if input.tap {
+            if let Some(touch) = input.touch {
             // Exit back button at bottom (x 120..290, y 420..465)
             if (120..=290).contains(&(touch.x as i32)) && (420..=465).contains(&(touch.y as i32)) {
                 return AppResult::Exit;
             }
             self.handle_touch(touch);
+            }
         }
 
         AppResult::Continue
@@ -456,9 +476,15 @@ impl App for WorkTracker {
             format!("Break: {}m {:02}s", break_secs / 60, break_secs % 60)
         } else {
             if self.pending_session.is_some() {
-                "SAVE FAILED — retry pending".into()
+                "SAVE PENDING - tap to retry".into()
             } else if !self.start_allowed {
-                "LOG FULL — export and clear".into()
+                if self.log_severity == LogSeverity::Error {
+                    "LOG INVALID - start blocked".into()
+                } else {
+                    "LOG FULL - export first".into()
+                }
+            } else if self.storage_error {
+                "START FAILED - tap to retry".into()
             } else {
                 "Tap [CLOCK IN] to start".into()
             }
@@ -540,7 +566,13 @@ impl App for WorkTracker {
                 .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2))
                 .draw(d);
                 let _ = Text::with_alignment(
-                    "CLOCK IN",
+                    if self.pending_session.is_some() {
+                        "RETRY SAVE"
+                    } else if self.start_allowed {
+                        "CLOCK IN"
+                    } else {
+                        "LOG LOCKED"
+                    },
                     EgPoint::new(205, 375),
                     bold_style,
                     Alignment::Center,

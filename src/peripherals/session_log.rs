@@ -281,26 +281,90 @@ pub fn read_all_sessions_checked() -> Result<alloc::vec::Vec<SessionRecord>, Ses
     Ok(read_all_sessions())
 }
 
+fn checked_header_state<F: SessionLogFlash>(
+    storage: &mut F,
+) -> Result<LogHeaderState, SessionLogError> {
+    let mut header = [0u8; HEADER_SIZE];
+    storage
+        .read(LOG_OFFSET, &mut header)
+        .map_err(|_| SessionLogError::Io)?;
+    let state = classify_header(&header)?;
+    if state == LogHeaderState::Empty {
+        for slot in 0..MAX_SESSION_RECORDS {
+            let mut raw = [0u8; RECORD_SIZE];
+            storage
+                .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+                .map_err(|_| SessionLogError::Io)?;
+            if !raw.iter().all(|&byte| byte == 0xFF) {
+                return Err(SessionLogError::CorruptHeader);
+            }
+        }
+    }
+    Ok(state)
+}
+
+/// Check for a committed record by ID using an injected flash adapter.
+pub fn contains_session_id_from<F: SessionLogFlash>(
+    storage: &mut F,
+    session_id: u64,
+) -> Result<bool, SessionLogError> {
+    if checked_header_state(storage)? == LogHeaderState::Empty {
+        return Ok(false);
+    }
+    for slot in 0..MAX_SESSION_RECORDS {
+        let mut raw = [0u8; RECORD_SIZE];
+        storage
+            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+            .map_err(|_| SessionLogError::Io)?;
+        if SessionRecord::from_raw(&raw).is_some_and(|record| record.session_id == session_id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Allocate the next completed-session ID using an injected flash adapter.
+pub fn next_session_id_from<F: SessionLogFlash>(
+    storage: &mut F,
+) -> Result<u64, SessionLogError> {
+    if checked_header_state(storage)? == LogHeaderState::Empty {
+        return Ok(1);
+    }
+    let mut highest = None;
+    let mut free_records = 0usize;
+    for slot in 0..MAX_SESSION_RECORDS {
+        let mut raw = [0u8; RECORD_SIZE];
+        storage
+            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+            .map_err(|_| SessionLogError::Io)?;
+        if raw.iter().all(|&byte| byte == 0xFF) {
+            free_records += 1;
+        } else if let Some(record) = SessionRecord::from_raw(&raw) {
+            highest = Some(highest.map_or(record.session_id, |id: u64| id.max(record.session_id)));
+        }
+    }
+    if free_records == 0 {
+        return Err(SessionLogError::Full);
+    }
+    highest
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(SessionLogError::Full)
+}
+
 /// Returns true when a previously committed session has the supplied ID.
 /// Used at boot to reconcile a power failure between log commit and clearing
 /// the active-session recovery record.
 #[cfg(target_arch = "xtensa")]
 pub fn contains_session_id(session_id: u64) -> bool {
-    has_session_id(&read_all_sessions(), session_id)
+    contains_session_id_from(&mut FlashStorage::new(), session_id).unwrap_or(false)
 }
 
 /// Allocate the next persisted sequence from completed records. This refuses
 /// to proceed if the header is corrupt, preventing accidental ID reuse.
 #[cfg(target_arch = "xtensa")]
 pub fn next_session_id() -> Result<u64, SessionLogError> {
-    let records = read_all_sessions_checked()?;
-    records
-        .iter()
-        .map(|record| record.session_id)
-        .max()
-        .unwrap_or(0)
-        .checked_add(1)
-        .ok_or(SessionLogError::Full)
+    next_session_id_from(&mut FlashStorage::new())
 }
 
 fn has_session_id(records: &[SessionRecord], session_id: u64) -> bool {
