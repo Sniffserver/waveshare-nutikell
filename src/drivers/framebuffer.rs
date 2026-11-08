@@ -25,6 +25,27 @@ pub struct Framebuffer {
     back: Vec<u16>,
 }
 
+/// Align a dirty rectangle to even 2x2 bounds required by the CO5300 AMOLED.
+#[inline]
+pub fn align_to_even_region(x: u16, y: u16, w: u16, h: u16) -> Option<(usize, usize, usize, usize)> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let x0 = (x as usize).min(WIDTH.saturating_sub(2)) & !1;
+    let y0 = (y as usize).min(HEIGHT.saturating_sub(2)) & !1;
+
+    let raw_x1 = (x as usize).saturating_add(w as usize).min(WIDTH);
+    let raw_y1 = (y as usize).saturating_add(h as usize).min(HEIGHT);
+
+    let x1 = ((raw_x1 + 1) & !1).min(WIDTH);
+    let y1 = ((raw_y1 + 1) & !1).min(HEIGHT);
+
+    let flush_w = (x1.saturating_sub(x0)).max(2);
+    let flush_h = (y1.saturating_sub(y0)).max(2);
+
+    Some((x0, y0, flush_w, flush_h))
+}
+
 impl Framebuffer {
     /// Allocate true front and back framebuffers in PSRAM (via global allocator).
     /// Provides zero-tearing double-buffered rendering for games and animations.

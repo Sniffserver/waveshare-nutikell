@@ -629,9 +629,12 @@ impl WatchFace {
             .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
             .draw(d)?;
 
-        // Anti burn-in: shift the time block by a few pixels based on the current minute.
-        let shift_x = ((self.minutes as i32) % 9) - 4;
-        let shift_y = ((self.minutes as i32 / 9) % 9) - 4;
+        // Anti burn-in: shift the time block across a ±8 px 2D wander pattern.
+        // Coprime multipliers 7 and 11 with prime modulo 17 trace a dynamic 2D orbit,
+        // shifting coordinates every minute without clustering or early repeats.
+        let m = (self.hours as i32) * 60 + (self.minutes as i32);
+        let shift_x = ((m * 7) % 17) - 8;
+        let shift_y = ((m * 11 + 5) % 17) - 8;
 
         let cx = SCREEN_CX + shift_x;
         let cy = h / 2 - 32 + shift_y;
