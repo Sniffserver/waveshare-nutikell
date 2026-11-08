@@ -53,6 +53,8 @@ use esp_alloc as _;
 use esp_backtrace as _;
 
 esp_bootloader_esp_idf::esp_app_desc!();
+#[used]
+static _FORCE_APP_DESC: &esp_bootloader_esp_idf::EspAppDesc = &ESP_APP_DESC;
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
