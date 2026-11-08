@@ -97,7 +97,7 @@ use crate::apps::settings::SettingsApp;
 use crate::apps::snake::SnakeGame;
 use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
-use crate::apps::work_tracker::{WorkSession, WorkTracker, TrackerState};
+use crate::apps::work_tracker::{TrackerState, WorkSession, WorkTracker};
 use crate::apps::work_tracker_storage::{
     finish_work_session, start_work_session, WorkSessionStoreError,
 };
@@ -1771,7 +1771,9 @@ async fn main(_spawner: Spawner) {
                                 active_work_session_id = Some(active.session_id);
                                 if !work_tracker.clock_in_with_session(session) {
                                     work_tracker.restore_active_session(session, 0);
-                                    println!("[WORK] tracker rejected a committed start; restored it");
+                                    println!(
+                                        "[WORK] tracker rejected a committed start; restored it"
+                                    );
                                 }
                             }
                             Err(error) => {
@@ -1796,22 +1798,24 @@ async fn main(_spawner: Spawner) {
                     if !had_pending_session {
                         if let Some(session) = work_tracker.pending_completed_session() {
                             match active_work_session_id {
-                                Some(session_id) => match finish_work_session(session_id, session) {
-                                    Ok(()) => {
-                                        active_work_session_id = None;
-                                        work_tracker.confirm_completed_session_saved();
-                                        let health = session_log_health();
-                                        work_tracker.set_log_health(health);
-                                        work_tracker.set_start_allowed(
-                                            health.free_records > 0
-                                                && health.severity() != LogSeverity::Error,
-                                        );
+                                Some(session_id) => {
+                                    match finish_work_session(session_id, session) {
+                                        Ok(()) => {
+                                            active_work_session_id = None;
+                                            work_tracker.confirm_completed_session_saved();
+                                            let health = session_log_health();
+                                            work_tracker.set_log_health(health);
+                                            work_tracker.set_start_allowed(
+                                                health.free_records > 0
+                                                    && health.severity() != LogSeverity::Error,
+                                            );
+                                        }
+                                        Err(error) => {
+                                            work_tracker.set_storage_error(true);
+                                            println!("[WORK] completion save failed: {:?}", error);
+                                        }
                                     }
-                                    Err(error) => {
-                                        work_tracker.set_storage_error(true);
-                                        println!("[WORK] completion save failed: {:?}", error);
-                                    }
-                                },
+                                }
                                 None => {
                                     work_tracker.set_storage_error(true);
                                     println!("[WORK] completed session has no active session ID");

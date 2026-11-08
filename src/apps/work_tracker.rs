@@ -131,10 +131,10 @@ impl WorkTracker {
 
     pub fn clock_in(&mut self) {
         self.clock_in_with_session(WorkSession::new(
-                self.date_ymd,
-                self.time_hms,
-                self.hourly_rate_cents,
-            ));
+            self.date_ymd,
+            self.time_hms,
+            self.hourly_rate_cents,
+        ));
     }
 
     /// Start tracking only after the caller has durably saved this session.
@@ -388,11 +388,13 @@ impl App for WorkTracker {
 
         if input.tap {
             if let Some(touch) = input.touch {
-            // Exit back button at bottom (x 120..290, y 420..465)
-            if (120..=290).contains(&(touch.x as i32)) && (420..=465).contains(&(touch.y as i32)) {
-                return AppResult::Exit;
-            }
-            self.handle_touch(touch);
+                // Exit back button at bottom (x 120..290, y 420..465)
+                if (120..=290).contains(&(touch.x as i32))
+                    && (420..=465).contains(&(touch.y as i32))
+                {
+                    return AppResult::Exit;
+                }
+                self.handle_touch(touch);
             }
         }
 

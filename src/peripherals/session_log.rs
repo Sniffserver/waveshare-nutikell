@@ -324,9 +324,7 @@ pub fn contains_session_id_from<F: SessionLogFlash>(
 }
 
 /// Allocate the next completed-session ID using an injected flash adapter.
-pub fn next_session_id_from<F: SessionLogFlash>(
-    storage: &mut F,
-) -> Result<u64, SessionLogError> {
+pub fn next_session_id_from<F: SessionLogFlash>(storage: &mut F) -> Result<u64, SessionLogError> {
     if checked_header_state(storage)? == LogHeaderState::Empty {
         return Ok(1);
     }
