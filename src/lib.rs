@@ -17,6 +17,7 @@ pub mod apps {
     pub mod authenticator;
     pub mod media_controller;
     pub mod work_tracker;
+    pub mod work_tracker_storage;
     pub use authenticator::{AuthenticatorApp, TotpAccount};
     pub use media_controller::{
         MediaAction, MediaCommand, MediaController, MediaSource, PlaybackState,
