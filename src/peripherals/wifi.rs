@@ -47,9 +47,7 @@ impl WifiConfig {
         if self.ssid_len == 0 || self.ssid_len > 32 || self.pass_len > 63 {
             return Err(WifiConfigError::InvalidLength);
         }
-        if self.ssid[..self.ssid_len].iter().any(|b| *b == 0)
-            || self.password[..self.pass_len].iter().any(|b| *b == 0)
-        {
+        if self.ssid[..self.ssid_len].contains(&0) || self.password[..self.pass_len].contains(&0) {
             return Err(WifiConfigError::InvalidByte);
         }
         Ok(())

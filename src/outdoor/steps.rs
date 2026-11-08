@@ -5,30 +5,20 @@
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MotionState {
+    #[default]
     Still,
     Walking,
     Active,
 }
 
-impl Default for MotionState {
-    fn default() -> Self {
-        MotionState::Still
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum PeakState {
+    #[default]
     Waiting,
     Rising,
     AboveThreshold,
-}
-
-impl Default for PeakState {
-    fn default() -> Self {
-        PeakState::Waiting
-    }
 }
 
 // ── Configuration ──────────────────────────────────────────────────────────

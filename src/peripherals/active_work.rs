@@ -156,9 +156,9 @@ pub fn load_active_session_from<F: ActiveWorkFlash>(
     let mut selected = None;
     for slot in 0..V3_SLOT_COUNT {
         if let Some(candidate) = v3_decode(&v3_read_slot(flash, slot)?) {
-            if selected.map_or(true, |current: ActiveWorkSession| {
-                candidate.session_id > current.session_id
-            }) {
+            if selected
+                .is_none_or(|current: ActiveWorkSession| candidate.session_id > current.session_id)
+            {
                 selected = Some(candidate);
             }
         }
@@ -180,18 +180,16 @@ pub fn save_active_session_to<F: ActiveWorkFlash>(
             if found == session {
                 return Ok(());
             }
-            if highest.map_or(true, |current: ActiveWorkSession| {
-                found.session_id > current.session_id
-            }) {
+            if highest
+                .is_none_or(|current: ActiveWorkSession| found.session_id > current.session_id)
+            {
                 highest = Some(found);
             }
         } else if raw.iter().all(|&byte| byte == 0xFF) {
             target = Some(slot);
         }
     }
-    if highest.map_or(false, |current: ActiveWorkSession| {
-        session.session_id <= current.session_id
-    }) {
+    if highest.is_some_and(|current: ActiveWorkSession| session.session_id <= current.session_id) {
         return Err(ActiveWorkError::Corrupt);
     }
     let slot = target.ok_or(ActiveWorkError::NoErasedSlot)?;
@@ -479,7 +477,7 @@ pub fn v4_classify(raw: &[u8; V4_RECORD_LEN]) -> V4RecordClass {
     let version = raw[V4_VERSION_OFFSET];
     if version != V4_VERSION {
         // Versions 1-3 are legacy
-        if version >= 1 && version <= 3 {
+        if (1..=3).contains(&version) {
             return V4RecordClass::Legacy(version);
         }
         return V4RecordClass::Corrupt;
@@ -867,9 +865,9 @@ fn migrate_legacy_active_work_v3_to_v4<F: ActiveWorkFlash>(
         let raw = v3_read_slot(flash, slot)?;
         all_legacy_slots_empty &= raw.iter().all(|&byte| byte == 0xFF);
         if let Some(candidate) = v3_decode(&raw) {
-            if legacy.map_or(true, |current: ActiveWorkSession| {
-                candidate.session_id > current.session_id
-            }) {
+            if legacy
+                .is_none_or(|current: ActiveWorkSession| candidate.session_id > current.session_id)
+            {
                 legacy = Some(candidate);
             }
         }

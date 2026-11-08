@@ -26,20 +26,15 @@ pub enum TrackerState {
 ///
 /// The UI deliberately starts at `Unavailable`: no destination has been
 /// selected yet, so it must not imply that history can be exported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExportState {
+    #[default]
     Unavailable,
     Ready,
     Preparing,
     Writing,
     Completed,
     Failed,
-}
-
-impl Default for ExportState {
-    fn default() -> Self {
-        Self::Unavailable
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

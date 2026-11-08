@@ -51,7 +51,7 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
         n.rotate_left(b)
     }
 
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
         for j in 0..16 {
             w[j] = u32::from_be_bytes([
@@ -195,7 +195,11 @@ pub fn datetime_to_unix_secs(year: u16, month: u8, day: u8, hour: u8, min: u8, s
         match month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
-            2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+            2 if (year.is_multiple_of(4) && !year.is_multiple_of(100))
+                || year.is_multiple_of(400) =>
+            {
+                29
+            }
             2 => 28,
             _ => 0,
         }
@@ -213,7 +217,7 @@ pub fn datetime_to_unix_secs(year: u16, month: u8, day: u8, hour: u8, min: u8, s
     }
     let leap_years = (y - 1 - 1968) / 4 - (y - 1 - 1900) / 100 + (y - 1 - 1600) / 400;
     let days_from_years = (y - 1970) * 365 + leap_years;
-    let is_leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    let is_leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
     let leap_day = if is_leap && m > 2 { 1 } else { 0 };
     let total_days = days_from_years + DAYS_BEFORE_MONTH[m - 1] + leap_day + (day as u32 - 1);
     (total_days as u64) * 86400 + (hour as u64) * 3600 + (min as u64) * 60 + (sec as u64)
@@ -271,7 +275,7 @@ impl TotpAccount {
         if secret.is_empty() {
             return Err(TotpAccountError::EmptySecret);
         }
-        if !matches!(digits, 6 | 7 | 8) {
+        if !matches!(digits, 6..=8) {
             return Err(TotpAccountError::UnsupportedDigits);
         }
         if period == 0 {

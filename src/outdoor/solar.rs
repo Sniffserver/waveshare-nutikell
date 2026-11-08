@@ -133,13 +133,7 @@ pub fn calculate_solar(
     let ha_rad = ha_deg * DEG_TO_RAD;
     let sin_elev = libm::sinf(lat_rad) * libm::sinf(dec_rad)
         + libm::cosf(lat_rad) * libm::cosf(dec_rad) * libm::cosf(ha_rad);
-    let sin_elev_clamped = if sin_elev < -1.0 {
-        -1.0
-    } else if sin_elev > 1.0 {
-        1.0
-    } else {
-        sin_elev
-    };
+    let sin_elev_clamped = sin_elev.clamp(-1.0, 1.0);
     let elev_deg = libm::asinf(sin_elev_clamped) * RAD_TO_DEG;
 
     // Solar Azimuth
@@ -254,9 +248,11 @@ mod tests {
 
     #[test]
     fn cardinal_directions() {
-        let mut pos = SolarPosition::default();
+        let mut pos = SolarPosition {
+            azimuth_deg: 0.0,
+            ..SolarPosition::default()
+        };
 
-        pos.azimuth_deg = 0.0;
         assert_eq!(pos.cardinal_str(), "N");
         pos.azimuth_deg = 45.0;
         assert_eq!(pos.cardinal_str(), "NE");

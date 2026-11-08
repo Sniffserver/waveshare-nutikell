@@ -174,7 +174,7 @@ fn encode_sector(settings: WatchSettings) -> alloc::boxed::Box<[u8; SECTOR_SIZE 
 }
 
 fn decode_sector(buf: &[u8; SECTOR_SIZE as usize]) -> Option<WatchSettings> {
-    if &buf[0..4] != &MAGIC {
+    if buf[0..4] != MAGIC {
         return None;
     }
     // This fixed-size decoder only understands v1. Rejecting newer layouts is

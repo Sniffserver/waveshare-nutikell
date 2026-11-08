@@ -21,7 +21,7 @@ impl FlashRegion {
     }
 
     pub const fn is_sector_aligned(self) -> bool {
-        self.start % SECTOR_SIZE == 0 && self.len % SECTOR_SIZE == 0
+        self.start.is_multiple_of(SECTOR_SIZE) && self.len.is_multiple_of(SECTOR_SIZE)
     }
 
     pub const fn is_within_nvs(self) -> bool {
@@ -85,10 +85,8 @@ const fn valid_layout() -> bool {
             }
         }
         // For ACTIVE_WORK_B, only check sector alignment
-        if REGIONS[index].start == ACTIVE_WORK_B.start {
-            if !REGIONS[index].is_sector_aligned() {
-                return false;
-            }
+        if REGIONS[index].start == ACTIVE_WORK_B.start && !REGIONS[index].is_sector_aligned() {
+            return false;
         }
         let mut other = index + 1;
         while other < REGIONS.len() {

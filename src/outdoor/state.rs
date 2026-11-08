@@ -3,17 +3,12 @@
 use crate::outdoor::packet::{PositionError, PositionPacket};
 use crate::outdoor::steps::MotionState;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TelemetryState {
     Fresh,
     Stale,
+    #[default]
     Invalid,
-}
-
-impl Default for TelemetryState {
-    fn default() -> Self {
-        TelemetryState::Invalid
-    }
 }
 
 pub fn telemetry_state(fix_age_secs: u32) -> TelemetryState {
@@ -24,17 +19,12 @@ pub fn telemetry_state(fix_age_secs: u32) -> TelemetryState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HikeStatus {
+    #[default]
     Stopped,
     Running,
     Paused,
-}
-
-impl Default for HikeStatus {
-    fn default() -> Self {
-        HikeStatus::Stopped
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -142,7 +132,7 @@ impl OutdoorState {
             if self.has_prev_coord {
                 let segment = haversine_distance_m(self.prev_lat, self.prev_lon, new_lat, new_lon);
                 // Reject unreasonable jumps (> 100m in one update) or inaccurate GPS fixes
-                if accuracy_ok && segment >= 1.5 && segment <= 100.0 {
+                if accuracy_ok && (1.5..=100.0).contains(&segment) {
                     self.distance_m += segment;
                     self.hike.distance_m += segment;
                 }
@@ -251,13 +241,7 @@ pub fn haversine_distance_m(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
 
     let a =
         sin_dlat2 * sin_dlat2 + libm::cosf(lat1_rad) * libm::cosf(lat2_rad) * sin_dlon2 * sin_dlon2;
-    let a_clamped = if a < 0.0 {
-        0.0
-    } else if a > 1.0 {
-        1.0
-    } else {
-        a
-    };
+    let a_clamped = a.clamp(0.0, 1.0);
     let c = 2.0 * libm::atan2f(libm::sqrtf(a_clamped), libm::sqrtf(1.0 - a_clamped));
     r * c
 }

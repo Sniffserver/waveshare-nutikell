@@ -278,7 +278,7 @@ impl NotificationManager {
         // 8. Progress timeout bar at bottom of card
         if notif.urgency != Urgency::Critical && self.display_timeout_ms > 0 {
             let remaining_ms = self.display_timeout_ms.saturating_sub(self.elapsed_ms);
-            let bar_w = ((remaining_ms as u32) * (card_w - 24)) / self.display_timeout_ms;
+            let bar_w = (remaining_ms * (card_w - 24)) / self.display_timeout_ms;
             let _ = Line::new(
                 EgPoint::new(card_x + 12, card_y + card_h as i32 - 4),
                 EgPoint::new(card_x + 12 + bar_w as i32, card_y + card_h as i32 - 4),

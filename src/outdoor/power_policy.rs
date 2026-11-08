@@ -26,7 +26,7 @@ impl PowerPolicy {
         if rate_hz == 0 {
             None
         } else {
-            Some((1000 + rate_hz as u64 - 1) / rate_hz as u64)
+            Some(1000u64.div_ceil(rate_hz as u64))
         }
     }
 

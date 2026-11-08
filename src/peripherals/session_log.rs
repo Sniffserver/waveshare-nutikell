@@ -65,8 +65,9 @@ pub trait SessionLogFlash {
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LogHeaderState {
+    #[default]
     Empty,
     Valid,
     Corrupt,
@@ -135,7 +136,7 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
-    fn to_raw(&self) -> [u8; RECORD_SIZE] {
+    fn to_raw(self) -> [u8; RECORD_SIZE] {
         let mut out = [0u8; RECORD_SIZE];
         // CRC written last; leave bytes 0..4 zero for now
         out[4] = 0x01; // valid flag
@@ -239,12 +240,6 @@ impl SessionLogHealth {
         } else {
             LogSeverity::Ok
         }
-    }
-}
-
-impl Default for LogHeaderState {
-    fn default() -> Self {
-        Self::Empty
     }
 }
 

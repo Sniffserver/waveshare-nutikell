@@ -94,7 +94,7 @@ pub fn extract_ad_info(structures: &[AdStructure]) -> AdvertisementInfo {
             }
             // 16-bit Service UUIDs (incomplete or complete)
             0x02 | 0x03 => {
-                for chunk in structure.data.chunks_exact(2) {
+                for chunk in structure.data.as_chunks::<2>().0 {
                     let uuid = u16::from_le_bytes([chunk[0], chunk[1]]);
                     if !result.service_uuids_16.contains(&uuid) {
                         let _ = result.service_uuids_16.push(uuid);

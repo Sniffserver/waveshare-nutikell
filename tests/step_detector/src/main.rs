@@ -199,7 +199,7 @@ impl<I: embedded_hal::i2c::I2c> Axp2101Power<I> {
         self.i2c
             .write_read(AXP2101_ADDR, &[REG_AXP_CHG_STATUS], &mut st)?;
         let chg = (st[0] >> 5) & 0x07;
-        Ok(chg >= 1 && chg <= 3)
+        Ok((1..=3).contains(&chg))
     }
 
     pub fn is_vbus_in(&mut self) -> Result<bool, I::Error> {
@@ -431,18 +431,20 @@ impl SimpleAppState {
     }
 }
 
+impl Default for SimpleAppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── 6. Step Detector Logic ────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MotionState {
+    #[default]
     Still,
     Walking,
     Active,
-}
-impl Default for MotionState {
-    fn default() -> Self {
-        MotionState::Still
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -245,7 +245,8 @@ impl DeviceTracker {
     }
 
     pub fn sort_by_rssi(&mut self) {
-        self.devices.sort_unstable_by(|a, b| b.rssi.cmp(&a.rssi));
+        self.devices
+            .sort_unstable_by_key(|device| core::cmp::Reverse(device.rssi));
     }
 
     pub fn space_sector_count(&self) -> usize {

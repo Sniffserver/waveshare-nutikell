@@ -80,7 +80,7 @@ pub fn is_space_sector(id: u16) -> bool {
     )
 }
 
-pub fn format_company<'a>(id: u16, buf: &'a mut [u8; 32]) -> &'a str {
+pub fn format_company(id: u16, buf: &mut [u8; 32]) -> &str {
     if let Some(name) = company_name(id) {
         return name;
     }
