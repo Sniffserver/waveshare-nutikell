@@ -639,6 +639,8 @@ async fn main(_spawner: Spawner) {
             );
         }
     }
+    // Power down immediately after sampling to save ~2.5 mA while Wi-Fi and BLE initialize.
+    let _ = imu.power_down();
 
     // === SD Card (SPI3) ===
     println!("[SD] Init...");

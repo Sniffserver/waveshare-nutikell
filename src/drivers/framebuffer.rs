@@ -118,52 +118,10 @@ impl Framebuffer {
 
     /// Flush only a rectangular region (dirty rect optimization).
     pub fn flush_region(&self, display: &mut Co5300Display<'_>, x: u16, y: u16, w: u16, h: u16) {
-        if w == 0 || h == 0 {
+        let Some((x0, y0, flush_w, flush_h)) = align_to_even_region(x, y, w, h) else {
             return;
-        }
+        };
 
-        // The CO5300 is happier with even-aligned partial writes.
-        // Expand the dirty rect to an even 2x2-aligned region before streaming rows.
-        let mut x0 = (x as usize).min(WIDTH.saturating_sub(1));
-        let mut y0 = (y as usize).min(HEIGHT.saturating_sub(1));
-        let mut x1 = ((x as usize).saturating_add(w as usize)).min(WIDTH);
-        let mut y1 = ((y as usize).saturating_add(h as usize)).min(HEIGHT);
-
-        x0 &= !1;
-        y0 &= !1;
-        if x1 & 1 != 0 && x1 < WIDTH {
-            x1 += 1;
-        }
-        if y1 & 1 != 0 && y1 < HEIGHT {
-            y1 += 1;
-        }
-
-        if x1 <= x0 {
-            x1 = (x0 + 2).min(WIDTH);
-        }
-        if y1 <= y0 {
-            y1 = (y0 + 2).min(HEIGHT);
-        }
-
-        let flush_w = (x1 - x0).max(2).min(WIDTH - x0);
-        let flush_h = (y1 - y0).max(2).min(HEIGHT - y0);
-
-        if flush_w < 2 {
-            if x0 >= 1 {
-                x0 -= 1;
-            } else {
-                x1 = (x1 + 1).min(WIDTH);
-            }
-        }
-        if flush_h < 2 {
-            if y0 >= 1 {
-                y0 -= 1;
-            } else {
-                y1 = (y1 + 1).min(HEIGHT);
-            }
-        }
-        let flush_w = (x1 - x0).min(WIDTH - x0);
-        let flush_h = (y1 - y0).min(HEIGHT - y0);
         if display
             .set_addr_window(x0 as u16, y0 as u16, flush_w as u16, flush_h as u16)
             .is_err()
