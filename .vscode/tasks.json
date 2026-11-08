@@ -4,7 +4,7 @@
     {
       "label": "Rust: check release",
       "type": "shell",
-      "command": "cargo check --release",
+      "command": "source \"$HOME/export-esp.sh\" && cargo --config .cargo/esp32-ci.toml check --release --target xtensa-esp32s3-none-elf --features firmware --locked",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -16,7 +16,7 @@
     {
       "label": "Rust: build release",
       "type": "shell",
-      "command": "cargo build --release",
+      "command": "source \"$HOME/export-esp.sh\" && cargo --config .cargo/esp32-ci.toml build --release --target xtensa-esp32s3-none-elf --features firmware --locked",
       "options": {
         "cwd": "${workspaceFolder}"
       },
