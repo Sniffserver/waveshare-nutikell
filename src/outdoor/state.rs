@@ -247,8 +247,12 @@ pub fn haversine_distance_m(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> f32 {
 }
 
 /// Convenience entry point matching GATT write callback
-pub fn on_position_write(state: &mut OutdoorState, data: &[u8], now_unix: i64) {
-    let _ = state.handle_position_write(data, now_unix);
+pub fn on_position_write(
+    state: &mut OutdoorState,
+    data: &[u8],
+    now_unix: i64,
+) -> Result<(), PositionError> {
+    state.handle_position_write(data, now_unix)
 }
 
 // ── Unit tests ─────────────────────────────────────────────────────────────
@@ -256,6 +260,16 @@ pub fn on_position_write(state: &mut OutdoorState, data: &[u8], now_unix: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_position_write_returns_error_without_mutating_state() {
+        let mut state = OutdoorState::new();
+
+        assert!(on_position_write(&mut state, &[], 1_798_000_000).is_err());
+        assert!(!state.ble_connected);
+        assert!(!state.gps_valid);
+        assert_eq!(state.last_sequence, 0);
+    }
 
     #[test]
     fn battery_telemetry_update() {

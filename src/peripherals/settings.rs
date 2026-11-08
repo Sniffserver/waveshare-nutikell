@@ -47,9 +47,31 @@ const HEADER_LEN: usize = 12; // magic(4) + version(4) + crc(4)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsStorageError {
+    Read,
     Erase,
     Write,
     VerifyFailed,
+}
+
+pub trait SettingsFlash {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), SettingsStorageError>;
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), SettingsStorageError>;
+    fn erase(&mut self, from: u32, to: u32) -> Result<(), SettingsStorageError>;
+}
+
+#[cfg(target_arch = "xtensa")]
+impl SettingsFlash for FlashStorage {
+    fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), SettingsStorageError> {
+        ReadNorFlash::read(self, offset, bytes).map_err(|_| SettingsStorageError::Read)
+    }
+
+    fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), SettingsStorageError> {
+        NorFlash::write(self, offset, bytes).map_err(|_| SettingsStorageError::Write)
+    }
+
+    fn erase(&mut self, from: u32, to: u32) -> Result<(), SettingsStorageError> {
+        NorFlash::erase(self, from, to).map_err(|_| SettingsStorageError::Erase)
+    }
 }
 
 // ── CRC32 (no-alloc, no external crate) ────────────────────────────────────
@@ -197,46 +219,43 @@ fn decode_sector(buf: &[u8; SECTOR_SIZE as usize]) -> Option<WatchSettings> {
 
 // ── Flash I/O (xtensa only) ──────────────────────────────────────────────────
 
-#[cfg(target_arch = "xtensa")]
-fn try_read_slot(storage: &mut FlashStorage, offset: u32) -> Option<WatchSettings> {
+fn try_read_slot<F: SettingsFlash>(storage: &mut F, offset: u32) -> Option<WatchSettings> {
     let mut buf = alloc::boxed::Box::new([0u8; SECTOR_SIZE as usize]);
     storage.read(offset, buf.as_mut()).ok()?;
     decode_sector(&buf)
 }
 
-/// Load settings from flash. Returns defaults if both slots are invalid.
-#[cfg(target_arch = "xtensa")]
-pub fn load_settings() -> WatchSettings {
-    let mut storage = FlashStorage::new();
-
+/// Load settings from storage. Returns defaults if both slots are invalid.
+pub fn load_settings_from<F: SettingsFlash>(storage: &mut F) -> WatchSettings {
     // Try slot A first (primary)
-    if let Some(s) = try_read_slot(&mut storage, SLOT_A) {
+    if let Some(s) = try_read_slot(storage, SLOT_A) {
         return s;
     }
 
     // Try slot B (backup / partially-written recovery)
-    if let Some(s) = try_read_slot(&mut storage, SLOT_B) {
+    if let Some(s) = try_read_slot(storage, SLOT_B) {
         // Restore slot A from valid slot B
-        let _ = restore_from_backup(&mut storage, s);
+        let _ = restore_from_backup(storage, s);
         return s;
     }
 
     WatchSettings::default()
 }
 
+/// Load settings from the device flash.
 #[cfg(target_arch = "xtensa")]
-fn restore_from_backup(
-    storage: &mut FlashStorage,
-    s: WatchSettings,
+pub fn load_settings() -> WatchSettings {
+    load_settings_from(&mut FlashStorage::new())
+}
+
+fn restore_from_backup<F: SettingsFlash>(
+    storage: &mut F,
+    settings: WatchSettings,
 ) -> Result<(), SettingsStorageError> {
-    let sector = encode_sector(s);
-    storage
-        .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
-        .map_err(|_| SettingsStorageError::Erase)?;
-    storage
-        .write(SLOT_A, sector.as_ref())
-        .map_err(|_| SettingsStorageError::Write)?;
-    if try_read_slot(storage, SLOT_A) == Some(s) {
+    let sector = encode_sector(settings);
+    storage.erase(SLOT_A, SLOT_A + SECTOR_SIZE)?;
+    storage.write(SLOT_A, sector.as_ref())?;
+    if try_read_slot(storage, SLOT_A) == Some(settings) {
         Ok(())
     } else {
         Err(SettingsStorageError::VerifyFailed)
@@ -246,49 +265,46 @@ fn restore_from_backup(
 /// Persist settings atomically using the two-slot scheme.
 ///
 /// Returns `Ok(())` on success. On error the previous slot A remains intact.
-#[cfg(target_arch = "xtensa")]
-pub fn save_settings(settings: WatchSettings) -> Result<(), SettingsStorageError> {
-    let mut storage = FlashStorage::new();
+pub fn save_settings_to<F: SettingsFlash>(
+    storage: &mut F,
+    settings: WatchSettings,
+) -> Result<(), SettingsStorageError> {
     let sector = encode_sector(settings);
 
     // Step 1: Write to slot B (staging)
-    storage
-        .erase(SLOT_B, SLOT_B + SECTOR_SIZE)
-        .map_err(|_| SettingsStorageError::Erase)?;
-    storage
-        .write(SLOT_B, sector.as_ref())
-        .map_err(|_| SettingsStorageError::Write)?;
+    storage.erase(SLOT_B, SLOT_B + SECTOR_SIZE)?;
+    storage.write(SLOT_B, sector.as_ref())?;
 
     // Step 2: Verify slot B read-back
-    if try_read_slot(&mut storage, SLOT_B) != Some(settings) {
+    if try_read_slot(storage, SLOT_B) != Some(settings) {
         return Err(SettingsStorageError::VerifyFailed);
     }
 
     // Step 3: Promote to slot A
-    storage
-        .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
-        .map_err(|_| SettingsStorageError::Erase)?;
-    storage
-        .write(SLOT_A, sector.as_ref())
-        .map_err(|_| SettingsStorageError::Write)?;
-    if try_read_slot(&mut storage, SLOT_A) == Some(settings) {
+    storage.erase(SLOT_A, SLOT_A + SECTOR_SIZE)?;
+    storage.write(SLOT_A, sector.as_ref())?;
+    if try_read_slot(storage, SLOT_A) == Some(settings) {
         Ok(())
     } else {
         Err(SettingsStorageError::VerifyFailed)
     }
 }
 
+#[cfg(target_arch = "xtensa")]
+pub fn save_settings(settings: WatchSettings) -> Result<(), SettingsStorageError> {
+    save_settings_to(&mut FlashStorage::new(), settings)
+}
+
 /// Erase both slots (factory reset of settings).
+pub fn erase_settings_from<F: SettingsFlash>(storage: &mut F) -> Result<(), SettingsStorageError> {
+    storage.erase(SLOT_A, SLOT_A + SECTOR_SIZE)?;
+    storage.erase(SLOT_B, SLOT_B + SECTOR_SIZE)?;
+    Ok(())
+}
+
 #[cfg(target_arch = "xtensa")]
 pub fn erase_settings() -> Result<(), SettingsStorageError> {
-    let mut storage = FlashStorage::new();
-    storage
-        .erase(SLOT_A, SLOT_A + SECTOR_SIZE)
-        .map_err(|_| SettingsStorageError::Erase)?;
-    storage
-        .erase(SLOT_B, SLOT_B + SECTOR_SIZE)
-        .map_err(|_| SettingsStorageError::Erase)?;
-    Ok(())
+    erase_settings_from(&mut FlashStorage::new())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -296,6 +312,82 @@ pub fn erase_settings() -> Result<(), SettingsStorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
+    use std::vec::Vec;
+
+    struct FakeFlash {
+        bytes: Vec<u8>,
+        writes: usize,
+        fail_write_at: Option<usize>,
+        erases: usize,
+        fail_erase_at: Option<usize>,
+        corrupt_read_offset: Option<u32>,
+    }
+
+    impl FakeFlash {
+        fn new() -> Self {
+            Self {
+                bytes: vec![0xFF; SETTINGS_B.end() as usize],
+                writes: 0,
+                fail_write_at: None,
+                erases: 0,
+                fail_erase_at: None,
+                corrupt_read_offset: None,
+            }
+        }
+    }
+
+    impl SettingsFlash for FakeFlash {
+        fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), SettingsStorageError> {
+            let start = offset as usize;
+            let end = start
+                .checked_add(bytes.len())
+                .ok_or(SettingsStorageError::Read)?;
+            let source = self
+                .bytes
+                .get(start..end)
+                .ok_or(SettingsStorageError::Read)?;
+            bytes.copy_from_slice(source);
+            if self.corrupt_read_offset == Some(offset) && !bytes.is_empty() {
+                bytes[0] ^= 0xFF;
+            }
+            Ok(())
+        }
+
+        fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), SettingsStorageError> {
+            self.writes += 1;
+            if self.fail_write_at == Some(self.writes) {
+                return Err(SettingsStorageError::Write);
+            }
+            let start = offset as usize;
+            let end = start
+                .checked_add(bytes.len())
+                .ok_or(SettingsStorageError::Write)?;
+            let target = self
+                .bytes
+                .get_mut(start..end)
+                .ok_or(SettingsStorageError::Write)?;
+            for (stored, &next) in target.iter_mut().zip(bytes) {
+                if (*stored & next) != next {
+                    return Err(SettingsStorageError::Write);
+                }
+                *stored = next;
+            }
+            Ok(())
+        }
+
+        fn erase(&mut self, from: u32, to: u32) -> Result<(), SettingsStorageError> {
+            self.erases += 1;
+            if self.fail_erase_at == Some(self.erases) {
+                return Err(SettingsStorageError::Erase);
+            }
+            self.bytes
+                .get_mut(from as usize..to as usize)
+                .ok_or(SettingsStorageError::Erase)?
+                .fill(0xFF);
+            Ok(())
+        }
+    }
 
     #[test]
     fn encode_decode_roundtrip() {
@@ -363,5 +455,155 @@ mod tests {
     fn blob_size_matches_constant() {
         let s = WatchSettings::default();
         assert_eq!(s.to_bytes().len(), BLOB_LEN);
+    }
+
+    #[test]
+    fn failed_staging_write_keeps_primary_settings() {
+        let original = WatchSettings::default();
+        let updated = WatchSettings {
+            timezone_offset_mins: 120,
+            ..original
+        };
+        let mut flash = FakeFlash::new();
+        save_settings_to(&mut flash, original).unwrap();
+        flash.fail_write_at = Some(flash.writes + 1);
+
+        assert_eq!(
+            save_settings_to(&mut flash, updated),
+            Err(SettingsStorageError::Write)
+        );
+        flash.fail_write_at = None;
+        assert_eq!(load_settings_from(&mut flash), original);
+    }
+
+    #[test]
+    fn interrupted_primary_promotion_recovers_verified_staging_slot() {
+        let original = WatchSettings::default();
+        let updated = WatchSettings {
+            timezone_offset_mins: 120,
+            ..original
+        };
+        let mut flash = FakeFlash::new();
+        save_settings_to(&mut flash, original).unwrap();
+        flash.fail_write_at = Some(flash.writes + 2);
+
+        assert_eq!(
+            save_settings_to(&mut flash, updated),
+            Err(SettingsStorageError::Write)
+        );
+        flash.fail_write_at = None;
+        assert_eq!(load_settings_from(&mut flash), updated);
+
+        let mut primary = [0; SECTOR_SIZE as usize];
+        flash.read(SLOT_A, &mut primary).unwrap();
+        assert_eq!(decode_sector(&primary), Some(updated));
+    }
+
+    #[test]
+    fn failed_staging_erase_keeps_primary_settings() {
+        let original = WatchSettings::default();
+        let updated = WatchSettings {
+            timezone_offset_mins: 120,
+            ..original
+        };
+        let mut flash = FakeFlash::new();
+        save_settings_to(&mut flash, original).unwrap();
+        flash.fail_erase_at = Some(flash.erases + 1);
+
+        assert_eq!(
+            save_settings_to(&mut flash, updated),
+            Err(SettingsStorageError::Erase)
+        );
+        flash.fail_erase_at = None;
+        assert_eq!(load_settings_from(&mut flash), original);
+    }
+
+    #[test]
+    fn failed_staging_verify_keeps_primary_settings() {
+        let original = WatchSettings::default();
+        let updated = WatchSettings {
+            timezone_offset_mins: 120,
+            ..original
+        };
+        let mut flash = FakeFlash::new();
+        save_settings_to(&mut flash, original).unwrap();
+        flash.corrupt_read_offset = Some(SLOT_B);
+
+        assert_eq!(
+            save_settings_to(&mut flash, updated),
+            Err(SettingsStorageError::VerifyFailed)
+        );
+        flash.corrupt_read_offset = None;
+        assert_eq!(load_settings_from(&mut flash), original);
+    }
+
+    #[test]
+    fn interrupted_primary_erase_keeps_primary_or_recovers_staging() {
+        let original = WatchSettings::default();
+        let updated = WatchSettings {
+            timezone_offset_mins: 120,
+            ..original
+        };
+        let mut flash = FakeFlash::new();
+        save_settings_to(&mut flash, original).unwrap();
+        // Erase 1 was during original save. Next save: erase 1 is Slot B, erase 2 is Slot A.
+        flash.fail_erase_at = Some(flash.erases + 2);
+
+        assert_eq!(
+            save_settings_to(&mut flash, updated),
+            Err(SettingsStorageError::Erase)
+        );
+        flash.fail_erase_at = None;
+        // Since erase failed before mutating Slot A, Slot A safely retains original:
+        assert_eq!(load_settings_from(&mut flash), original);
+
+        // If power loss corrupted Slot A during the erase operation:
+        flash.bytes[SLOT_A as usize] = 0x00;
+        assert_eq!(load_settings_from(&mut flash), updated);
+    }
+
+    #[test]
+    fn corrupted_primary_verify_recovers_verified_staging_slot() {
+        let original = WatchSettings::default();
+        let updated = WatchSettings {
+            timezone_offset_mins: 120,
+            ..original
+        };
+        let mut flash = FakeFlash::new();
+        save_settings_to(&mut flash, original).unwrap();
+        flash.corrupt_read_offset = Some(SLOT_A);
+
+        assert_eq!(
+            save_settings_to(&mut flash, updated),
+            Err(SettingsStorageError::VerifyFailed)
+        );
+        flash.corrupt_read_offset = None;
+        assert_eq!(load_settings_from(&mut flash), updated);
+    }
+
+    #[test]
+    fn both_slots_corrupt_returns_default_settings() {
+        let mut flash = FakeFlash::new();
+        flash.bytes.fill(0x00);
+        assert_eq!(load_settings_from(&mut flash), WatchSettings::default());
+    }
+
+    #[test]
+    fn recovery_from_backup_restores_primary() {
+        let target = WatchSettings {
+            timezone_offset_mins: 180,
+            ..WatchSettings::default()
+        };
+        let mut flash = FakeFlash::new();
+        // Write valid encoded sector to slot B only
+        let sector = encode_sector(target);
+        flash.write(SLOT_B, sector.as_ref()).unwrap();
+
+        assert_eq!(load_settings_from(&mut flash), target);
+
+        // Verify slot A was restored
+        let mut primary = [0; SECTOR_SIZE as usize];
+        flash.read(SLOT_A, &mut primary).unwrap();
+        assert_eq!(decode_sector(&primary), Some(target));
     }
 }

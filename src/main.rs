@@ -314,6 +314,12 @@ fn report_display(result: Result<(), DisplayError>) {
     }
 }
 
+fn persist_watch_settings(settings: crate::peripherals::settings::WatchSettings) {
+    if let Err(error) = crate::peripherals::settings::save_settings(settings) {
+        println!("[SETTINGS] persistent save failed: {:?}", error);
+    }
+}
+
 // NTP sync — returns a parsed DateTime on success, Err(()) on failure.
 // Called by ntp_task; runs fully off the main loop.
 async fn ntp_sync_inner(
@@ -487,11 +493,9 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     // Reserve a bounded internal heap and keep large allocations in PSRAM.
-    // The ESP32-S3 data region is shared with Wi-Fi/radio statics, so a 320 KiB
-    // heap leaves no room for the firmware image to link. 160 KiB preserves
-    // radio headroom for BLE + WiFi while the framebuffer and application allocations use
-    // the PSRAM allocator below.
-    esp_alloc::heap_allocator!(size: 160 * 1024);
+    // 140 KiB preserves radio headroom for BLE + WiFi and gives the CPU0 boot stack
+    // ~25 KiB of headroom, preventing stack guard panics during radio initialization.
+    esp_alloc::heap_allocator!(size: 140 * 1024);
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
@@ -1410,7 +1414,9 @@ async fn main(_spawner: Spawner) {
             let encoded = packet.encode();
             let now_unix = calendar_to_unix(outdoor_state.date_ymd, outdoor_state.time_hms)
                 .unwrap_or(packet.timestamp_unix);
-            let _ = outdoor_state.handle_position_write(&encoded, now_unix);
+            if let Err(error) = outdoor_state.handle_position_write(&encoded, now_unix) {
+                println!("[OUTDOOR] position packet rejected: {:?}", error);
+            }
         }
         let dt_ms = (now - last_frame).as_millis() as u32;
         last_frame = now;
@@ -1593,7 +1599,7 @@ async fn main(_spawner: Spawner) {
                 watchface.wifi_on = true;
                 wifi_task_running = true;
                 watch_settings.wifi_enabled = true;
-                let _ = crate::peripherals::settings::save_settings(watch_settings);
+                persist_watch_settings(watch_settings);
                 if let Ok(token) = wifi_connect_task() {
                     _spawner.spawn(token);
                 }
@@ -1608,7 +1614,7 @@ async fn main(_spawner: Spawner) {
                 watchface.wifi_connected = false;
                 ntp_synced = false;
                 watch_settings.wifi_enabled = false;
-                let _ = crate::peripherals::settings::save_settings(watch_settings);
+                persist_watch_settings(watch_settings);
             }
         }
 
@@ -2001,7 +2007,7 @@ async fn main(_spawner: Spawner) {
 
         if work_tracker.hourly_rate_cents != watch_settings.hourly_rate_cents {
             watch_settings.hourly_rate_cents = work_tracker.hourly_rate_cents;
-            let _ = crate::peripherals::settings::save_settings(watch_settings);
+            persist_watch_settings(watch_settings);
         }
 
         // Settings owns the editing UX; the main loop owns radio lifecycle and
@@ -2016,7 +2022,7 @@ async fn main(_spawner: Spawner) {
                 Ok(()) => {
                     settings_app.set_stored_ssid(config.ssid_str());
                     watch_settings.wifi_enabled = true;
-                    let _ = crate::peripherals::settings::save_settings(watch_settings);
+                    persist_watch_settings(watch_settings);
 
                     // If the connect task is running, tell it to stop so we
                     // can reconfigure the controller for the new SSID.
@@ -2122,6 +2128,22 @@ async fn main(_spawner: Spawner) {
                 aod_last_minute = minute;
             }
         } else if screen_state >= 2 && (page_dirty || now >= next_watchface_flush) {
+            let workload_interval_ms = if matches!(
+                app_state,
+                AppState::Snake
+                    | AppState::Game2048
+                    | AppState::Tetris
+                    | AppState::Flappy
+                    | AppState::Maze
+            ) || (app_state == AppState::Watchface
+                && current_page == Page::Clock
+                && watchface.gyro_enabled)
+            {
+                33
+            } else {
+                100
+            };
+            let render_interval_ms = policy.effective_display_interval_ms(workload_interval_ms);
             let watchface_outcome = match app_state {
                 AppState::Watchface => Some(watchface.render(&mut fb)),
                 AppState::Launcher => {
@@ -2184,9 +2206,7 @@ async fn main(_spawner: Spawner) {
             if is_game {
                 report_display(fb.swap_and_flush(&mut display, &mut te_pin).await);
                 page_dirty = false;
-                let policy_interval_ms = policy.display_interval_ms().unwrap_or(33);
-                next_watchface_flush =
-                    now + Duration::from_millis(core::cmp::max(33, policy_interval_ms));
+                next_watchface_flush = now + Duration::from_millis(render_interval_ms);
             } else if let Some(outcome) = watchface_outcome {
                 match outcome {
                     Ok(outcome) if outcome.full_redraw => report_display(fb.flush(&mut display)),
@@ -2212,15 +2232,11 @@ async fn main(_spawner: Spawner) {
                     Err(error) => report_display(Err(error)),
                 }
                 page_dirty = false;
-                let policy_interval_ms = policy.display_interval_ms().unwrap_or(100);
-                next_watchface_flush =
-                    now + Duration::from_millis(core::cmp::max(100, policy_interval_ms));
+                next_watchface_flush = now + Duration::from_millis(render_interval_ms);
             } else {
                 report_display(fb.flush(&mut display));
                 page_dirty = false;
-                let policy_interval_ms = policy.display_interval_ms().unwrap_or(100);
-                next_watchface_flush =
-                    now + Duration::from_millis(core::cmp::max(100, policy_interval_ms));
+                next_watchface_flush = now + Duration::from_millis(render_interval_ms);
             }
         }
     }

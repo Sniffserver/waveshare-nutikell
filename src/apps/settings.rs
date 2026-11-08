@@ -31,6 +31,7 @@ pub struct SettingsApp {
     editing: bool,
     connect_requested: bool,
     settings_changed: bool,
+    settings_save_failed: bool,
 }
 
 impl SettingsApp {
@@ -46,6 +47,7 @@ impl SettingsApp {
             editing: false,
             connect_requested: false,
             settings_changed: false,
+            settings_save_failed: false,
         }
     }
 
@@ -62,6 +64,11 @@ impl SettingsApp {
         } else {
             None
         }
+    }
+
+    fn persist_settings(&mut self) {
+        self.settings_save_failed = save_settings(self.watch_settings).is_err();
+        self.settings_changed = true;
     }
 
     pub fn set_stored_ssid(&mut self, ssid: &str) {
@@ -143,15 +150,13 @@ impl SettingsApp {
                 // Decrement timezone by 1 hour (down to -12h = -720m)
                 self.watch_settings.timezone_offset_mins =
                     (self.watch_settings.timezone_offset_mins - 60).max(-720);
-                let _ = save_settings(self.watch_settings);
-                self.settings_changed = true;
+                self.persist_settings();
                 return true;
             } else if x >= 290 && x <= 370 {
                 // Increment timezone by 1 hour (up to +14h = +840m)
                 self.watch_settings.timezone_offset_mins =
                     (self.watch_settings.timezone_offset_mins + 60).min(840);
-                let _ = save_settings(self.watch_settings);
-                self.settings_changed = true;
+                self.persist_settings();
                 return true;
             }
         }
@@ -159,8 +164,7 @@ impl SettingsApp {
         // 24H Clock toggle: y in 366..412 && x in 40..370
         if !self.keyboard.is_active() && y >= 366 && y <= 412 && x >= 40 && x <= 370 {
             self.watch_settings.clock_24h = !self.watch_settings.clock_24h;
-            let _ = save_settings(self.watch_settings);
-            self.settings_changed = true;
+            self.persist_settings();
             return true;
         }
 
@@ -410,7 +414,155 @@ impl SettingsApp {
         )
         .draw(d);
 
+        if self.settings_save_failed {
+            let _ = Text::with_alignment(
+                "SETTINGS NOT SAVED",
+                EgPoint::new(205, 438),
+                MonoTextStyle::new(&FONT_10X20, Rgb565::RED),
+                Alignment::Center,
+            )
+            .draw(d);
+        }
+
         // Draw keyboard overlay if active
         self.keyboard.render(d);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_graphics::geometry::Size;
+    use embedded_graphics::pixelcolor::Rgb565;
+    use embedded_graphics::prelude::*;
+
+    struct MockDisplay {
+        red_pixels_drawn: usize,
+    }
+
+    impl MockDisplay {
+        fn new() -> Self {
+            Self {
+                red_pixels_drawn: 0,
+            }
+        }
+    }
+
+    impl OriginDimensions for MockDisplay {
+        fn size(&self) -> Size {
+            Size::new(410, 502)
+        }
+    }
+
+    impl DrawTarget for MockDisplay {
+        type Color = Rgb565;
+        type Error = core::convert::Infallible;
+
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(_, color) in pixels {
+                if color == Rgb565::RED {
+                    self.red_pixels_drawn += 1;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn settings_save_failure_displays_red_warning() {
+        let mut app = SettingsApp::new();
+        let mut display = MockDisplay::new();
+
+        // When save has not failed:
+        app.render(&mut display);
+        assert_eq!(display.red_pixels_drawn, 0);
+
+        // When save failed:
+        app.settings_save_failed = true;
+        let mut fail_display = MockDisplay::new();
+        app.render(&mut fail_display);
+        // "SETTINGS NOT SAVED" is drawn in red:
+        assert!(fail_display.red_pixels_drawn > 0);
+    }
+
+    #[test]
+    fn settings_app_lifecycle_and_updates() {
+        let mut app = SettingsApp::with_settings(WatchSettings {
+            clock_24h: false,
+            ..WatchSettings::default()
+        });
+        assert!(!app.watch_settings.clock_24h);
+        assert_eq!(app.take_settings_update(), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_graphics::geometry::Size;
+    use embedded_graphics::pixelcolor::Rgb565;
+    use embedded_graphics::prelude::*;
+
+    struct MockDisplay {
+        red_pixels_drawn: usize,
+    }
+
+    impl MockDisplay {
+        fn new() -> Self {
+            Self { red_pixels_drawn: 0 }
+        }
+    }
+
+    impl OriginDimensions for MockDisplay {
+        fn size(&self) -> Size {
+            Size::new(410, 502)
+        }
+    }
+
+    impl DrawTarget for MockDisplay {
+        type Color = Rgb565;
+        type Error = core::convert::Infallible;
+
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(_, color) in pixels {
+                if color == Rgb565::RED {
+                    self.red_pixels_drawn += 1;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn settings_save_failure_displays_red_warning() {
+        let mut app = SettingsApp::new();
+        let mut display = MockDisplay::new();
+
+        // When save has not failed:
+        app.render(&mut display);
+        assert_eq!(display.red_pixels_drawn, 0);
+
+        // When save failed:
+        app.settings_save_failed = true;
+        let mut fail_display = MockDisplay::new();
+        app.render(&mut fail_display);
+        // "SETTINGS NOT SAVED" is drawn in red:
+        assert!(fail_display.red_pixels_drawn > 0);
+    }
+
+    #[test]
+    fn settings_app_lifecycle_and_updates() {
+        let mut app = SettingsApp::with_settings(WatchSettings {
+            clock_24h: false,
+            ..WatchSettings::default()
+        });
+        assert!(!app.watch_settings.clock_24h);
+        assert_eq!(app.take_settings_update(), None);
     }
 }

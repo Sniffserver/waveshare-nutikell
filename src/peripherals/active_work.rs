@@ -307,28 +307,30 @@ const V4_START_DATE_DAY_OFFSET: usize = V4_START_DATE_MONTH_OFFSET + 1;
 const V4_START_TIME_HOUR_OFFSET: usize = V4_START_DATE_DAY_OFFSET + 1;
 const V4_START_TIME_MINUTE_OFFSET: usize = V4_START_TIME_HOUR_OFFSET + 1;
 const V4_START_TIME_SECOND_OFFSET: usize = V4_START_TIME_MINUTE_OFFSET + 1;
-const V4_PAYLOAD_RESERVED_OFFSET: usize = V4_START_TIME_SECOND_OFFSET + 1;
-const V4_HOURLY_RATE_OFFSET: usize = V4_PAYLOAD_RESERVED_OFFSET + 1;
+/// Session mode / pause state field (`0xFE` = `V4_SESSION_WORKING`, `0xFC` = `V4_SESSION_PAUSED`, with legacy `0xFF` supported).
+pub const V4_PAUSE_STATE_OFFSET: usize = V4_START_TIME_SECOND_OFFSET + 1;
+pub const V4_PAYLOAD_RESERVED_OFFSET: usize = V4_PAUSE_STATE_OFFSET;
+const V4_HOURLY_RATE_OFFSET: usize = V4_PAUSE_STATE_OFFSET + 1;
 const V4_HOURLY_RATE_LEN: usize = 4;
 const V4_CRC_OFFSET: usize = V4_HOURLY_RATE_OFFSET + V4_HOURLY_RATE_LEN;
 const V4_CRC_LEN: usize = 4;
 const V4_COMMIT_MARKER_OFFSET: usize = V4_CRC_OFFSET + V4_CRC_LEN;
 const V4_COMMIT_MARKER_LEN: usize = 4;
-const V4_TRAILING_RESERVED_OFFSET: usize = V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN;
-const V4_TRAILING_RESERVED_LEN: usize = V4_RECORD_LEN - V4_TRAILING_RESERVED_OFFSET;
+const V4_TRAILING_PAYLOAD_OFFSET: usize = V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN;
+const V4_TRAILING_PAYLOAD_LEN: usize = V4_RECORD_LEN - V4_TRAILING_PAYLOAD_OFFSET;
 const V4_SESSION_WORKING: u8 = 0xFE;
 const V4_SESSION_PAUSED: u8 = 0xFC;
 const V4_IMMUTABLE_PAYLOAD_LEN: usize =
     V4_VERSION_OFFSET + 1 + V4_CRC_OFFSET - V4_PREFIX_RESERVED_OFFSET;
 
 fn v4_payload_crc(raw: &[u8; V4_RECORD_LEN]) -> u32 {
-    let mut payload = [0u8; V4_IMMUTABLE_PAYLOAD_LEN + V4_TRAILING_RESERVED_LEN];
+    let mut payload = [0u8; V4_IMMUTABLE_PAYLOAD_LEN + V4_TRAILING_PAYLOAD_LEN];
     let header_len = V4_VERSION_OFFSET + 1;
     payload[..header_len].copy_from_slice(&raw[V4_MAGIC_OFFSET..header_len]);
     payload[header_len..V4_IMMUTABLE_PAYLOAD_LEN]
         .copy_from_slice(&raw[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]);
     if raw[V4_PAYLOAD_RESERVED_OFFSET] != 0xFF {
-        payload[V4_IMMUTABLE_PAYLOAD_LEN..].copy_from_slice(&raw[V4_TRAILING_RESERVED_OFFSET..]);
+        payload[V4_IMMUTABLE_PAYLOAD_LEN..].copy_from_slice(&raw[V4_TRAILING_PAYLOAD_OFFSET..]);
         crc32(&payload)
     } else {
         crc32(&payload[..V4_IMMUTABLE_PAYLOAD_LEN])
@@ -336,8 +338,13 @@ fn v4_payload_crc(raw: &[u8; V4_RECORD_LEN]) -> u32 {
 }
 
 /// Encode a V4 session into a 64-byte record.
-/// All reserved and state bytes are initialized to 0xFF.
-/// CRC is computed over immutable payload bytes only (excludes state, CRC, commit marker, trailing reserved).
+///
+/// Unassigned reserved bytes (`V4_PREFIX_RESERVED_OFFSET..V4_PREFIX_RESERVED_OFFSET + V4_PREFIX_RESERVED_LEN`)
+/// and the commit state start at 0xFF.
+/// The `V4_PAUSE_STATE_OFFSET` byte is an explicit format field storing the session mode
+/// (`0xFE` = `V4_SESSION_WORKING`, `0xFC` = `V4_SESSION_PAUSED`, with legacy `0xFF` supported).
+/// CRC covers immutable data and, for V4 records, trailing break/pause metadata.
+/// It excludes mutable state, the CRC itself, and the commit marker.
 pub fn v4_encode(session: V4ActiveWorkSession) -> [u8; V4_RECORD_LEN] {
     let mut raw = [0xFF; V4_RECORD_LEN];
 
@@ -364,9 +371,9 @@ pub fn v4_encode(session: V4ActiveWorkSession) -> [u8; V4_RECORD_LEN] {
     raw[V4_START_TIME_SECOND_OFFSET] = session.start_time_hms.2;
     raw[V4_HOURLY_RATE_OFFSET..V4_HOURLY_RATE_OFFSET + V4_HOURLY_RATE_LEN]
         .copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
-    raw[V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + 4]
+    raw[V4_TRAILING_PAYLOAD_OFFSET..V4_TRAILING_PAYLOAD_OFFSET + 4]
         .copy_from_slice(&session.break_secs.to_le_bytes());
-    raw[V4_TRAILING_RESERVED_OFFSET + 4..V4_TRAILING_RESERVED_OFFSET + 12]
+    raw[V4_TRAILING_PAYLOAD_OFFSET + 4..V4_TRAILING_PAYLOAD_OFFSET + 12]
         .copy_from_slice(&session.pause_started_unix.to_le_bytes());
     let checksum = v4_payload_crc(&raw).to_le_bytes();
     raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].copy_from_slice(&checksum);
@@ -444,7 +451,7 @@ pub fn v4_decode(raw: &[u8; V4_RECORD_LEN]) -> Option<V4ActiveWorkSession> {
             0
         } else {
             u32::from_le_bytes(
-                raw[V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + 4]
+                raw[V4_TRAILING_PAYLOAD_OFFSET..V4_TRAILING_PAYLOAD_OFFSET + 4]
                     .try_into()
                     .ok()?,
             )
@@ -452,7 +459,7 @@ pub fn v4_decode(raw: &[u8; V4_RECORD_LEN]) -> Option<V4ActiveWorkSession> {
         paused: raw[V4_PAYLOAD_RESERVED_OFFSET] == V4_SESSION_PAUSED,
         pause_started_unix: if raw[V4_PAYLOAD_RESERVED_OFFSET] == V4_SESSION_PAUSED {
             i64::from_le_bytes(
-                raw[V4_TRAILING_RESERVED_OFFSET + 4..V4_TRAILING_RESERVED_OFFSET + 12]
+                raw[V4_TRAILING_PAYLOAD_OFFSET + 4..V4_TRAILING_PAYLOAD_OFFSET + 12]
                     .try_into()
                     .ok()?,
             )
@@ -625,8 +632,8 @@ fn write_v4_payload<F: ActiveWorkFlash>(
         .map_err(|_| ActiveWorkError::Io)?;
     flash
         .write(
-            slot.offset() + V4_TRAILING_RESERVED_OFFSET as u32,
-            &raw[V4_TRAILING_RESERVED_OFFSET..],
+            slot.offset() + V4_TRAILING_PAYLOAD_OFFSET as u32,
+            &raw[V4_TRAILING_PAYLOAD_OFFSET..],
         )
         .map_err(|_| ActiveWorkError::Io)
 }
@@ -683,7 +690,7 @@ fn verify_v4_payload<F: ActiveWorkFlash>(
         && actual[V4_MAGIC_OFFSET..V4_STATE_OFFSET] == expected[V4_MAGIC_OFFSET..V4_STATE_OFFSET]
         && actual[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]
             == expected[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]
-        && actual[V4_TRAILING_RESERVED_OFFSET..] == expected[V4_TRAILING_RESERVED_OFFSET..]
+        && actual[V4_TRAILING_PAYLOAD_OFFSET..] == expected[V4_TRAILING_PAYLOAD_OFFSET..]
     {
         Ok(())
     } else {
@@ -1001,6 +1008,7 @@ mod tests {
     enum Fault {
         Read(usize),
         Write(usize),
+        WriteAt(u32),
         Erase(usize),
     }
 
@@ -1074,7 +1082,9 @@ mod tests {
 
         fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()> {
             self.writes += 1;
-            if matches!(self.fault, Some(Fault::Write(n)) if n == self.writes) {
+            if matches!(self.fault, Some(Fault::Write(n)) if n == self.writes)
+                || matches!(self.fault, Some(Fault::WriteAt(target)) if target == offset)
+            {
                 return Err(());
             }
             for (stored, &next) in self.bytes[offset as usize..offset as usize + bytes.len()]
@@ -1221,7 +1231,7 @@ mod tests {
         v4_set_commit_marker(&mut raw);
         assert_eq!(v4_decode(&raw), Some(session));
 
-        raw[V4_TRAILING_RESERVED_OFFSET] ^= 1;
+        raw[V4_TRAILING_PAYLOAD_OFFSET] ^= 1;
         assert_eq!(v4_decode(&raw), None);
         assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
     }
@@ -1231,7 +1241,7 @@ mod tests {
         let session = sample_v4_session();
         let mut raw = v4_encode(session);
         raw[V4_PAYLOAD_RESERVED_OFFSET] = 0xFF;
-        raw[V4_TRAILING_RESERVED_OFFSET..].fill(0xFF);
+        raw[V4_TRAILING_PAYLOAD_OFFSET..].fill(0xFF);
         let checksum = v4_payload_crc(&raw).to_le_bytes();
         raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].copy_from_slice(&checksum);
         v4_set_state(&mut raw, STATE_COMMITTED);
@@ -1312,17 +1322,41 @@ mod tests {
 
     #[test]
     fn v4_encode_leaves_reserved_bytes_erased() {
-        let raw = v4_encode(sample_v4_session());
-        assert!(
-            raw[V4_PREFIX_RESERVED_OFFSET..V4_PREFIX_RESERVED_OFFSET + V4_PREFIX_RESERVED_LEN]
-                .iter()
-                .all(|&byte| byte == 0xFF)
-        );
-        assert_eq!(raw[V4_PAYLOAD_RESERVED_OFFSET], 0xFF);
-        assert!(raw
-            [V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + V4_TRAILING_RESERVED_LEN]
+        // 1. Working session: session mode byte is V4_SESSION_WORKING (0xFE), truly reserved prefix is 0xFF
+        let working_session = sample_v4_session();
+        let raw_working = v4_encode(working_session);
+        assert!(raw_working
+            [V4_PREFIX_RESERVED_OFFSET..V4_PREFIX_RESERVED_OFFSET + V4_PREFIX_RESERVED_LEN]
             .iter()
             .all(|&byte| byte == 0xFF));
+        assert_eq!(raw_working[V4_PAUSE_STATE_OFFSET], V4_SESSION_WORKING);
+
+        // 2. Paused session: session mode byte is V4_SESSION_PAUSED (0xFC), truly reserved prefix is 0xFF, pause data encoded
+        let paused_session = V4ActiveWorkSession {
+            break_secs: 345,
+            paused: true,
+            pause_started_unix: 1_700_000_123,
+            ..sample_v4_session()
+        };
+        let raw_paused = v4_encode(paused_session);
+        assert!(raw_paused
+            [V4_PREFIX_RESERVED_OFFSET..V4_PREFIX_RESERVED_OFFSET + V4_PREFIX_RESERVED_LEN]
+            .iter()
+            .all(|&byte| byte == 0xFF));
+        assert_eq!(raw_paused[V4_PAUSE_STATE_OFFSET], V4_SESSION_PAUSED);
+        assert_eq!(
+            &raw_paused[V4_TRAILING_PAYLOAD_OFFSET..V4_TRAILING_PAYLOAD_OFFSET + 4],
+            &paused_session.break_secs.to_le_bytes()
+        );
+        assert_eq!(
+            &raw_paused[V4_TRAILING_PAYLOAD_OFFSET + 4..V4_TRAILING_PAYLOAD_OFFSET + 12],
+            &paused_session.pause_started_unix.to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn v4_encode_preserves_reserved_bytes_and_encodes_pause_data() {
+        v4_encode_leaves_reserved_bytes_erased();
     }
 
     #[test]
@@ -1399,9 +1433,29 @@ mod tests {
 
     #[test]
     fn power_loss_after_retire_old() {
-        let mut flash = flash_with_old_record(Fault::Write(7));
+        let retire_old_state_offset = V4Slot::SlotA.offset() + V4_STATE_OFFSET as u32;
+        let mut flash = flash_with_old_record(Fault::WriteAt(retire_old_state_offset));
         assert!(save_active_session_v4_to(&mut flash, save_session(11)).is_err());
         assert_eq!(flash.recover().map(|record| record.session_id), Some(11));
+        assert_eq!(
+            load_active_session_v4_from(&mut flash)
+                .unwrap()
+                .map(|s| s.session_id),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn two_committed_records_loader_selects_highest_sequence() {
+        let mut flash = FakeFlash::new();
+        flash.store_committed(V4Slot::SlotA, 1, 10);
+        flash.store_committed(V4Slot::SlotB, 2, 11);
+        assert_eq!(
+            load_active_session_v4_from(&mut flash)
+                .unwrap()
+                .map(|s| s.session_id),
+            Some(11)
+        );
     }
 
     #[test]

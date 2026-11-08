@@ -68,14 +68,20 @@ pub fn handle_position_packet(
         return false;
     }
 
-    status.last_sequence = packet.sequence;
-    status.packets_received = status.packets_received.saturating_add(1);
-
-    let _ = outdoor.handle_position_write(
+    match outdoor.handle_position_write(
         &data[..crate::outdoor::packet::POSITION_PACKET_LEN],
         packet.timestamp_unix,
-    );
-    true
+    ) {
+        Ok(()) => {
+            status.last_sequence = packet.sequence;
+            status.packets_received = status.packets_received.saturating_add(1);
+            true
+        }
+        Err(_err) => {
+            status.packets_dropped = status.packets_dropped.saturating_add(1);
+            false
+        }
+    }
 }
 
 /// RFC 1982-style serial arithmetic for a wrapping u32 sequence number.
@@ -247,5 +253,70 @@ mod tests {
         assert!(ok2);
         assert_eq!(status.packets_received, 2);
         assert_eq!(status.last_sequence, 11);
+    }
+
+    #[test]
+    fn malformed_and_out_of_order_packets_preserve_state_and_increment_dropped() {
+        let mut status = BleStatus::new();
+        let mut outdoor = OutdoorState::new();
+        let key = b"test-only-position-key";
+
+        // Initial valid packet
+        let valid_pkt = PositionPacket {
+            version: 1,
+            flags: FLAG_COORDS_VALID,
+            sequence: 50,
+            timestamp_unix: 1718000050,
+            latitude_e7: 594370000,
+            longitude_e7: 247535000,
+            altitude_cm: 0,
+            speed_cms: 0,
+            course_cdeg: 0,
+            accuracy_cm: 200,
+        };
+        let valid_bytes = valid_pkt.encode_authenticated(key).unwrap();
+        assert!(handle_position_packet(
+            &valid_bytes,
+            key,
+            &mut status,
+            &mut outdoor
+        ));
+        assert_eq!(status.packets_received, 1);
+        assert_eq!(status.packets_dropped, 0);
+        assert_eq!(outdoor.latitude_deg, 59.437);
+        let orig_lat = outdoor.latitude_deg;
+        let orig_lon = outdoor.longitude_deg;
+
+        // 1. Out-of-order packet (sequence 40 < 50): rejected, state unchanged
+        let mut stale_pkt = valid_pkt;
+        stale_pkt.sequence = 40;
+        stale_pkt.latitude_e7 = 600000000;
+        let stale_bytes = stale_pkt.encode_authenticated(key).unwrap();
+        assert!(!handle_position_packet(
+            &stale_bytes,
+            key,
+            &mut status,
+            &mut outdoor
+        ));
+        assert_eq!(status.packets_received, 1);
+        assert_eq!(status.packets_dropped, 1);
+        assert_eq!(status.last_sequence, 50);
+        assert_eq!(outdoor.latitude_deg, orig_lat);
+        assert_eq!(outdoor.longitude_deg, orig_lon);
+
+        // 2. Malformed packet with bad HMAC: rejected, state unchanged
+        let mut bad_mac_bytes = valid_bytes;
+        bad_mac_bytes[0] ^= 0xFF;
+        assert!(!handle_position_packet(
+            &bad_mac_bytes,
+            key,
+            &mut status,
+            &mut outdoor
+        ));
+        assert_eq!(status.packets_received, 1);
+        assert_eq!(status.packets_dropped, 2);
+        assert_eq!(status.last_sequence, 50);
+        assert_eq!(outdoor.latitude_deg, orig_lat);
+        assert_eq!(outdoor.longitude_deg, orig_lon);
     }
 }

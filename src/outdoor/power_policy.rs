@@ -34,6 +34,27 @@ impl PowerPolicy {
         Self::interval_ms(self.display_fps)
     }
 
+    /// Resolve the display cap against the interval required by the workload.
+    ///
+    /// ## Separation of Timing Concerns
+    /// * `effective_display_interval_ms`: defines the **maximum display refresh rate ceiling**
+    ///   (frame limiter / render interval cap) enforced to protect the AMOLED power budget per mode.
+    /// * Loop `tick`: defines the **minimum wake / data processing cadence** calculated in `main.rs`
+    ///   for input polling, sensor sampling, and event dispatch.
+    ///
+    /// Invariants:
+    /// 1. Interactive inputs (`touch_held || button_held`) wake at ~60 Hz (16 ms) without waiting for display flushes.
+    /// 2. IMU consumer minimum frequency requirement (`imu_interval_ms(consumer_min_hz)`) is never reduced below consumer needs.
+    /// 3. Game frame rate ceiling is not degraded below 30 FPS (`effective_display_interval_ms(33)`).
+    pub const fn effective_display_interval_ms(self, workload_interval_ms: u64) -> u64 {
+        match self.display_interval_ms() {
+            Some(policy_interval_ms) if policy_interval_ms > workload_interval_ms => {
+                policy_interval_ms
+            }
+            _ => workload_interval_ms,
+        }
+    }
+
     pub const fn imu_interval_ms(self, consumer_min_hz: u8) -> Option<u64> {
         let effective_hz = if consumer_min_hz > self.imu_hz {
             consumer_min_hz
@@ -184,6 +205,7 @@ mod tests {
     #[test]
     fn policy_rates_resolve_to_maximum_intervals() {
         let active = PowerPolicy::for_mode(PowerMode::Active);
+        let nav = PowerPolicy::for_mode(PowerMode::Navigation);
         assert_eq!(active.display_interval_ms(), Some(34));
         assert_eq!(active.imu_interval_ms(0), Some(20));
         assert_eq!(active.imu_interval_ms(60), Some(17));
@@ -192,5 +214,68 @@ mod tests {
         assert_eq!(sleeping.display_interval_ms(), None);
         assert_eq!(sleeping.imu_interval_ms(0), None);
         assert_eq!(sleeping.imu_interval_ms(10), Some(100));
+
+        assert_eq!(active.effective_display_interval_ms(33), 34);
+        assert_eq!(active.effective_display_interval_ms(100), 100);
+        assert_eq!(nav.effective_display_interval_ms(50), 125);
+        assert_eq!(sleeping.effective_display_interval_ms(33), 33);
+    }
+
+    #[test]
+    fn effective_timing_combinations_preserve_invariants() {
+        let active = PowerPolicy::for_mode(PowerMode::Active);
+        let nav = PowerPolicy::for_mode(PowerMode::Navigation);
+        let idle = PowerPolicy::for_mode(PowerMode::Idle);
+        let paused = PowerPolicy::for_mode(PowerMode::Paused);
+
+        // Invariant 1: Interactive touch workload (16 ms) display flush is capped at active display interval (34 ms)
+        assert_eq!(active.effective_display_interval_ms(16), 34);
+
+        // Invariant 2: Game workload (33 ms) achieves ~30 FPS (34 ms interval) in Active mode
+        assert_eq!(active.effective_display_interval_ms(33), 34);
+
+        // Invariant 3: Navigation mode throttles display to 8 FPS (125 ms) even if workload is 33 ms or 100 ms
+        assert_eq!(nav.effective_display_interval_ms(33), 125);
+        assert_eq!(nav.effective_display_interval_ms(100), 125);
+
+        // Invariant 4: Idle / Paused throttles display to 1 FPS (1000 ms)
+        assert_eq!(idle.effective_display_interval_ms(100), 1000);
+        assert_eq!(paused.effective_display_interval_ms(100), 1000);
+
+        // Invariant 5: IMU consumer min frequency requirement is preserved across modes
+        // Step detector requires at least 20 Hz (50 ms):
+        assert_eq!(active.imu_interval_ms(20), Some(20)); // Active runs faster (50 Hz / 20 ms)
+        assert_eq!(nav.imu_interval_ms(20), Some(50)); // Nav meets consumer requirement (20 Hz / 50 ms)
+        assert_eq!(idle.imu_interval_ms(20), Some(50)); // Idle boosted to consumer requirement (20 Hz)
+        assert_eq!(paused.imu_interval_ms(20), Some(50)); // Paused boosted to consumer requirement (20 Hz)
+    }
+
+    #[test]
+    fn effective_timing_combinations_preserve_invariants() {
+        let active = PowerPolicy::for_mode(PowerMode::Active);
+        let nav = PowerPolicy::for_mode(PowerMode::Navigation);
+        let idle = PowerPolicy::for_mode(PowerMode::Idle);
+        let paused = PowerPolicy::for_mode(PowerMode::Paused);
+
+        // Invariant 1: Interactive touch workload (16 ms) display flush is capped at active display interval (34 ms)
+        assert_eq!(active.effective_display_interval_ms(16), 34);
+
+        // Invariant 2: Game workload (33 ms) achieves ~30 FPS (34 ms interval) in Active mode
+        assert_eq!(active.effective_display_interval_ms(33), 34);
+
+        // Invariant 3: Navigation mode throttles display to 8 FPS (125 ms) even if workload is 33 ms or 100 ms
+        assert_eq!(nav.effective_display_interval_ms(33), 125);
+        assert_eq!(nav.effective_display_interval_ms(100), 125);
+
+        // Invariant 4: Idle / Paused throttles display to 1 FPS (1000 ms)
+        assert_eq!(idle.effective_display_interval_ms(100), 1000);
+        assert_eq!(paused.effective_display_interval_ms(100), 1000);
+
+        // Invariant 5: IMU consumer min frequency requirement is preserved across modes
+        // Step detector requires at least 20 Hz (50 ms):
+        assert_eq!(active.imu_interval_ms(20), Some(20)); // Active runs faster (50 Hz / 20 ms)
+        assert_eq!(nav.imu_interval_ms(20), Some(50));    // Nav meets consumer requirement (20 Hz / 50 ms)
+        assert_eq!(idle.imu_interval_ms(20), Some(50));   // Idle boosted to consumer requirement (20 Hz)
+        assert_eq!(paused.imu_interval_ms(20), Some(50)); // Paused boosted to consumer requirement (20 Hz)
     }
 }
