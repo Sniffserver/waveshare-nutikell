@@ -23,9 +23,10 @@
 //    12       4   elapsed_secs: u32 le
 //    16       4   break_secs:   u32 le
 //    20       4   hourly_rate_cents: u32 le
-//    24       4   earned_cents: u32 le
+//    24       4   earned_cents low word: u32 le
 //    28       8   session_id: u64 le — deduplicates recovery after power loss
-//    36      12   Reserved / future fields
+//    36       4   earned_cents high word: u32 le (zero in legacy records)
+//    40       8   Reserved / future fields
 //
 // Write strategy: append-only. Records are committed by writing the payload
 // first and its CRC last. A reset during a write leaves an invalid record,
@@ -130,7 +131,7 @@ pub struct SessionRecord {
     /// Hourly rate in cents
     pub hourly_rate_cents: u32,
     /// Earnings in cents (pre-computed at clock-out)
-    pub earned_cents: u32,
+    pub earned_cents: u64,
 }
 
 impl SessionRecord {
@@ -148,8 +149,9 @@ impl SessionRecord {
         out[12..16].copy_from_slice(&self.elapsed_secs.to_le_bytes());
         out[16..20].copy_from_slice(&self.break_secs.to_le_bytes());
         out[20..24].copy_from_slice(&self.hourly_rate_cents.to_le_bytes());
-        out[24..28].copy_from_slice(&self.earned_cents.to_le_bytes());
+        out[24..28].copy_from_slice(&(self.earned_cents as u32).to_le_bytes());
         out[28..36].copy_from_slice(&self.session_id.to_le_bytes());
+        out[36..40].copy_from_slice(&((self.earned_cents >> 32) as u32).to_le_bytes());
         let checksum = crc32(&out[4..]);
         out[0..4].copy_from_slice(&checksum.to_le_bytes());
         out
@@ -174,7 +176,8 @@ impl SessionRecord {
             elapsed_secs: u32::from_le_bytes([raw[12], raw[13], raw[14], raw[15]]),
             break_secs: u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]),
             hourly_rate_cents: u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]),
-            earned_cents: u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]),
+            earned_cents: u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]) as u64
+                | (u32::from_le_bytes(raw[36..40].try_into().ok()?) as u64) << 32,
             session_id: u64::from_le_bytes(raw[28..36].try_into().ok()?),
         })
     }
@@ -182,6 +185,13 @@ impl SessionRecord {
     fn record_offset(slot: usize) -> u32 {
         (HEADER_SIZE + slot * RECORD_SIZE) as u32
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DailySessionSummary {
+    pub elapsed_secs: u64,
+    pub earned_cents: u64,
+    pub completed_sessions: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -303,6 +313,43 @@ fn checked_header_state<F: SessionLogFlash>(
     Ok(state)
 }
 
+/// Aggregate completed records by their stored local start date.
+pub fn summarize_day_from<F: SessionLogFlash>(
+    storage: &mut F,
+    date_ymd: (u16, u8, u8),
+) -> Result<DailySessionSummary, SessionLogError> {
+    if checked_header_state(storage)? == LogHeaderState::Empty {
+        return Ok(DailySessionSummary::default());
+    }
+
+    let mut summary = DailySessionSummary::default();
+    let mut seen_ids = [0u64; MAX_SESSION_RECORDS];
+    let mut seen_len = 0;
+    for slot in 0..MAX_SESSION_RECORDS {
+        let mut raw = [0u8; RECORD_SIZE];
+        storage
+            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+            .map_err(|_| SessionLogError::Io)?;
+        let Some(record) = SessionRecord::from_raw(&raw) else {
+            continue;
+        };
+        if seen_ids[..seen_len].contains(&record.session_id) {
+            continue;
+        }
+        seen_ids[seen_len] = record.session_id;
+        seen_len += 1;
+
+        if (record.year, record.month, record.day) == date_ymd {
+            summary.elapsed_secs = summary
+                .elapsed_secs
+                .saturating_add(record.elapsed_secs as u64);
+            summary.earned_cents = summary.earned_cents.saturating_add(record.earned_cents);
+            summary.completed_sessions = summary.completed_sessions.saturating_add(1);
+        }
+    }
+    Ok(summary)
+}
+
 /// Check for a committed record by ID using an injected flash adapter.
 pub fn contains_session_id_from<F: SessionLogFlash>(
     storage: &mut F,
@@ -354,8 +401,8 @@ pub fn next_session_id_from<F: SessionLogFlash>(storage: &mut F) -> Result<u64, 
 /// Used at boot to reconcile a power failure between log commit and clearing
 /// the active-session recovery record.
 #[cfg(target_arch = "xtensa")]
-pub fn contains_session_id(session_id: u64) -> bool {
-    contains_session_id_from(&mut FlashStorage::new(), session_id).unwrap_or(false)
+pub fn contains_session_id(session_id: u64) -> Result<bool, SessionLogError> {
+    contains_session_id_from(&mut FlashStorage::new(), session_id)
 }
 
 /// Allocate the next persisted sequence from completed records. This refuses
@@ -363,6 +410,11 @@ pub fn contains_session_id(session_id: u64) -> bool {
 #[cfg(target_arch = "xtensa")]
 pub fn next_session_id() -> Result<u64, SessionLogError> {
     next_session_id_from(&mut FlashStorage::new())
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn summarize_day(date_ymd: (u16, u8, u8)) -> Result<DailySessionSummary, SessionLogError> {
+    summarize_day_from(&mut FlashStorage::new(), date_ymd)
 }
 
 fn has_session_id(records: &[SessionRecord], session_id: u64) -> bool {
@@ -647,7 +699,7 @@ mod tests {
             elapsed_secs: elapsed,
             break_secs: 0,
             hourly_rate_cents: rate,
-            earned_cents: ((elapsed as u64 * rate as u64) / 3600) as u32,
+            earned_cents: (elapsed as u64 * rate as u64) / 3600,
             session_id: 0x1020_3040_5060_7080,
         }
     }
@@ -658,6 +710,19 @@ mod tests {
         let raw = s.to_raw();
         let recovered = SessionRecord::from_raw(&raw).expect("should decode");
         assert_eq!(recovered, s);
+    }
+
+    #[test]
+    fn earnings_high_word_roundtrips_and_legacy_zero_is_compatible() {
+        let mut s = make_session(u32::MAX, u32::MAX);
+        s.earned_cents = u64::MAX;
+        let raw = s.to_raw();
+        assert_eq!(SessionRecord::from_raw(&raw), Some(s));
+
+        let legacy = make_session(3600, 5000);
+        let legacy_raw = legacy.to_raw();
+        assert_eq!(legacy_raw[36..40], [0, 0, 0, 0]);
+        assert_eq!(SessionRecord::from_raw(&legacy_raw), Some(legacy));
     }
 
     #[test]
@@ -885,8 +950,48 @@ mod tests {
             elapsed_secs,
             break_secs: 0,
             hourly_rate_cents,
-            earned_cents: ((elapsed_secs as u64 * hourly_rate_cents as u64) / 3600) as u32,
+            earned_cents: (elapsed_secs as u64 * hourly_rate_cents as u64) / 3600,
         }
+    }
+
+    #[test]
+    fn daily_summary_uses_start_date_and_deduplicates_session_ids() {
+        let mut flash = FakeFlash::new();
+        let first = test_record(1, 1800, 5000);
+        let duplicate = SessionRecord {
+            earned_cents: 5000,
+            ..first
+        };
+        let next_day = SessionRecord {
+            session_id: 2,
+            year: 2026,
+            month: 10,
+            day: 25,
+            elapsed_secs: 3600,
+            earned_cents: 9000,
+            ..first
+        };
+        append_session_to(&mut flash, &first).unwrap();
+        flash.data[HEADER_SIZE + RECORD_SIZE..HEADER_SIZE + RECORD_SIZE * 2]
+            .copy_from_slice(&duplicate.to_raw());
+        append_session_to(&mut flash, &next_day).unwrap();
+
+        assert_eq!(
+            summarize_day_from(&mut flash, (2026, 10, 24)).unwrap(),
+            DailySessionSummary {
+                elapsed_secs: 1800,
+                earned_cents: first.earned_cents,
+                completed_sessions: 1,
+            }
+        );
+        assert_eq!(
+            summarize_day_from(&mut flash, (2026, 10, 25)).unwrap(),
+            DailySessionSummary {
+                elapsed_secs: 3600,
+                earned_cents: 9000,
+                completed_sessions: 1,
+            }
+        );
     }
 
     #[test]

@@ -99,7 +99,7 @@ use crate::apps::tetris::TetrisGame;
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
 use crate::apps::work_tracker::{TrackerState, WorkSession, WorkTracker};
 use crate::apps::work_tracker_storage::{
-    finish_work_session, start_work_session, WorkSessionStoreError,
+    checkpoint_work_session, finish_work_session, start_work_session, WorkSessionStoreError,
 };
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::ble_analyzer::BleAnalyzerApp;
@@ -107,17 +107,25 @@ use crate::drivers::co5300::Co5300Display;
 use crate::drivers::co5300::DisplayError;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
-use crate::peripherals::active_work::{
-    calendar_to_unix, clear_active_session, load_active_session,
-};
+use crate::peripherals::active_work::{calendar_to_unix, clear_active_session, load_active_session};
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, write_credentials, StoredCredentials};
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::rtc::Pcf85063aRtc;
 use crate::peripherals::session_log::{
-    contains_session_id, session_log_health, LogSeverity, SessionLogError,
+    contains_session_id, session_log_health, summarize_day, LogSeverity, SessionLogError,
 };
+fn refresh_work_tracker_daily_summary(tracker: &mut WorkTracker) {
+    match summarize_day(tracker.date_ymd) {
+        Ok(summary) => tracker.set_daily_summary(summary),
+        Err(error) => {
+            tracker.set_storage_error(true);
+            println!("[WORKLOG] daily summary read failed: {:?}", error);
+        }
+    }
+}
+
 use crate::peripherals::settings::load_settings;
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection, TouchPoint};
 use crate::ui::launcher::Launcher;
@@ -1102,6 +1110,7 @@ async fn main(_spawner: Spawner) {
         }
         Err(_) => println!("[PMIC] battery telemetry invalid; retaining last valid sample"),
     }
+    let active_record = load_active_session();
     if let Ok(raw_dt) = rtc.get_time() {
         let dt = raw_dt.with_timezone_offset(watch_settings.timezone_offset_mins);
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
@@ -1115,41 +1124,59 @@ async fn main(_spawner: Spawner) {
             (2000 + dt.year as u16, dt.month, dt.day),
         );
 
-        if let Some(active) = load_active_session() {
-            if contains_session_id(active.session_id) {
-                // A power loss after append but before active-record erase is
-                // already committed. Reconciliation prevents a duplicate.
-                if clear_active_session().is_ok() {
-                    println!("[WORK] reconciled completed session after interrupted stop");
-                } else {
-                    active_recovery_blocked = true;
-                    println!("[WORK] recovery record could not be cleared; clock-in blocked");
+        match active_record {
+            Ok(Some(active)) => match contains_session_id(active.session_id) {
+                Ok(true) => {
+                    if clear_active_session().is_ok() {
+                        println!("[WORK] reconciled completed session after interrupted stop");
+                    } else {
+                        active_recovery_blocked = true;
+                        println!("[WORK] recovery record could not be cleared; clock-in blocked");
+                    }
                 }
-            } else {
-                if let Some(now_unix) = calendar_to_unix(
-                    (2000 + dt.year as u16, dt.month, dt.day),
-                    (dt.hours, dt.minutes, dt.seconds),
-                ) {
-                    let elapsed_secs = now_unix.saturating_sub(active.start_unix).max(0) as u32;
-                    work_tracker.restore_active_session(
-                        crate::apps::work_tracker::WorkSession::new(
-                            active.start_date_ymd,
-                            active.start_time_hms,
-                            active.hourly_rate_cents,
-                        ),
-                        elapsed_secs,
+                Ok(false) => {
+                    let now_unix = calendar_to_unix(
+                        (2000 + dt.year as u16, dt.month, dt.day),
+                        (dt.hours, dt.minutes, dt.seconds),
                     );
-                    active_work_session_id = Some(active.session_id);
-                    println!("[WORK] restored active session ({} seconds)", elapsed_secs);
-                } else {
-                    active_recovery_blocked = true;
-                    println!("[WORK] invalid RTC date; active session retained for recovery");
+                    if let Some((elapsed_secs, break_secs)) =
+                        now_unix.and_then(|now| active.recover_elapsed_and_break_secs(now))
+                    {
+                        work_tracker.restore_active_session(
+                            WorkSession::new(
+                                active.start_date_ymd,
+                                active.start_time_hms,
+                                active.hourly_rate_cents,
+                            ),
+                            elapsed_secs,
+                            break_secs,
+                            active.paused,
+                        );
+                        active_work_session_id = Some(active.session_id);
+                        println!("[WORK] restored active session ({} seconds)", elapsed_secs);
+                    } else {
+                        active_recovery_blocked = true;
+                        println!("[WORK] invalid RTC or session time; active session retained");
+                    }
                 }
+                Err(error) => {
+                    active_recovery_blocked = true;
+                    println!("[WORK] session-log reconciliation failed: {:?}", error);
+                }
+            },
+            Ok(None) => {}
+            Err(error) => {
+                active_recovery_blocked = true;
+                println!("[WORK] active-session read failed: {:?}", error);
             }
         }
+    } else if !matches!(active_record, Ok(None)) {
+        active_recovery_blocked = true;
+        println!("[WORK] RTC unavailable; active session retained for recovery");
     }
     let worklog_health = session_log_health();
     work_tracker.set_log_health(worklog_health);
+    refresh_work_tracker_daily_summary(&mut work_tracker);
     work_tracker.set_start_allowed(
         !active_recovery_blocked
             && worklog_health.free_records > 0
@@ -1425,7 +1452,12 @@ async fn main(_spawner: Spawner) {
                 outdoor_state.time_hms = (dt.hours, dt.minutes, dt.seconds);
                 outdoor_state.date_ymd = (2000 + dt.year as u16, dt.month, dt.day);
                 work_tracker.update_time((dt.hours, dt.minutes, dt.seconds));
-                work_tracker.update_date((2000 + dt.year as u16, dt.month, dt.day));
+                let new_date = (2000 + dt.year as u16, dt.month, dt.day);
+                let date_changed = work_tracker.date_ymd != new_date;
+                work_tracker.update_date(new_date);
+                if date_changed {
+                    refresh_work_tracker_daily_summary(&mut work_tracker);
+                }
                 authenticator_app.update_time(
                     (dt.hours, dt.minutes, dt.seconds),
                     (2000 + dt.year as u16, dt.month, dt.day),
@@ -1653,6 +1685,7 @@ async fn main(_spawner: Spawner) {
                     SwipeDirection::Up | SwipeDirection::Down | SwipeDirection::Tap => {}
                 }
             }
+            }
         }
     }
 
@@ -1732,7 +1765,41 @@ async fn main(_spawner: Spawner) {
                         (50..=360).contains(&(touch.x as i32))
                             && (330..=400).contains(&(touch.y as i32))
                     });
-                if touched_work_button && work_tracker.state == TrackerState::Idle {
+                let touched_pause_button = app_input.tap
+                    && app_touch.is_some_and(|touch| {
+                        (30..=195).contains(&(touch.x as i32))
+                            && (330..=400).contains(&(touch.y as i32))
+                    });
+                if touched_pause_button && work_tracker.state != TrackerState::Idle {
+                    let pause = work_tracker.state == TrackerState::Working;
+                    match (
+                        active_work_session_id,
+                        work_tracker.active_session,
+                        calendar_to_unix(work_tracker.date_ymd, work_tracker.time_hms),
+                    ) {
+                        (Some(session_id), Some(session), Some(now_unix)) => {
+                            match checkpoint_work_session(session_id, session, pause, now_unix) {
+                                Ok(break_secs) => {
+                                    if pause {
+                                        work_tracker.pause();
+                                    } else {
+                                        work_tracker.resume_with_break_secs(break_secs);
+                                    }
+                                }
+                                Err(error) => {
+                                    work_tracker.set_storage_error(true);
+                                    println!("[WORK] pause/resume checkpoint failed: {:?}", error);
+                                }
+                            }
+                        }
+                        _ => {
+                            work_tracker.set_storage_error(true);
+                            println!("[WORK] pause/resume missing session or valid RTC time");
+                        }
+                    }
+                    page_dirty = true;
+                    Some(AppResult::Continue)
+                } else if touched_work_button && work_tracker.state == TrackerState::Idle {
                     if let Some(session) = work_tracker.pending_completed_session() {
                         match active_work_session_id {
                             Some(session_id) => match finish_work_session(session_id, session) {
@@ -1741,6 +1808,7 @@ async fn main(_spawner: Spawner) {
                                     work_tracker.confirm_completed_session_saved();
                                     let health = session_log_health();
                                     work_tracker.set_log_health(health);
+                                    refresh_work_tracker_daily_summary(&mut work_tracker);
                                     work_tracker.set_start_allowed(
                                         health.free_records > 0
                                             && health.severity() != LogSeverity::Error,
@@ -1770,7 +1838,7 @@ async fn main(_spawner: Spawner) {
                                 );
                                 active_work_session_id = Some(active.session_id);
                                 if !work_tracker.clock_in_with_session(session) {
-                                    work_tracker.restore_active_session(session, 0);
+                                    work_tracker.restore_active_session(session, 0, 0, false);
                                     println!(
                                         "[WORK] tracker rejected a committed start; restored it"
                                     );
@@ -1805,6 +1873,7 @@ async fn main(_spawner: Spawner) {
                                             work_tracker.confirm_completed_session_saved();
                                             let health = session_log_health();
                                             work_tracker.set_log_health(health);
+                                            refresh_work_tracker_daily_summary(&mut work_tracker);
                                             work_tracker.set_start_allowed(
                                                 health.free_records > 0
                                                     && health.severity() != LogSeverity::Error,

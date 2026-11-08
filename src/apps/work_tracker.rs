@@ -10,7 +10,7 @@ use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, RoundedRectangle}
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::apps::{App, AppInput, AppResult};
-use crate::peripherals::session_log::{LogSeverity, SessionLogHealth};
+use crate::peripherals::session_log::{DailySessionSummary, LogSeverity, SessionLogHealth};
 use crate::peripherals::touch::TouchPoint;
 
 pub const PRESET_RATES: [u32; 6] = [2500, 3500, 5000, 7500, 10000, 15000]; // in cents ($25, $35, $50, $75, $100, $150)
@@ -68,8 +68,8 @@ impl WorkSession {
     }
 
     #[inline]
-    pub fn earned_cents(&self) -> u32 {
-        ((self.elapsed_secs as u64 * self.hourly_rate_cents as u64) / 3600) as u32
+    pub fn earned_cents(&self) -> u64 {
+        (self.elapsed_secs as u64 * self.hourly_rate_cents as u64) / 3600
     }
 }
 
@@ -77,8 +77,8 @@ pub struct WorkTracker {
     pub state: TrackerState,
     pub active_session: Option<WorkSession>,
     pub hourly_rate_cents: u32,
-    pub today_total_secs: u32,
-    pub today_earnings_cents: u32,
+    pub today_total_secs: u64,
+    pub today_earnings_cents: u64,
     pub completed_sessions_today: u16,
     pub time_hms: (u8, u8, u8),
     pub date_ymd: (u16, u8, u8),
@@ -153,13 +153,24 @@ impl WorkTracker {
 
     /// Restore a session recovered from the dedicated active-session record.
     /// It always resumes as working; no completed log entry is created here.
-    pub fn restore_active_session(&mut self, session: WorkSession, elapsed_secs: u32) {
+    pub fn restore_active_session(
+        &mut self,
+        session: WorkSession,
+        elapsed_secs: u32,
+        break_secs: u32,
+        paused: bool,
+    ) {
         self.hourly_rate_cents = session.hourly_rate_cents;
         self.active_session = Some(WorkSession {
             elapsed_secs,
+            break_secs,
             ..session
         });
-        self.state = TrackerState::Working;
+        self.state = if paused {
+            TrackerState::Paused
+        } else {
+            TrackerState::Working
+        };
     }
 
     pub fn pause(&mut self) {
@@ -174,10 +185,21 @@ impl WorkTracker {
         }
     }
 
+    pub fn resume_with_break_secs(&mut self, break_secs: u32) {
+        if self.state == TrackerState::Paused {
+            if let Some(session) = self.active_session.as_mut() {
+                session.break_secs = break_secs;
+            }
+            self.state = TrackerState::Working;
+        }
+    }
+
     pub fn clock_out(&mut self) -> Option<WorkSession> {
         if let Some(session) = self.active_session.take() {
             let earned = session.earned_cents();
-            self.today_total_secs = self.today_total_secs.saturating_add(session.elapsed_secs);
+            self.today_total_secs = self
+                .today_total_secs
+                .saturating_add(session.elapsed_secs as u64);
             self.today_earnings_cents = self.today_earnings_cents.saturating_add(earned);
             self.completed_sessions_today = self.completed_sessions_today.saturating_add(1);
             self.state = TrackerState::Idle;
@@ -225,7 +247,7 @@ impl WorkTracker {
         // has already elapsed.
     }
 
-    pub fn current_session_earnings(&self) -> u32 {
+    pub fn current_session_earnings(&self) -> u64 {
         self.active_session.as_ref().map_or(0, |s| s.earned_cents())
     }
 
@@ -234,7 +256,18 @@ impl WorkTracker {
     }
 
     pub fn update_date(&mut self, ymd: (u16, u8, u8)) {
+        if self.date_ymd != ymd {
+            self.today_total_secs = 0;
+            self.today_earnings_cents = 0;
+            self.completed_sessions_today = 0;
+        }
         self.date_ymd = ymd;
+    }
+
+    pub fn set_daily_summary(&mut self, summary: DailySessionSummary) {
+        self.today_total_secs = summary.elapsed_secs;
+        self.today_earnings_cents = summary.earned_cents;
+        self.completed_sessions_today = summary.completed_sessions;
     }
 
     pub fn update_battery(&mut self, percent: u8, is_charging: bool) {
@@ -787,7 +820,7 @@ mod tests {
     fn recovered_session_resumes_with_saved_rate_and_elapsed_time() {
         let mut tracker = WorkTracker::with_rate(7500);
         let session = WorkSession::new((2026, 10, 24), (9, 0, 0), 5000);
-        tracker.restore_active_session(session, 1_800);
+        tracker.restore_active_session(session, 1_800, 0, false);
 
         assert_eq!(tracker.state, TrackerState::Working);
         assert_eq!(tracker.current_session_earnings(), 2500);
@@ -798,6 +831,55 @@ mod tests {
                 .start_date_ymd,
             (2026, 10, 24)
         );
+    }
+
+    #[test]
+    fn recovered_paused_session_keeps_pause_and_break_accounting() {
+        let mut tracker = WorkTracker::new();
+        let session = WorkSession::new((2026, 10, 24), (9, 0, 0), 5000);
+        tracker.restore_active_session(session, 1800, 240, true);
+
+        assert_eq!(tracker.state, TrackerState::Paused);
+        tracker.tick_1s();
+        let recovered = tracker.active_session.expect("restored session");
+        assert_eq!(recovered.elapsed_secs, 1800);
+        assert_eq!(recovered.break_secs, 241);
+
+        tracker.resume_with_break_secs(300);
+        assert_eq!(tracker.state, TrackerState::Working);
+        assert_eq!(tracker.active_session.unwrap().break_secs, 300);
+    }
+
+    #[test]
+    fn earnings_floor_per_session_without_u32_wraparound() {
+        let mut session = WorkSession::new((2026, 10, 24), (9, 0, 0), 1);
+        session.elapsed_secs = 3599;
+        assert_eq!(session.earned_cents(), 0);
+        session.elapsed_secs = 3600;
+        assert_eq!(session.earned_cents(), 1);
+
+        session.elapsed_secs = u32::MAX;
+        session.hourly_rate_cents = u32::MAX;
+        assert_eq!(
+            session.earned_cents(),
+            (u32::MAX as u64 * u32::MAX as u64) / 3600
+        );
+    }
+
+    #[test]
+    fn daily_summary_is_reset_when_local_date_changes() {
+        let mut tracker = WorkTracker::new();
+        tracker.update_date((2026, 11, 8));
+        tracker.set_daily_summary(DailySessionSummary {
+            elapsed_secs: 7200,
+            earned_cents: 10000,
+            completed_sessions: 2,
+        });
+        tracker.update_date((2026, 11, 9));
+
+        assert_eq!(tracker.today_total_secs, 0);
+        assert_eq!(tracker.today_earnings_cents, 0);
+        assert_eq!(tracker.completed_sessions_today, 0);
     }
 
     #[test]

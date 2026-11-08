@@ -586,6 +586,9 @@ mod tests {
             start_date_ymd: (2026, 10, 26),
             start_time_hms: (9, 0, 0),
             hourly_rate_cents: 5_000,
+            break_secs: 0,
+            paused: false,
+            pause_started_unix: 0,
         }
     }
 

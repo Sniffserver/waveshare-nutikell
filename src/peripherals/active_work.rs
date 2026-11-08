@@ -31,6 +31,35 @@ pub struct ActiveWorkSession {
     pub start_date_ymd: (u16, u8, u8),
     pub start_time_hms: (u8, u8, u8),
     pub hourly_rate_cents: u32,
+    pub break_secs: u32,
+    pub paused: bool,
+    pub pause_started_unix: i64,
+}
+
+impl ActiveWorkSession {
+    pub fn recover_elapsed_and_break_secs(&self, now_unix: i64) -> Option<(u32, u32)> {
+        let wall_secs = now_unix.checked_sub(self.start_unix)?;
+        if wall_secs < 0 {
+            return None;
+        }
+        let current_pause_secs = if self.paused {
+            if self.pause_started_unix < self.start_unix {
+                return None;
+            }
+            now_unix.checked_sub(self.pause_started_unix)?
+        } else {
+            0
+        };
+        if current_pause_secs < 0 {
+            return None;
+        }
+        let break_secs = (self.break_secs as i64).checked_add(current_pause_secs)?;
+        let elapsed_secs = wall_secs.checked_sub(break_secs)?;
+        Some((
+            u32::try_from(elapsed_secs).ok()?,
+            u32::try_from(break_secs).ok()?,
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +132,9 @@ fn v3_decode(raw: &[u8; V3_RECORD_LEN]) -> Option<ActiveWorkSession> {
         ),
         start_time_hms: (raw[25], raw[26], raw[27]),
         hourly_rate_cents: u32::from_le_bytes(raw[28..32].try_into().ok()?),
+        break_secs: 0,
+        paused: false,
+        pause_started_unix: 0,
     })
 }
 
@@ -197,18 +229,16 @@ impl ActiveWorkFlash for FlashStorage {
     }
 }
 #[cfg(target_arch = "xtensa")]
-pub fn load_active_session() -> Option<ActiveWorkSession> {
-    load_active_session_from(&mut FlashStorage::new())
-        .ok()
-        .flatten()
+pub fn load_active_session() -> Result<Option<ActiveWorkSession>, ActiveWorkError> {
+    load_active_session_compatible_from(&mut FlashStorage::new())
 }
 #[cfg(target_arch = "xtensa")]
 pub fn save_active_session(session: ActiveWorkSession) -> Result<(), ActiveWorkError> {
-    save_active_session_to(&mut FlashStorage::new(), session)
+    save_active_session_compatible_to(&mut FlashStorage::new(), session)
 }
 #[cfg(target_arch = "xtensa")]
 pub fn clear_active_session() -> Result<(), ActiveWorkError> {
-    clear_active_session_from(&mut FlashStorage::new())
+    clear_active_session_v4_from(&mut FlashStorage::new())
 }
 
 // ============================================================================
@@ -244,6 +274,9 @@ pub struct V4ActiveWorkSession {
     pub start_date_ymd: (u16, u8, u8),
     pub start_time_hms: (u8, u8, u8),
     pub hourly_rate_cents: u32,
+    pub break_secs: u32,
+    pub paused: bool,
+    pub pause_started_unix: i64,
 }
 
 /// V4 record classification result
@@ -285,15 +318,23 @@ const V4_COMMIT_MARKER_OFFSET: usize = V4_CRC_OFFSET + V4_CRC_LEN;
 const V4_COMMIT_MARKER_LEN: usize = 4;
 const V4_TRAILING_RESERVED_OFFSET: usize = V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN;
 const V4_TRAILING_RESERVED_LEN: usize = V4_RECORD_LEN - V4_TRAILING_RESERVED_OFFSET;
+const V4_SESSION_WORKING: u8 = 0xFE;
+const V4_SESSION_PAUSED: u8 = 0xFC;
 const V4_IMMUTABLE_PAYLOAD_LEN: usize =
     V4_VERSION_OFFSET + 1 + V4_CRC_OFFSET - V4_PREFIX_RESERVED_OFFSET;
 
 fn v4_payload_crc(raw: &[u8; V4_RECORD_LEN]) -> u32 {
-    let mut payload = [0u8; V4_IMMUTABLE_PAYLOAD_LEN];
+    let mut payload = [0u8; V4_IMMUTABLE_PAYLOAD_LEN + V4_TRAILING_RESERVED_LEN];
     let header_len = V4_VERSION_OFFSET + 1;
     payload[..header_len].copy_from_slice(&raw[V4_MAGIC_OFFSET..header_len]);
-    payload[header_len..].copy_from_slice(&raw[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]);
-    crc32(&payload)
+    payload[header_len..V4_IMMUTABLE_PAYLOAD_LEN]
+        .copy_from_slice(&raw[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]);
+    if raw[V4_PAYLOAD_RESERVED_OFFSET] != 0xFF {
+        payload[V4_IMMUTABLE_PAYLOAD_LEN..].copy_from_slice(&raw[V4_TRAILING_RESERVED_OFFSET..]);
+        crc32(&payload)
+    } else {
+        crc32(&payload[..V4_IMMUTABLE_PAYLOAD_LEN])
+    }
 }
 
 /// Encode a V4 session into a 64-byte record.
@@ -305,6 +346,11 @@ pub fn v4_encode(session: V4ActiveWorkSession) -> [u8; V4_RECORD_LEN] {
     raw[V4_MAGIC_OFFSET..V4_MAGIC_OFFSET + V4_MAGIC_LEN].copy_from_slice(&V4_MAGIC);
     raw[V4_VERSION_OFFSET] = V4_VERSION;
     raw[V4_STATE_OFFSET] = STATE_EMPTY;
+    raw[V4_PAYLOAD_RESERVED_OFFSET] = if session.paused {
+        V4_SESSION_PAUSED
+    } else {
+        V4_SESSION_WORKING
+    };
     raw[V4_SEQUENCE_OFFSET..V4_SEQUENCE_OFFSET + V4_SEQUENCE_LEN]
         .copy_from_slice(&session.sequence.to_le_bytes());
     raw[V4_SESSION_ID_OFFSET..V4_SESSION_ID_OFFSET + V4_SESSION_ID_LEN]
@@ -320,6 +366,10 @@ pub fn v4_encode(session: V4ActiveWorkSession) -> [u8; V4_RECORD_LEN] {
     raw[V4_START_TIME_SECOND_OFFSET] = session.start_time_hms.2;
     raw[V4_HOURLY_RATE_OFFSET..V4_HOURLY_RATE_OFFSET + V4_HOURLY_RATE_LEN]
         .copy_from_slice(&session.hourly_rate_cents.to_le_bytes());
+    raw[V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + 4]
+        .copy_from_slice(&session.break_secs.to_le_bytes());
+    raw[V4_TRAILING_RESERVED_OFFSET + 4..V4_TRAILING_RESERVED_OFFSET + 12]
+        .copy_from_slice(&session.pause_started_unix.to_le_bytes());
     let checksum = v4_payload_crc(&raw).to_le_bytes();
     raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].copy_from_slice(&checksum);
 
@@ -335,6 +385,12 @@ pub fn v4_decode(raw: &[u8; V4_RECORD_LEN]) -> Option<V4ActiveWorkSession> {
         return None;
     }
     if raw[V4_STATE_OFFSET] != STATE_COMMITTED {
+        return None;
+    }
+    if !matches!(
+        raw[V4_PAYLOAD_RESERVED_OFFSET],
+        0xFF | V4_SESSION_WORKING | V4_SESSION_PAUSED
+    ) {
         return None;
     }
     if raw[V4_COMMIT_MARKER_OFFSET..V4_COMMIT_MARKER_OFFSET + V4_COMMIT_MARKER_LEN]
@@ -386,6 +442,25 @@ pub fn v4_decode(raw: &[u8; V4_RECORD_LEN]) -> Option<V4ActiveWorkSession> {
                 .try_into()
                 .ok()?,
         ),
+        break_secs: if raw[V4_PAYLOAD_RESERVED_OFFSET] == 0xFF {
+            0
+        } else {
+            u32::from_le_bytes(
+                raw[V4_TRAILING_RESERVED_OFFSET..V4_TRAILING_RESERVED_OFFSET + 4]
+                    .try_into()
+                    .ok()?,
+            )
+        },
+        paused: raw[V4_PAYLOAD_RESERVED_OFFSET] == V4_SESSION_PAUSED,
+        pause_started_unix: if raw[V4_PAYLOAD_RESERVED_OFFSET] == V4_SESSION_PAUSED {
+            i64::from_le_bytes(
+                raw[V4_TRAILING_RESERVED_OFFSET + 4..V4_TRAILING_RESERVED_OFFSET + 12]
+                    .try_into()
+                    .ok()?,
+            )
+        } else {
+            0
+        },
     })
 }
 
@@ -407,6 +482,12 @@ pub fn v4_classify(raw: &[u8; V4_RECORD_LEN]) -> V4RecordClass {
         if version >= 1 && version <= 3 {
             return V4RecordClass::Legacy(version);
         }
+        return V4RecordClass::Corrupt;
+    }
+    if !matches!(
+        raw[V4_PAYLOAD_RESERVED_OFFSET],
+        0xFF | V4_SESSION_WORKING | V4_SESSION_PAUSED
+    ) {
         return V4RecordClass::Corrupt;
     }
 
@@ -520,6 +601,9 @@ fn v4_session(sequence: u64, session: ActiveWorkSession) -> V4ActiveWorkSession 
         start_date_ymd: session.start_date_ymd,
         start_time_hms: session.start_time_hms,
         hourly_rate_cents: session.hourly_rate_cents,
+        break_secs: session.break_secs,
+        paused: session.paused,
+        pause_started_unix: session.pause_started_unix,
     }
 }
 
@@ -539,6 +623,12 @@ fn write_v4_payload<F: ActiveWorkFlash>(
         .write(
             slot.offset() + V4_PREFIX_RESERVED_OFFSET as u32,
             &raw[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET],
+        )
+        .map_err(|_| ActiveWorkError::Io)?;
+    flash
+        .write(
+            slot.offset() + V4_TRAILING_RESERVED_OFFSET as u32,
+            &raw[V4_TRAILING_RESERVED_OFFSET..],
         )
         .map_err(|_| ActiveWorkError::Io)
 }
@@ -595,6 +685,7 @@ fn verify_v4_payload<F: ActiveWorkFlash>(
         && actual[V4_MAGIC_OFFSET..V4_STATE_OFFSET] == expected[V4_MAGIC_OFFSET..V4_STATE_OFFSET]
         && actual[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]
             == expected[V4_PREFIX_RESERVED_OFFSET..V4_CRC_OFFSET]
+        && actual[V4_TRAILING_RESERVED_OFFSET..] == expected[V4_TRAILING_RESERVED_OFFSET..]
     {
         Ok(())
     } else {
@@ -609,9 +700,10 @@ fn committed_v4_session<F: ActiveWorkFlash>(
     Ok(v4_decode(&read_v4_slot(flash, slot)?))
 }
 
-fn save_active_session_v4_to<F: ActiveWorkFlash>(
+fn save_active_session_v4_inner<F: ActiveWorkFlash>(
     flash: &mut F,
     session: ActiveWorkSession,
+    checkpoint: bool,
 ) -> Result<(), ActiveWorkError> {
     let classes = [
         classify_v4_slot(flash, V4Slot::SlotA)?,
@@ -637,10 +729,19 @@ fn save_active_session_v4_to<F: ActiveWorkFlash>(
             return Err(ActiveWorkError::Corrupt);
         }
     }
-    if highest.is_some_and(|record| session.session_id <= record.session_id) {
-        return Err(ActiveWorkError::Corrupt);
+    match (highest, checkpoint) {
+        (Some(record), true) if session.session_id == record.session_id => {}
+        (Some(record), false) if session.session_id > record.session_id => {}
+        (None, false) => {}
+        _ => return Err(ActiveWorkError::Corrupt),
     }
-    let sequence = highest.map_or(1, |record| record.sequence + 1);
+    let sequence = match highest {
+        Some(record) => record
+            .sequence
+            .checked_add(1)
+            .ok_or(ActiveWorkError::Corrupt)?,
+        None => 1,
+    };
     let target_index = if committed[0].is_some() && committed[1].is_some() {
         if committed[0].unwrap().sequence < committed[1].unwrap().sequence {
             0
@@ -701,6 +802,20 @@ fn save_active_session_v4_to<F: ActiveWorkFlash>(
     }
 }
 
+fn save_active_session_v4_to<F: ActiveWorkFlash>(
+    flash: &mut F,
+    session: ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    save_active_session_v4_inner(flash, session, false)
+}
+
+fn save_active_checkpoint_v4_to<F: ActiveWorkFlash>(
+    flash: &mut F,
+    session: ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    save_active_session_v4_inner(flash, session, true)
+}
+
 fn active_session(record: V4ActiveWorkSession) -> ActiveWorkSession {
     ActiveWorkSession {
         session_id: record.session_id,
@@ -708,6 +823,9 @@ fn active_session(record: V4ActiveWorkSession) -> ActiveWorkSession {
         start_date_ymd: record.start_date_ymd,
         start_time_hms: record.start_time_hms,
         hourly_rate_cents: record.hourly_rate_cents,
+        break_secs: record.break_secs,
+        paused: record.paused,
+        pause_started_unix: record.pause_started_unix,
     }
 }
 
@@ -734,7 +852,7 @@ fn load_active_session_v4_from<F: ActiveWorkFlash>(
     {
         return Ok(Some(active_session(*record)));
     }
-    if matches!(classes, [V4RecordClass::Corrupt, V4RecordClass::Corrupt]) {
+    if classes.contains(&V4RecordClass::Corrupt) {
         return Err(ActiveWorkError::Corrupt);
     }
     Ok(None)
@@ -743,10 +861,21 @@ fn load_active_session_v4_from<F: ActiveWorkFlash>(
 fn migrate_legacy_active_work_v3_to_v4<F: ActiveWorkFlash>(
     flash: &mut F,
 ) -> Result<(), ActiveWorkError> {
-    let legacy_raw = v3_read_slot(flash, 0)?;
-    let legacy_empty = legacy_raw.iter().all(|&byte| byte == 0xFF);
-    let Some(legacy) = v3_decode(&legacy_raw) else {
-        return if legacy_empty {
+    let mut legacy = None;
+    let mut all_legacy_slots_empty = true;
+    for slot in 0..V3_SLOT_COUNT {
+        let raw = v3_read_slot(flash, slot)?;
+        all_legacy_slots_empty &= raw.iter().all(|&byte| byte == 0xFF);
+        if let Some(candidate) = v3_decode(&raw) {
+            if legacy.map_or(true, |current: ActiveWorkSession| {
+                candidate.session_id > current.session_id
+            }) {
+                legacy = Some(candidate);
+            }
+        }
+    }
+    let Some(legacy) = legacy else {
+        return if all_legacy_slots_empty {
             Ok(())
         } else {
             Err(ActiveWorkError::Corrupt)
@@ -774,6 +903,52 @@ fn migrate_legacy_active_work_v3_to_v4<F: ActiveWorkFlash>(
         return Err(ActiveWorkError::VerifyFailed);
     }
     erase_v4_slot(flash, V4Slot::SlotA)
+}
+
+pub fn load_active_session_compatible_from<F: ActiveWorkFlash>(
+    flash: &mut F,
+) -> Result<Option<ActiveWorkSession>, ActiveWorkError> {
+    match load_active_session_v4_from(flash) {
+        Ok(Some(session)) => return Ok(Some(session)),
+        Ok(None) | Err(ActiveWorkError::Corrupt) => {}
+        Err(error) => return Err(error),
+    }
+    migrate_legacy_active_work_v3_to_v4(flash)?;
+    load_active_session_v4_from(flash)
+}
+
+pub fn save_active_session_compatible_to<F: ActiveWorkFlash>(
+    flash: &mut F,
+    session: ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    if load_active_session_compatible_from(flash)?.is_some() {
+        return Err(ActiveWorkError::Corrupt);
+    }
+    save_active_session_v4_to(flash, session)
+}
+
+pub fn save_active_checkpoint_to<F: ActiveWorkFlash>(
+    flash: &mut F,
+    session: ActiveWorkSession,
+) -> Result<(), ActiveWorkError> {
+    let active = load_active_session_compatible_from(flash)?
+        .filter(|active| active.session_id == session.session_id)
+        .ok_or(ActiveWorkError::Corrupt)?;
+    if active.session_id != session.session_id {
+        return Err(ActiveWorkError::Corrupt);
+    }
+    save_active_checkpoint_v4_to(flash, session)
+}
+
+pub fn clear_active_session_v4_from<F: ActiveWorkFlash>(
+    flash: &mut F,
+) -> Result<(), ActiveWorkError> {
+    flash
+        .erase(ACTIVE_WORK_A.start, ACTIVE_WORK_A.end())
+        .map_err(|_| ActiveWorkError::Io)?;
+    flash
+        .erase(ACTIVE_WORK_B.start, ACTIVE_WORK_B.end())
+        .map_err(|_| ActiveWorkError::Io)
 }
 
 pub fn calendar_to_unix(ymd: (u16, u8, u8), hms: (u8, u8, u8)) -> Option<i64> {
@@ -864,6 +1039,9 @@ mod tests {
                     start_date_ymd: (2024, 1, 15),
                     start_time_hms: (10, 30, 0),
                     hourly_rate_cents: 2500,
+                    break_secs: 0,
+                    paused: false,
+                    pause_started_unix: 0,
                 });
                 v4_set_state(&mut raw, STATE_COMMITTED);
                 v4_set_commit_marker(&mut raw);
@@ -930,6 +1108,9 @@ mod tests {
             start_date_ymd: (2024, 1, 16),
             start_time_hms: (11, 0, 0),
             hourly_rate_cents: 3000,
+            break_secs: 0,
+            paused: false,
+            pause_started_unix: 0,
         }
     }
 
@@ -951,6 +1132,9 @@ mod tests {
             start_date_ymd: (2024, 6, 15),
             start_time_hms: (14, 30, 45),
             hourly_rate_cents: 3000,
+            break_secs: 0,
+            paused: false,
+            pause_started_unix: 0,
         }
     }
 
@@ -1021,6 +1205,41 @@ mod tests {
         legacy[V4_MAGIC_OFFSET..V4_MAGIC_OFFSET + V4_MAGIC_LEN].copy_from_slice(&V4_MAGIC);
         legacy[V4_VERSION_OFFSET] = 3;
         assert_eq!(v4_classify(&legacy), V4RecordClass::Legacy(3));
+        let mut invalid_state = valid_v4_record(STATE_COMMITTED);
+        invalid_state[V4_PAYLOAD_RESERVED_OFFSET] = 0xFD;
+        assert_eq!(v4_classify(&invalid_state), V4RecordClass::Corrupt);
+    }
+
+    #[test]
+    fn v4_pause_metadata_roundtrips_and_is_crc_protected() {
+        let session = V4ActiveWorkSession {
+            break_secs: 345,
+            paused: true,
+            pause_started_unix: 1_700_000_123,
+            ..sample_v4_session()
+        };
+        let mut raw = v4_encode(session);
+        v4_set_state(&mut raw, STATE_COMMITTED);
+        v4_set_commit_marker(&mut raw);
+        assert_eq!(v4_decode(&raw), Some(session));
+
+        raw[V4_TRAILING_RESERVED_OFFSET] ^= 1;
+        assert_eq!(v4_decode(&raw), None);
+        assert_eq!(v4_classify(&raw), V4RecordClass::Corrupt);
+    }
+
+    #[test]
+    fn legacy_v4_record_defaults_to_working_without_breaks() {
+        let session = sample_v4_session();
+        let mut raw = v4_encode(session);
+        raw[V4_PAYLOAD_RESERVED_OFFSET] = 0xFF;
+        raw[V4_TRAILING_RESERVED_OFFSET..].fill(0xFF);
+        let checksum = v4_payload_crc(&raw).to_le_bytes();
+        raw[V4_CRC_OFFSET..V4_CRC_OFFSET + V4_CRC_LEN].copy_from_slice(&checksum);
+        v4_set_state(&mut raw, STATE_COMMITTED);
+        v4_set_commit_marker(&mut raw);
+
+        assert_eq!(v4_decode(&raw), Some(session));
     }
 
     #[test]
@@ -1045,6 +1264,23 @@ mod tests {
 
         mutate_commit_marker(&mut raw);
         assert_eq!(v4_payload_crc(&raw), encoded_crc);
+    }
+
+    #[test]
+    fn same_session_checkpoint_advances_generation() {
+        let mut flash = FakeFlash::new();
+        let original = save_session(10);
+        save_active_session_v4_to(&mut flash, original).unwrap();
+
+        let paused = ActiveWorkSession {
+            break_secs: 12,
+            paused: true,
+            pause_started_unix: original.start_unix + 120,
+            ..original
+        };
+        save_active_checkpoint_v4_to(&mut flash, paused).unwrap();
+        assert_eq!(load_active_session_v4_from(&mut flash), Ok(Some(paused)));
+        assert_eq!(flash.recover().map(|record| record.sequence), Some(2));
     }
 
     #[test]
@@ -1311,6 +1547,9 @@ mod tests {
             start_date_ymd: (2024, 1, 15),
             start_time_hms: (10, 30, 0),
             hourly_rate_cents: 2500,
+            break_secs: 0,
+            paused: false,
+            pause_started_unix: 0,
         };
         let raw = v3_encode(session);
         let decoded = v3_decode(&raw).expect("decode should succeed");
@@ -1325,6 +1564,9 @@ mod tests {
             start_date_ymd: (2024, 1, 15),
             start_time_hms: (10, 30, 0),
             hourly_rate_cents: 2500,
+            break_secs: 0,
+            paused: false,
+            pause_started_unix: 0,
         };
         let mut raw = v3_encode(session);
         raw[40] ^= 0xFF; // corrupt CRC

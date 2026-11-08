@@ -1,7 +1,8 @@
 use crate::apps::work_tracker::WorkSession;
 use crate::peripherals::active_work::{
-    calendar_to_unix, clear_active_session_from, save_active_session_to, ActiveWorkError,
-    ActiveWorkFlash, ActiveWorkSession,
+    calendar_to_unix, clear_active_session_v4_from, load_active_session_compatible_from,
+    save_active_checkpoint_to, save_active_session_compatible_to, ActiveWorkError, ActiveWorkFlash,
+    ActiveWorkSession,
 };
 use crate::peripherals::session_log::{
     append_session_to, next_session_id_from, SessionLogError, SessionLogFlash, SessionRecord,
@@ -30,9 +31,53 @@ pub fn start_work_session_to<F: ActiveWorkFlash + SessionLogFlash>(
         start_date_ymd,
         start_time_hms,
         hourly_rate_cents,
+        break_secs: 0,
+        paused: false,
+        pause_started_unix: 0,
     };
-    save_active_session_to(flash, active).map_err(WorkSessionStoreError::ActiveWork)?;
+    save_active_session_compatible_to(flash, active).map_err(WorkSessionStoreError::ActiveWork)?;
     Ok(active)
+}
+
+/// Persist a pause/resume transition before changing the in-memory tracker.
+pub fn checkpoint_work_session_to<F: ActiveWorkFlash + SessionLogFlash>(
+    flash: &mut F,
+    session_id: u64,
+    session: WorkSession,
+    paused: bool,
+    now_unix: i64,
+) -> Result<u32, WorkSessionStoreError> {
+    let mut active = load_active_session_compatible_from(flash)
+        .map_err(WorkSessionStoreError::ActiveWork)?
+        .filter(|active| active.session_id == session_id)
+        .ok_or(WorkSessionStoreError::ActiveWork(ActiveWorkError::Corrupt))?;
+
+    if now_unix < active.start_unix {
+        return Err(WorkSessionStoreError::InvalidDateTime);
+    }
+    if paused {
+        if active.paused {
+            return Ok(active.break_secs);
+        }
+        active.break_secs = session.break_secs;
+        active.paused = true;
+        active.pause_started_unix = now_unix;
+    } else {
+        if !active.paused {
+            return Ok(active.break_secs);
+        }
+        let paused_secs = now_unix
+            .checked_sub(active.pause_started_unix)
+            .and_then(|secs| u32::try_from(secs).ok())
+            .ok_or(WorkSessionStoreError::InvalidDateTime)?;
+        active.break_secs = session
+            .break_secs
+            .max(active.break_secs.saturating_add(paused_secs));
+        active.paused = false;
+        active.pause_started_unix = 0;
+    }
+    save_active_checkpoint_to(flash, active).map_err(WorkSessionStoreError::ActiveWork)?;
+    Ok(active.break_secs)
 }
 
 /// Commit a completed log entry before erasing its active recovery record.
@@ -56,7 +101,7 @@ pub fn finish_work_session_to<F: ActiveWorkFlash + SessionLogFlash>(
         earned_cents: session.earned_cents(),
     };
     append_session_to(flash, &record).map_err(WorkSessionStoreError::SessionLog)?;
-    clear_active_session_from(flash).map_err(WorkSessionStoreError::ActiveWork)
+    clear_active_session_v4_from(flash).map_err(WorkSessionStoreError::ActiveWork)
 }
 
 #[cfg(target_arch = "xtensa")]
@@ -83,4 +128,22 @@ pub fn finish_work_session(
     use esp_storage::FlashStorage;
 
     finish_work_session_to(&mut FlashStorage::new(), session_id, session)
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn checkpoint_work_session(
+    session_id: u64,
+    session: WorkSession,
+    paused: bool,
+    now_unix: i64,
+) -> Result<u32, WorkSessionStoreError> {
+    use esp_storage::FlashStorage;
+
+    checkpoint_work_session_to(
+        &mut FlashStorage::new(),
+        session_id,
+        session,
+        paused,
+        now_unix,
+    )
 }
