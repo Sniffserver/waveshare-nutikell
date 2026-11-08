@@ -44,19 +44,24 @@ Full pinout in `src/board.rs`.
 
 ## Software stack
 
-| Layer        | Crate                           | Role                                                   |
-|--------------|---------------------------------|--------------------------------------------------------|
-| HAL          | `esp-hal` 1.0                   | Peripherals (GPIO, I2C, SPI, I2S, DMA, timers, PSRAM)  |
-| Runtime      | `esp-rtos` 0.2                  | Boot, executor, radio integration                      |
-| Async        | `embassy-executor` 0.9          | Cooperative scheduler, tasks, timers                   |
-|              | `embassy-time`, `embassy-futures` | `select`, `Timer::after`, `Duration`                   |
-|              | `embassy-net` 0.9               | smoltcp TCP/IP stack (DHCPv4, TCP, UDP, DNS)           |
-| Radio        | `esp-radio` 0.17                | WiFi driver + Embassy interface                        |
-| Graphics     | `embedded-graphics` 0.8         | 2D primitives, fonts, text layout                      |
-| Storage      | `embedded-sdmmc` 0.8            | FAT32 on SD card                                       |
-| Codec        | `nanomp3` 0.1                   | `no_std` MP3 decoder (prepared, not wired)             |
-| Allocator    | `esp-alloc`                     | 64 KB SRAM heap + 8 MB PSRAM heap                      |
-| Panic        | `esp-backtrace`                 | Symbolic backtrace via `esp-println`                   |
+| Layer        | Crate                           | Resolved version | Role                                      |
+|--------------|---------------------------------|------------------|-------------------------------------------|
+| HAL          | `esp-hal`                       | 1.1.2            | GPIO, I2C, SPI, I2S, DMA, timers, PSRAM   |
+| Runtime      | `esp-rtos`                      | 0.3.0            | Boot, executor, radio integration         |
+| Async        | `embassy-executor`              | 0.10.0           | Cooperative scheduler and tasks           |
+|              | `embassy-time`                  | 0.5.1            | Timers and time primitives                 |
+|              | `embassy-net`                   | 0.9.1            | TCP/IP stack (DHCPv4, TCP, UDP, DNS)       |
+| Radio        | `esp-radio`                     | 0.18.0           | WiFi and BLE driver                        |
+| Graphics     | `embedded-graphics`             | 0.8.2            | 2D primitives, fonts, text                 |
+| Storage      | `esp-storage`                   | 0.6.0            | On-chip flash access                       |
+|              | `embedded-sdmmc`                | 0.8.0            | FAT32 on SD card                            |
+| Codec        | `nanomp3`                       | 0.1.0            | `no_std` MP3 decoder (not wired to playback)|
+| Allocator    | `esp-alloc`                     | 0.10.0           | Internal SRAM and PSRAM heaps               |
+| Panic        | `esp-backtrace`                 | 0.19.0           | Backtrace via `esp-println`                 |
+
+Versions are from `Cargo.lock`; transitive dependencies may resolve multiple
+versions of the same crate. `Cargo.toml` contains compatible version
+requirements, not necessarily the exact versions shown above.
 
 Zero C code, zero ESP-IDF components compiled into the final target. The bootloader is `esp-bootloader-esp-idf` on the loader side only.
 
@@ -249,60 +254,46 @@ DMA_CH0 → GPIO SIO0..SIO3 @ 80 MHz
 
 ### Prerequisites
 
-- **Xtensa ESP Rust toolchain** (installed via [espup](https://github.com/esp-rs/espup)):
+- Install the Xtensa ESP Rust toolchain with [espup](https://github.com/esp-rs/espup).
+  The repository pins `channel = "esp"` in `rust-toolchain.toml`. Non-interactive
+  shells such as VS Code tasks must load espup's generated environment:
   ```bash
-  cargo install espup
-  espup install
+  source "$HOME/export-esp.sh"
   ```
-  `rust-toolchain.toml` pins `channel = "esp"`.
-
-- **MSVC linker** (Windows): needed for host build scripts. Install "Desktop development with C++" via Visual Studio Installer. The `link.exe` must be in the PATH when running cargo. On this project we typically have:
-  ```bash
-  export PATH="/c/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.50.35717/bin/Hostx64/x64:$PATH"
-  ```
-
-- **espflash**:
-  ```bash
-  cargo install espflash
-  ```
-
-### WiFi credentials
-
-SSID and password are read at compile-time via `env!()`. They must be defined before building:
-
-```bash
-# Linux / macOS / Git Bash (Windows)
-export WIFI_SSID="MyNetwork"
-export WIFI_PASS="MyPassword"
-```
-
-```powershell
-# PowerShell
-$env:WIFI_SSID = "MyNetwork"
-$env:WIFI_PASS = "MyPassword"
-```
+- Install `espflash` for board identification, flashing, and serial monitoring.
 
 ### Build
 
-```bash
-WIFI_SSID="MyNetwork" WIFI_PASS="MyPassword" cargo build --release
-```
-
-The final binary is around **579 KB** (full firmware with WiFi stack + games + UI).
-
-### Flash + serial monitor
+Use the embedded Cargo configuration from CI. It enables `build-std` for
+`core` and `alloc`, selects the Xtensa target, and enables the firmware binary:
 
 ```bash
-espflash flash --port COM7 --monitor target/xtensa-esp32s3-none-elf/release/waveshare-watch-rs
+source "$HOME/export-esp.sh"
+cargo --config .cargo/esp32-ci.toml build --release \
+  --target xtensa-esp32s3-none-elf --features firmware --locked
 ```
 
-On Linux: `/dev/ttyACM0` or `/dev/ttyUSB0` depending on the USB bridge.
+For a compile-only target check, replace `build` with `check`. `WIFI_SSID` and
+`WIFI_PASS` are optional compile-time fallback values; the firmware also
+supports credential provisioning and does not require these values to build.
+
+The VS Code `Rust: check release` and `Rust: build release` tasks run these
+CI-equivalent commands and load the espup environment.
+
+### Flash and monitor
+
+Do not use a generic flash command until the image's partition-table behavior
+has been checked against `partitions.csv`: some flash workflows also write the
+bootloader and partition table. See [the HIL status](tests/hil/README.md) for
+the latest build and device validation result. The application partition begins
+at `0x10000`; application-owned records also use reserved data sectors.
 
 ### Build config
 
 - `opt-level = "s"` in dev AND release (size optimized).
 - `lto = true` in release (global inlining, reduces size by ~20%).
-- 64 KB SRAM heap (for the WiFi stack), 8 MB PSRAM heap (framebuffers + Vecs).
+- Heap sizes and memory-region headroom depend on the linked image and board;
+  verify the release link before relying on them.
 
 ---
 
