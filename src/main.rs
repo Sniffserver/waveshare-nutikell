@@ -52,9 +52,20 @@ use embedded_hal_bus::i2c::RefCellDevice;
 use esp_alloc as _;
 use esp_backtrace as _;
 
-esp_bootloader_esp_idf::esp_app_desc!();
+#[unsafe(export_name = "esp_app_desc")]
+#[unsafe(link_section = ".flash.appdesc")]
 #[used]
-static _FORCE_APP_DESC: &esp_bootloader_esp_idf::EspAppDesc = &ESP_APP_DESC;
+pub static ESP_APP_DESC: esp_bootloader_esp_idf::EspAppDesc =
+    esp_bootloader_esp_idf::EspAppDesc::new_internal(
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_NAME"),
+        esp_bootloader_esp_idf::BUILD_TIME,
+        esp_bootloader_esp_idf::BUILD_DATE,
+        esp_bootloader_esp_idf::ESP_IDF_COMPATIBLE_VERSION,
+        0,
+        u16::MAX,
+        esp_bootloader_esp_idf::MMU_PAGE_SIZE,
+    );
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
