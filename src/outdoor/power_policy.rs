@@ -12,7 +12,9 @@ pub enum PowerMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerPolicy {
     pub mode: PowerMode,
+    /// Maximum display refresh rate requested by this power mode.
     pub display_fps: u8,
+    /// Maximum IMU sample processing rate before foreground consumers override it.
     pub imu_hz: u8,
     pub ble_enabled: bool,
     pub wifi_enabled: bool,
@@ -20,6 +22,27 @@ pub struct PowerPolicy {
 }
 
 impl PowerPolicy {
+    const fn interval_ms(rate_hz: u8) -> Option<u64> {
+        if rate_hz == 0 {
+            None
+        } else {
+            Some((1000 + rate_hz as u64 - 1) / rate_hz as u64)
+        }
+    }
+
+    pub const fn display_interval_ms(self) -> Option<u64> {
+        Self::interval_ms(self.display_fps)
+    }
+
+    pub const fn imu_interval_ms(self, consumer_min_hz: u8) -> Option<u64> {
+        let effective_hz = if consumer_min_hz > self.imu_hz {
+            consumer_min_hz
+        } else {
+            self.imu_hz
+        };
+        Self::interval_ms(effective_hz)
+    }
+
     pub const fn for_mode(mode: PowerMode) -> Self {
         match mode {
             PowerMode::Active => Self {
@@ -33,7 +56,7 @@ impl PowerPolicy {
             PowerMode::Navigation => Self {
                 mode,
                 display_fps: 8,
-                imu_hz: 25,
+                imu_hz: 20,
                 ble_enabled: true,
                 wifi_enabled: false,
                 audio_enabled: false,
@@ -109,7 +132,7 @@ mod tests {
 
         let nav = PowerPolicy::for_mode(PowerMode::Navigation);
         assert_eq!(nav.display_fps, 8);
-        assert_eq!(nav.imu_hz, 25);
+        assert_eq!(nav.imu_hz, 20);
         assert!(nav.ble_enabled);
         assert!(!nav.audio_enabled);
 
@@ -156,5 +179,18 @@ mod tests {
         assert_eq!(determine_power_mode(0, true, false), PowerMode::Navigation);
         assert_eq!(determine_power_mode(3, true, false), PowerMode::Navigation);
         assert_eq!(determine_power_mode(0, false, true), PowerMode::Paused);
+    }
+
+    #[test]
+    fn policy_rates_resolve_to_maximum_intervals() {
+        let active = PowerPolicy::for_mode(PowerMode::Active);
+        assert_eq!(active.display_interval_ms(), Some(34));
+        assert_eq!(active.imu_interval_ms(0), Some(20));
+        assert_eq!(active.imu_interval_ms(60), Some(17));
+
+        let sleeping = PowerPolicy::for_mode(PowerMode::Sleeping);
+        assert_eq!(sleeping.display_interval_ms(), None);
+        assert_eq!(sleeping.imu_interval_ms(0), None);
+        assert_eq!(sleeping.imu_interval_ms(10), Some(100));
     }
 }

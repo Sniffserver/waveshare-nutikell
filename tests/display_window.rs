@@ -1,7 +1,17 @@
 #[path = "../src/drivers/display_window.rs"]
 mod display_window;
 
-use display_window::{DisplayWindow, WindowError};
+use display_window::{align_to_even_region, DisplayWindow, WindowError};
+
+#[test]
+fn aligns_dirty_regions_to_even_panel_bounds() {
+    assert_eq!(align_to_even_region(3, 5, 4, 7, 10, 12), Some((2, 4, 6, 8)));
+    assert_eq!(
+        align_to_even_region(9, 11, 1, 1, 10, 12),
+        Some((8, 10, 2, 2))
+    );
+    assert_eq!(align_to_even_region(0, 0, 0, 1, 10, 12), None);
+}
 
 #[test]
 fn accepts_full_panel_and_applies_offsets() {

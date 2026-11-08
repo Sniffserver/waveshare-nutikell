@@ -1248,6 +1248,7 @@ async fn main(_spawner: Spawner) {
     let mut next_battery = Instant::now();
     let mut last_frame = Instant::now();
     let mut next_watchface_flush = Instant::now();
+    let mut next_imu_sample = Instant::now();
 
     // ── WiFi / NTP state ─────────────────────────────────────────────────────
     //
@@ -1290,7 +1291,7 @@ async fn main(_spawner: Spawner) {
             hike_running,
             hike_paused,
         );
-        let _policy = crate::outdoor::PowerPolicy::for_mode(power_mode);
+        let policy = crate::outdoor::PowerPolicy::for_mode(power_mode);
 
         let tick = if touch_held || button_held {
             // Something is currently being held: wake fast enough to track motion / detect
@@ -1439,7 +1440,30 @@ async fn main(_spawner: Spawner) {
             imu_mode = target_imu_mode;
         }
 
-        if need_accel {
+        let consumer_min_imu_hz = if need_gyro {
+            if app_state == AppState::Watchface && current_page == Page::Sensors {
+                10
+            } else {
+                30
+            }
+        } else if need_accel {
+            if hike_running || app_state == AppState::Outdoor {
+                20
+            } else {
+                1
+            }
+        } else {
+            0
+        };
+        let imu_interval = policy
+            .imu_interval_ms(consumer_min_imu_hz)
+            .map(Duration::from_millis);
+        let imu_sample_due = need_accel && imu_interval.is_some_and(|_| now >= next_imu_sample);
+
+        if imu_sample_due {
+            if let Some(interval) = imu_interval {
+                next_imu_sample = now + interval;
+            }
             outdoor_state.level_valid = false;
             match imu.read_accel_if_ready() {
                 Ok(Some(a)) => {
@@ -1467,7 +1491,7 @@ async fn main(_spawner: Spawner) {
             }
         }
 
-        if need_gyro {
+        if imu_sample_due && need_gyro {
             match imu.read_gyro_if_ready() {
                 Ok(Some(_)) => {}
                 Ok(None) => {}
@@ -2085,23 +2109,57 @@ async fn main(_spawner: Spawner) {
                 aod_last_minute = minute;
             }
         } else if screen_state >= 2 && (page_dirty || now >= next_watchface_flush) {
-            match app_state {
-                AppState::Watchface => {
-                    let _ = watchface.render(&mut fb);
+            let watchface_outcome = match app_state {
+                AppState::Watchface => Some(watchface.render(&mut fb)),
+                AppState::Launcher => {
+                    launcher.render(&mut fb);
+                    None
                 }
-                AppState::Launcher => launcher.render(&mut fb),
-                AppState::Settings => settings_app.render(&mut fb),
-                AppState::Outdoor => outdoor_app.render(&mut fb, &outdoor_state),
-                AppState::WorkTracker => work_tracker.render(&mut fb),
-                AppState::Authenticator => authenticator_app.render(&mut fb),
-                AppState::BleAnalyzer => ble_analyzer_app.render(&mut fb),
-                AppState::Mp3Player => media_controller.render(&mut fb),
-                AppState::Snake => snake_game.render(&mut fb),
-                AppState::Game2048 => game_2048.render(&mut fb),
-                AppState::Tetris => tetris_game.render(&mut fb),
-                AppState::Flappy => flappy_game.render(&mut fb),
-                AppState::Maze => maze_game.render(&mut fb),
-            }
+                AppState::Settings => {
+                    settings_app.render(&mut fb);
+                    None
+                }
+                AppState::Outdoor => {
+                    outdoor_app.render(&mut fb, &outdoor_state);
+                    None
+                }
+                AppState::WorkTracker => {
+                    work_tracker.render(&mut fb);
+                    None
+                }
+                AppState::Authenticator => {
+                    authenticator_app.render(&mut fb);
+                    None
+                }
+                AppState::BleAnalyzer => {
+                    ble_analyzer_app.render(&mut fb);
+                    None
+                }
+                AppState::Mp3Player => {
+                    media_controller.render(&mut fb);
+                    None
+                }
+                AppState::Snake => {
+                    snake_game.render(&mut fb);
+                    None
+                }
+                AppState::Game2048 => {
+                    game_2048.render(&mut fb);
+                    None
+                }
+                AppState::Tetris => {
+                    tetris_game.render(&mut fb);
+                    None
+                }
+                AppState::Flappy => {
+                    flappy_game.render(&mut fb);
+                    None
+                }
+                AppState::Maze => {
+                    maze_game.render(&mut fb);
+                    None
+                }
+            };
             let is_game = matches!(
                 app_state,
                 AppState::Snake
@@ -2113,11 +2171,43 @@ async fn main(_spawner: Spawner) {
             if is_game {
                 report_display(fb.swap_and_flush(&mut display, &mut te_pin).await);
                 page_dirty = false;
-                next_watchface_flush = now + Duration::from_millis(33);
+                let policy_interval_ms = policy.display_interval_ms().unwrap_or(33);
+                next_watchface_flush =
+                    now + Duration::from_millis(core::cmp::max(33, policy_interval_ms));
+            } else if let Some(outcome) = watchface_outcome {
+                match outcome {
+                    Ok(outcome) if outcome.full_redraw => report_display(fb.flush(&mut display)),
+                    Ok(outcome) => {
+                        for region in [
+                            outcome.time_region,
+                            outcome.battery_region,
+                            outcome.gyro_region,
+                            outcome.context_region,
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            report_display(fb.flush_region(
+                                &mut display,
+                                region.x,
+                                region.y,
+                                region.w,
+                                region.h,
+                            ));
+                        }
+                    }
+                    Err(error) => report_display(Err(error)),
+                }
+                page_dirty = false;
+                let policy_interval_ms = policy.display_interval_ms().unwrap_or(100);
+                next_watchface_flush =
+                    now + Duration::from_millis(core::cmp::max(100, policy_interval_ms));
             } else {
                 report_display(fb.flush(&mut display));
                 page_dirty = false;
-                next_watchface_flush = now + Duration::from_millis(100);
+                let policy_interval_ms = policy.display_interval_ms().unwrap_or(100);
+                next_watchface_flush =
+                    now + Duration::from_millis(core::cmp::max(100, policy_interval_ms));
             }
         }
     }

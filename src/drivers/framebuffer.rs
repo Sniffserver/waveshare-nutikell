@@ -27,23 +27,15 @@ pub struct Framebuffer {
 
 /// Align a dirty rectangle to even 2x2 bounds required by the CO5300 AMOLED.
 #[inline]
-pub fn align_to_even_region(x: u16, y: u16, w: u16, h: u16) -> Option<(usize, usize, usize, usize)> {
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let x0 = (x as usize).min(WIDTH.saturating_sub(2)) & !1;
-    let y0 = (y as usize).min(HEIGHT.saturating_sub(2)) & !1;
-
-    let raw_x1 = (x as usize).saturating_add(w as usize).min(WIDTH);
-    let raw_y1 = (y as usize).saturating_add(h as usize).min(HEIGHT);
-
-    let x1 = ((raw_x1 + 1) & !1).min(WIDTH);
-    let y1 = ((raw_y1 + 1) & !1).min(HEIGHT);
-
-    let flush_w = (x1.saturating_sub(x0)).max(2);
-    let flush_h = (y1.saturating_sub(y0)).max(2);
-
-    Some((x0, y0, flush_w, flush_h))
+pub fn align_to_even_region(
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+) -> Option<(usize, usize, usize, usize)> {
+    crate::drivers::display_window::align_to_even_region(
+        x as usize, y as usize, w as usize, h as usize, WIDTH, HEIGHT,
+    )
 }
 
 impl Framebuffer {
@@ -138,17 +130,19 @@ impl Framebuffer {
     }
 
     /// Flush only a rectangular region (dirty rect optimization).
-    pub fn flush_region(&self, display: &mut Co5300Display<'_>, x: u16, y: u16, w: u16, h: u16) {
+    pub fn flush_region(
+        &self,
+        display: &mut Co5300Display<'_>,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+    ) -> Result<(), DisplayError> {
         let Some((x0, y0, flush_w, flush_h)) = align_to_even_region(x, y, w, h) else {
-            return;
+            return Ok(());
         };
 
-        if display
-            .set_addr_window(x0 as u16, y0 as u16, flush_w as u16, flush_h as u16)
-            .is_err()
-        {
-            return;
-        }
+        display.set_addr_window(x0 as u16, y0 as u16, flush_w as u16, flush_h as u16)?;
         display.bus_mut().begin_pixels();
         for row in y0..(y0 + flush_h) {
             let start = row * WIDTH + x0;
@@ -156,6 +150,11 @@ impl Framebuffer {
             display.bus_mut().stream_pixels(&self.back[start..end]);
         }
         display.bus_mut().end_pixels();
+        if display.bus_mut().take_error() {
+            Err(DisplayError::BusError)
+        } else {
+            Ok(())
+        }
     }
 
     /// Get raw back buffer for direct access.

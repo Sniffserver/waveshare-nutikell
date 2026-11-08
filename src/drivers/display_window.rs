@@ -15,6 +15,35 @@ pub enum WindowError {
     CoordinateOverflow,
 }
 
+pub fn align_to_even_region(
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    panel_width: usize,
+    panel_height: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    if w == 0 || h == 0 || panel_width < 2 || panel_height < 2 {
+        return None;
+    }
+
+    let x0 = x.min(panel_width.saturating_sub(2)) & !1;
+    let y0 = y.min(panel_height.saturating_sub(2)) & !1;
+
+    let raw_x1 = x.saturating_add(w).min(panel_width);
+    let raw_y1 = y.saturating_add(h).min(panel_height);
+
+    let x1 = raw_x1.saturating_add(1) & !1;
+    let y1 = raw_y1.saturating_add(1) & !1;
+    let x1 = x1.min(panel_width);
+    let y1 = y1.min(panel_height);
+
+    let flush_w = x1.saturating_sub(x0).max(2);
+    let flush_h = y1.saturating_sub(y0).max(2);
+
+    Some((x0, y0, flush_w, flush_h))
+}
+
 impl DisplayWindow {
     pub fn checked(
         x: u16,
