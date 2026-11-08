@@ -389,11 +389,13 @@ impl SettingsApp {
             Rectangle::new(EgPoint::new(40, 366), Size::new(330, 44)),
             Size::new(8, 8),
         )
-        .into_styled(PrimitiveStyle::with_fill(if self.watch_settings.clock_24h {
-            Rgb565::new(2, 8, 4)
-        } else {
-            Rgb565::new(4, 4, 4)
-        }))
+        .into_styled(PrimitiveStyle::with_fill(
+            if self.watch_settings.clock_24h {
+                Rgb565::new(2, 8, 4)
+            } else {
+                Rgb565::new(4, 4, 4)
+            },
+        ))
         .draw(d);
         let clk_text = if self.watch_settings.clock_24h {
             "CLOCK: 24-HOUR"

@@ -357,7 +357,11 @@ impl AuthenticatorApp {
             copied_toast: false,
         };
         #[cfg(test)]
-        app.load_default_sample_accounts();
+        let app = {
+            let mut app = app;
+            app.load_default_sample_accounts();
+            app
+        };
         app
     }
 

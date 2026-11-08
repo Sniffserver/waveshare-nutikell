@@ -923,6 +923,7 @@ mod tests {
 
     #[test]
     fn touch_tap_coordinates_are_decoded_and_classified() {
+        embassy_time::MockDriver::get().reset();
         let expectations = [
             I2cTransaction::write_read(0x38, vec![0x02], vec![1, 0x00, 100, 0x00, 200]),
             I2cTransaction::write_read(0x38, vec![0x02], vec![0, 0, 0, 0, 0]),

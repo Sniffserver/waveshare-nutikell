@@ -107,7 +107,9 @@ use crate::drivers::co5300::Co5300Display;
 use crate::drivers::co5300::DisplayError;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
-use crate::peripherals::active_work::{calendar_to_unix, clear_active_session, load_active_session};
+use crate::peripherals::active_work::{
+    calendar_to_unix, clear_active_session, load_active_session,
+};
 use crate::peripherals::audio::{fill_beep_buffer, fill_chime_buffer, Es8311};
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::nvs::{read_credentials, write_credentials, StoredCredentials};
@@ -187,7 +189,10 @@ async fn wifi_connect_task() {
         if WIFI_DISCONNECT_REQ.signaled() {
             // Consume the signal so the next run starts clean.
             let _ = WIFI_DISCONNECT_REQ.try_take();
-            println!("[WIFI-TASK] disconnect requested before attempt {}", attempt);
+            println!(
+                "[WIFI-TASK] disconnect requested before attempt {}",
+                attempt
+            );
             {
                 let mut g = WIFI_CTRL_MUTEX.lock().await;
                 if let Some(c) = g.as_mut() {
@@ -212,10 +217,8 @@ async fn wifi_connect_task() {
         let connect_result = {
             let mut g = WIFI_CTRL_MUTEX.lock().await;
             if let Some(c) = g.as_mut() {
-                let connect_fut = embassy_time::with_timeout(
-                    Duration::from_secs(15),
-                    c.connect_async(),
-                );
+                let connect_fut =
+                    embassy_time::with_timeout(Duration::from_secs(15), c.connect_async());
                 // Interruptible by a disconnect request.
                 Some(select(connect_fut, WIFI_DISCONNECT_REQ.wait()).await)
             } else {
@@ -313,7 +316,9 @@ fn report_display(result: Result<(), DisplayError>) {
 
 // NTP sync — returns a parsed DateTime on success, Err(()) on failure.
 // Called by ntp_task; runs fully off the main loop.
-async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<crate::peripherals::rtc::DateTime, ()> {
+async fn ntp_sync_inner(
+    stack: embassy_net::Stack<'static>,
+) -> Result<crate::peripherals::rtc::DateTime, ()> {
     use embassy_net::udp::{PacketMetadata, UdpSocket};
 
     let mut rx_meta = [PacketMetadata::EMPTY; 1];
@@ -346,7 +351,10 @@ async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<crate::per
             }
         }
         _ => {
-            println!("[NTP] DNS query timed out or failed, using static fallback {:?}", fallback_ntp);
+            println!(
+                "[NTP] DNS query timed out or failed, using static fallback {:?}",
+                fallback_ntp
+            );
             fallback_ntp
         }
     };
@@ -822,15 +830,17 @@ async fn main(_spawner: Spawner) {
     // === WiFi init (OFF by default) ===
     use embassy_net::{Config as NetConfig, StackResources};
     use esp_radio::wifi::{
-        ap::AccessPointConfig, AuthenticationMethod, Config as WifiConfig,
-        ControllerConfig, PowerSaveMode, sta::StationConfig,
+        ap::AccessPointConfig, sta::StationConfig, AuthenticationMethod, Config as WifiConfig,
+        ControllerConfig, PowerSaveMode,
     };
     let (mut wifi_controller, wifi_interfaces) =
         esp_radio::wifi::new(peripherals.WIFI, ControllerConfig::default())
             .expect("WiFi init failed");
     // Enable DTIM-based power save immediately — reduces idle radio current
     // from ~90 mA to ~20 mA average.
-    wifi_controller.set_power_saving(PowerSaveMode::Maximum).ok();
+    wifi_controller
+        .set_power_saving(PowerSaveMode::Maximum)
+        .ok();
 
     let mut ble_connector = esp_radio::ble::controller::BleConnector::new(
         peripherals.BT,
@@ -941,8 +951,12 @@ async fn main(_spawner: Spawner) {
         let ap_resources = AP_RESOURCES.init(StackResources::new());
         let ap_seed = ((esp_hal::rng::Rng::new().random() as u64) << 32)
             | (esp_hal::rng::Rng::new().random() as u64);
-        let (ap_stack, ap_runner) =
-            embassy_net::new(wifi_interfaces.access_point, ap_net_config, ap_resources, ap_seed);
+        let (ap_stack, ap_runner) = embassy_net::new(
+            wifi_interfaces.access_point,
+            ap_net_config,
+            ap_resources,
+            ap_seed,
+        );
         if let Ok(token) = net_task(ap_runner) {
             _spawner.spawn(token);
         }
@@ -1029,7 +1043,8 @@ async fn main(_spawner: Spawner) {
 
     let sta_seed = ((esp_hal::rng::Rng::new().random() as u64) << 32)
         | (esp_hal::rng::Rng::new().random() as u64);
-    let (stack, runner) = embassy_net::new(wifi_interfaces.station, net_config, resources, sta_seed);
+    let (stack, runner) =
+        embassy_net::new(wifi_interfaces.station, net_config, resources, sta_seed);
 
     // Spawn network runner task. It does nothing useful until the radio
     // has been started, but spawning it here avoids having to hot-spawn
@@ -1565,9 +1580,7 @@ async fn main(_spawner: Spawner) {
         }
 
         // Handle a user toggle request (debounced: 2 s minimum between toggles).
-        if wifi_toggle_request
-            && now.duration_since(last_wifi_toggle) > Duration::from_secs(2)
-        {
+        if wifi_toggle_request && now.duration_since(last_wifi_toggle) > Duration::from_secs(2) {
             last_wifi_toggle = now;
             wifi_toggle_request = false;
 
@@ -1728,29 +1741,29 @@ async fn main(_spawner: Spawner) {
                     }
 
                     match event.direction {
-                    SwipeDirection::Right => {
-                        // Swipe right → previous page.
-                        current_page = match current_page {
-                            Page::Clock => Page::Power,
-                            Page::Sensors => Page::Clock,
-                            Page::System => Page::Sensors,
-                            Page::Power => Page::System,
-                        };
-                        page_dirty = true;
+                        SwipeDirection::Right => {
+                            // Swipe right → previous page.
+                            current_page = match current_page {
+                                Page::Clock => Page::Power,
+                                Page::Sensors => Page::Clock,
+                                Page::System => Page::Sensors,
+                                Page::Power => Page::System,
+                            };
+                            page_dirty = true;
+                        }
+                        SwipeDirection::Left => {
+                            // Swipe left → next page.
+                            current_page = match current_page {
+                                Page::Clock => Page::Sensors,
+                                Page::Sensors => Page::System,
+                                Page::System => Page::Power,
+                                Page::Power => Page::Clock,
+                            };
+                            page_dirty = true;
+                        }
+                        SwipeDirection::Up | SwipeDirection::Down | SwipeDirection::Tap => {}
                     }
-                    SwipeDirection::Left => {
-                        // Swipe left → next page.
-                        current_page = match current_page {
-                            Page::Clock => Page::Sensors,
-                            Page::Sensors => Page::System,
-                            Page::System => Page::Power,
-                            Page::Power => Page::Clock,
-                        };
-                        page_dirty = true;
-                    }
-                    SwipeDirection::Up | SwipeDirection::Down | SwipeDirection::Tap => {}
                 }
-            }
             }
         }
         // Dispatch the normalized input to the active application. The
