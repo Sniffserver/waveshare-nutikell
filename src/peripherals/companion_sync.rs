@@ -1,4 +1,4 @@
-//! Bounded, provider-neutral data received from the LAN companion.
+//! Bounded, provider-neutral data received from the iOS companion.
 //!
 //! This is deliberately the normalized representation, not a mirror of a
 //! weather or calendar provider response. Keeping the boundary here lets the
@@ -15,6 +15,7 @@ pub const MAX_CONTEXT_ROW_BYTES: usize = 25;
 const JSON_STRING_BUFFER_BYTES: usize = 64;
 pub const SNAPSHOT_FRAME_HEADER_BYTES: usize = 10;
 pub const SNAPSHOT_AUTH_TAG_BYTES: usize = 16;
+pub const SNAPSHOT_IDLE_TIMEOUT_SECS: u64 = 30;
 const MAX_SNAPSHOT_TRANSFER_BYTES: usize = MAX_SNAPSHOT_JSON_BYTES + SNAPSHOT_AUTH_TAG_BYTES;
 const SNAPSHOT_FRAME_MAGIC: u8 = 0x53;
 const SNAPSHOT_PROTOCOL_VERSION: u8 = 1;
@@ -321,11 +322,9 @@ pub fn parse_snapshot_json(data: &[u8]) -> Result<SyncSnapshot, CompanionSyncErr
     }
 
     let mut string_buffer = [0; JSON_STRING_BUFFER_BYTES];
-    let (snapshot, _) = serde_json_core::from_slice_escaped::<SyncSnapshot>(
-        data,
-        &mut string_buffer,
-    )
-    .map_err(|_| CompanionSyncError::InvalidJson)?;
+    let (snapshot, _) =
+        serde_json_core::from_slice_escaped::<SyncSnapshot>(data, &mut string_buffer)
+            .map_err(|_| CompanionSyncError::InvalidJson)?;
     snapshot.validate()?;
     Ok(snapshot)
 }
@@ -357,6 +356,7 @@ impl SnapshotAssembler {
     }
 
     pub fn reset(&mut self) {
+        self.bytes[..self.received].fill(0);
         self.active = false;
         self.total_len = 0;
         self.received = 0;
@@ -367,7 +367,8 @@ impl SnapshotAssembler {
         frame: &[u8],
         auth_key: &[u8],
     ) -> Result<Option<SyncSnapshot>, CompanionSyncError> {
-        if frame.len() <= SNAPSHOT_FRAME_HEADER_BYTES || frame[0] != SNAPSHOT_FRAME_MAGIC
+        if frame.len() <= SNAPSHOT_FRAME_HEADER_BYTES
+            || frame[0] != SNAPSHOT_FRAME_MAGIC
             || frame[1] != SNAPSHOT_PROTOCOL_VERSION
         {
             self.reset();
@@ -461,6 +462,12 @@ impl Default for SnapshotAssembler {
     }
 }
 
+impl Drop for SnapshotAssembler {
+    fn drop(&mut self) {
+        self.bytes.fill(0);
+    }
+}
+
 fn freshness(age_secs: u64, fresh_until_secs: u64, offline_after_secs: u64) -> SnapshotFreshness {
     if age_secs <= fresh_until_secs {
         SnapshotFreshness::Fresh
@@ -472,7 +479,10 @@ fn freshness(age_secs: u64, fresh_until_secs: u64, offline_after_secs: u64) -> S
 }
 
 /// Build one short ASCII row for the watchface without allocating.
-pub fn format_context_row(snapshot: Option<&SyncSnapshot>, now_unix: i64) -> String<MAX_CONTEXT_ROW_BYTES> {
+pub fn format_context_row(
+    snapshot: Option<&SyncSnapshot>,
+    now_unix: i64,
+) -> String<MAX_CONTEXT_ROW_BYTES> {
     use core::fmt::Write;
 
     let mut row = String::new();
@@ -493,12 +503,7 @@ pub fn format_context_row(snapshot: Option<&SyncSnapshot>, now_unix: i64) -> Str
             } else {
                 (temperature + 5) / 10
             };
-            let _ = write!(
-                row,
-                "{}C {}",
-                rounded,
-                condition_short(weather.condition)
-            );
+            let _ = write!(row, "{}C {}", rounded, condition_short(weather.condition));
         }
         (Some(_), SnapshotFreshness::Offline) => {
             let _ = row.push_str("Wx offline");
@@ -520,7 +525,14 @@ pub fn format_context_row(snapshot: Option<&SyncSnapshot>, now_unix: i64) -> Str
             }
             if let Some(event) = snapshot.agenda.next_event(now_unix) {
                 let title = truncate_utf8(event.title.as_str(), 9);
-                let _ = row.push_str(title);
+                for character in title.chars() {
+                    let glyph = if character.is_ascii_graphic() || character == ' ' {
+                        character
+                    } else {
+                        '?'
+                    };
+                    let _ = row.push(glyph);
+                }
             } else {
                 let _ = row.push_str("No event");
             }
@@ -766,7 +778,10 @@ mod tests {
         }"#;
 
         let snapshot = parse_snapshot_json(json).unwrap();
-        assert_eq!(snapshot.weather.as_ref().unwrap().condition, WeatherCondition::PartlyCloudy);
+        assert_eq!(
+            snapshot.weather.as_ref().unwrap().condition,
+            WeatherCondition::PartlyCloudy
+        );
         assert_eq!(snapshot.agenda.events[0].title.as_str(), "Standup ☁");
         assert_eq!(snapshot.validate(), Ok(()));
     }
@@ -787,7 +802,8 @@ mod tests {
 
     #[test]
     fn assembler_requires_ordered_authenticated_non_replayed_transfer() {
-        let json = br#"{"schema":1,"generated_at_unix":1000,"weather":null,"agenda":{"events":[]}}"#;
+        let json =
+            br#"{"schema":1,"generated_at_unix":1000,"weather":null,"agenda":{"events":[]}}"#;
         let key = b"test-only-sync-key";
         let sequence = 7u32;
         let mut transfer = alloc::vec::Vec::from(json.as_slice());
@@ -812,7 +828,8 @@ mod tests {
 
     #[test]
     fn assembler_rejects_authentication_failure_and_out_of_order_fragments() {
-        let json = br#"{"schema":1,"generated_at_unix":1000,"weather":null,"agenda":{"events":[]}}"#;
+        let json =
+            br#"{"schema":1,"generated_at_unix":1000,"weather":null,"agenda":{"events":[]}}"#;
         let key = b"test-only-sync-key";
         let mut transfer = alloc::vec::Vec::from(json.as_slice());
         transfer.extend_from_slice(&[0; SNAPSHOT_AUTH_TAG_BYTES]);
@@ -833,7 +850,12 @@ mod tests {
         );
     }
 
-    fn snapshot_frame(sequence: u32, total_len: usize, offset: usize, payload: &[u8]) -> alloc::vec::Vec<u8> {
+    fn snapshot_frame(
+        sequence: u32,
+        total_len: usize,
+        offset: usize,
+        payload: &[u8],
+    ) -> alloc::vec::Vec<u8> {
         let mut frame = alloc::vec::Vec::with_capacity(SNAPSHOT_FRAME_HEADER_BYTES + payload.len());
         frame.push(SNAPSHOT_FRAME_MAGIC);
         frame.push(SNAPSHOT_PROTOCOL_VERSION);

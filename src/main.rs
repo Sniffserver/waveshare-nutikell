@@ -860,10 +860,18 @@ async fn main(_spawner: Spawner) {
         watch_settings.wifi_enabled,
     );
     if watch_settings.ble_enabled {
-        if let Err(e) = crate::peripherals::ble::start_advertising(&mut ble_connector) {
-            println!("[BLE] advertising start failed: {:?}", e);
+        if let Some(auth_key) = crate::peripherals::nvs::read_device_auth_key() {
+            if let Ok(task) = crate::peripherals::ble::companion_sync_task(ble_connector, auth_key)
+            {
+                _spawner.spawn(task);
+                println!("[BLE] companion GATT service started");
+            } else {
+                println!("[BLE] companion GATT task could not start");
+            }
+        } else if let Err(error) = crate::peripherals::ble::start_advertising(&mut ble_connector) {
+            println!("[BLE] advertising start failed: {:?}", error);
         } else {
-            println!("[BLE] advertising enabled");
+            println!("[BLE] advertising enabled without sync key");
         }
     }
 
@@ -1034,6 +1042,9 @@ async fn main(_spawner: Spawner) {
 
     // === State ===
     let mut watchface = WatchFace::new();
+    watchface.set_context_row("Offline");
+    let mut snapshot_store = crate::peripherals::companion_sync::RamSnapshotStore::new();
+    let mut snapshot_received_at: Option<Instant> = None;
     watchface.wifi_connected = false;
     // Credentials being present does not mean the radio is running; Wi-Fi is
     // explicitly user-activated from the watchface.
@@ -1355,6 +1366,36 @@ async fn main(_spawner: Spawner) {
         .await;
 
         let now = Instant::now();
+        if let Some(snapshot) = crate::peripherals::ble::SNAPSHOT_RESULT.try_take() {
+            let generated_at = snapshot.generated_at_unix;
+            if crate::peripherals::companion_sync::SnapshotStore::save(
+                &mut snapshot_store,
+                snapshot,
+                generated_at,
+            )
+            .is_ok()
+            {
+                snapshot_received_at = Some(now);
+            }
+        }
+        if let Some(snapshot) =
+            crate::peripherals::companion_sync::SnapshotStore::load(&snapshot_store)
+        {
+            let elapsed_secs = snapshot_received_at
+                .map(|received| (now - received).as_secs() as i64)
+                .unwrap_or(0);
+            let context = crate::peripherals::companion_sync::format_context_row(
+                Some(snapshot),
+                snapshot.generated_at_unix.saturating_add(elapsed_secs),
+            );
+            watchface.set_context_row(context.as_str());
+        }
+        if let Some(packet) = crate::peripherals::ble::POSITION_RESULT.try_take() {
+            let encoded = packet.encode();
+            let now_unix = calendar_to_unix(outdoor_state.date_ymd, outdoor_state.time_hms)
+                .unwrap_or(packet.timestamp_unix);
+            let _ = outdoor_state.handle_position_write(&encoded, now_unix);
+        }
         let dt_ms = (now - last_frame).as_millis() as u32;
         last_frame = now;
 
@@ -1601,67 +1642,68 @@ async fn main(_spawner: Spawner) {
         let mut frame_swipe = None;
         if touch_int.is_low() || touch.is_tracking() {
             if let Ok((point, swipe_event)) = touch.poll() {
-            if point.is_some() {
-                frame_touch = point;
-                last_interaction = now;
-                // Wake screen if off/AOD or restore full brightness from dim.
-                if screen_state < 2 {
-                    screen_state = 3;
-                    page_dirty = true;
-                    report_display(display.display_on());
-                    report_display(display.set_brightness(watchface.brightness));
-                } else if screen_state == 2 {
-                    screen_state = 3;
-                    report_display(display.set_brightness(watchface.brightness));
-                    page_dirty = true;
-                }
-            }
-
-            if let Some(event) = swipe_event {
-                frame_swipe = Some(event.direction);
-                let event_touch = TouchPoint {
-                    x: event.end_x,
-                    y: event.end_y,
-                    fingers: 0,
-                };
-                frame_touch = Some(event_touch);
-                last_interaction = now;
-                if screen_state < 2 {
-                    screen_state = 3;
-                    report_display(display.display_on());
-                    report_display(display.set_brightness(watchface.brightness));
-                    page_dirty = true;
-                } else if screen_state == 2 {
-                    screen_state = 3;
-                    report_display(display.set_brightness(watchface.brightness));
-                    page_dirty = true;
-                }
-
-                if app_state == AppState::Watchface && event.direction == SwipeDirection::Tap {
-                    if let Some(tp) = frame_touch {
-                        if WatchFace::is_apps_zone(tp.x, tp.y) {
-                            app_state = AppState::Launcher;
-                            launcher = Launcher::new();
-                            page_dirty = true;
-                        } else if WatchFace::is_wifi_zone(tp.x, tp.y) {
-                            wifi_toggle_request = true;
-                        } else if WatchFace::is_gyro_zone(tp.x, tp.y) {
-                            watchface.toggle_gyro();
-                            page_dirty = true;
-                        } else if let Some(brightness) = WatchFace::brightness_from_tap(tp.x, tp.y)
-                        {
-                            watchface.brightness = brightness;
-                            report_display(display.set_brightness(brightness));
-                            watchface.force_redraw();
-                            page_dirty = true;
-                        } else if WatchFace::is_cpu_zone(tp.x, tp.y) {
-                            watchface.cycle_cpu();
-                            page_dirty = true;
-                        }
+                if point.is_some() {
+                    frame_touch = point;
+                    last_interaction = now;
+                    // Wake screen if off/AOD or restore full brightness from dim.
+                    if screen_state < 2 {
+                        screen_state = 3;
+                        page_dirty = true;
+                        report_display(display.display_on());
+                        report_display(display.set_brightness(watchface.brightness));
+                    } else if screen_state == 2 {
+                        screen_state = 3;
+                        report_display(display.set_brightness(watchface.brightness));
+                        page_dirty = true;
                     }
                 }
 
-                match event.direction {
+                if let Some(event) = swipe_event {
+                    frame_swipe = Some(event.direction);
+                    let event_touch = TouchPoint {
+                        x: event.end_x,
+                        y: event.end_y,
+                        fingers: 0,
+                    };
+                    frame_touch = Some(event_touch);
+                    last_interaction = now;
+                    if screen_state < 2 {
+                        screen_state = 3;
+                        report_display(display.display_on());
+                        report_display(display.set_brightness(watchface.brightness));
+                        page_dirty = true;
+                    } else if screen_state == 2 {
+                        screen_state = 3;
+                        report_display(display.set_brightness(watchface.brightness));
+                        page_dirty = true;
+                    }
+
+                    if app_state == AppState::Watchface && event.direction == SwipeDirection::Tap {
+                        if let Some(tp) = frame_touch {
+                            if WatchFace::is_apps_zone(tp.x, tp.y) {
+                                app_state = AppState::Launcher;
+                                launcher = Launcher::new();
+                                page_dirty = true;
+                            } else if WatchFace::is_wifi_zone(tp.x, tp.y) {
+                                wifi_toggle_request = true;
+                            } else if WatchFace::is_gyro_zone(tp.x, tp.y) {
+                                watchface.toggle_gyro();
+                                page_dirty = true;
+                            } else if let Some(brightness) =
+                                WatchFace::brightness_from_tap(tp.x, tp.y)
+                            {
+                                watchface.brightness = brightness;
+                                report_display(display.set_brightness(brightness));
+                                watchface.force_redraw();
+                                page_dirty = true;
+                            } else if WatchFace::is_cpu_zone(tp.x, tp.y) {
+                                watchface.cycle_cpu();
+                                page_dirty = true;
+                            }
+                        }
+                    }
+
+                    match event.direction {
                     SwipeDirection::Right => {
                         // Swipe right → previous page.
                         current_page = match current_page {
@@ -1687,8 +1729,6 @@ async fn main(_spawner: Spawner) {
             }
             }
         }
-    }
-
         // Dispatch the normalized input to the active application. The
         // release point is retained so taps can hit-test app controls.
         let app_touch = frame_touch;

@@ -4,6 +4,7 @@ import CoreLocation
 struct ContentView: View {
     @EnvironmentObject var ble: BLEManager
     @EnvironmentObject var location: LocationProvider
+    @EnvironmentObject var snapshots: SnapshotProvider
     @State private var sequence: UInt32 = 0
 
     var body: some View {
@@ -22,6 +23,18 @@ struct ContentView: View {
                     title: "GPS Location",
                     value: location.lastLocation == nil ? "No fix" : "Fix available",
                     color: location.lastLocation == nil ? .orange : .green
+                )
+
+                StatusRow(
+                    title: "Weather / agenda",
+                    value: snapshots.stateText,
+                    color: snapshots.stateText.contains("failed") || snapshots.stateText.contains("needed") ? .orange : .green
+                )
+
+                StatusRow(
+                    title: "Snapshot BLE",
+                    value: ble.snapshotState,
+                    color: ble.snapshotState == "Synced" ? .green : .orange
                 )
 
                 if let position = location.lastLocation {
@@ -49,6 +62,21 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
+
+                Button {
+                    guard let currentLocation = location.lastLocation else {
+                        snapshots.stateText = "Location needed"
+                        return
+                    }
+                    Task {
+                        guard let data = await snapshots.makeSnapshot(for: currentLocation) else { return }
+                        _ = ble.sendSnapshot(data)
+                    }
+                } label: {
+                    Label("Sync Weather & Agenda", systemImage: "cloud.sun")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!ble.canSyncSnapshot || location.lastLocation == nil)
 
                 Button(location.tracking ? "Stop Live Sync" : "Start Live Sync") {
                     if location.tracking {

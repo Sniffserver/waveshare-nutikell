@@ -8,7 +8,7 @@
 
 ##  Featured On
 * **Hackaday:** [Rust-y Firmware For Waveshare Smartwatch](https://hackaday.com/2026/04/11/rust-y-firmware-for-waveshare-smartwatch/)
-  
+
 <img width="400" height="270" alt="image" src="https://github.com/user-attachments/assets/331e6778-bf67-4f5f-a753-b65d6e0f1d57" />
 
 
@@ -329,10 +329,16 @@ On Linux: `/dev/ttyACM0` or `/dev/ttyUSB0` depending on the USB bridge.
 
 ### Partially wired / stubbed
 - **MP3 decoding**: `nanomp3` compiled and as a dependency, UI ready, SD → I2S stream to be wired.
-- **BLE**: HCI initialization and authenticated position-packet dispatch are enabled. The pinned radio crate does not provide a GATT server, so a production GATT server task must call the dispatcher for each characteristic write.
+- **BLE companion sync**: Trouble-host GATT service carries the unchanged authenticated position packet and the new bounded weather/agenda snapshot characteristic. Snapshot transfers are offset-framed, sequence-checked, and HMAC-authenticated before parsing.
+- **Weather/agenda**: iOS WeatherKit and EventKit sources send normalized `sbie-watch.sync.v1` snapshots on explicit request. The watch retains the last valid snapshot in RAM and marks each domain fresh, stale, or offline on the watchface.
+- **iOS build configuration**: The Swift sources are part of an external Xcode project; add `SnapshotProvider.swift` to its app target. Enable the WeatherKit capability and add `NSCalendarsFullAccessUsageDescription` (and `NSCalendarsUsageDescription` when supporting pre-iOS 17). The app must load the same device key through its external keychain provisioning flow before sync can start.
 - **WiFi scan list**: `ScanResult` types ready, Settings UI shows the field but without scan.
 - **USB Mass Storage**: not wired (copy-from-PC would require `usb-device` + `usbd-storage`).
 - **ESP deep sleep**: no `esp_hal::system::Sleep`; we stay in light sleep via the Embassy executor, sufficient for watch usage.
+
+### Companion snapshot wire format
+
+The 10-byte BLE frame header contains magic `0x53`, protocol version `1`, a little-endian `u32` sequence, a little-endian `u16` total transfer length, and a little-endian `u16` byte offset. The transfer is the JSON document followed by the first 16 bytes of HMAC-SHA-256 over `sbie-watch.sync.v1\0`, the sequence, and the JSON. JSON is capped at 12 KiB; the normalized model additionally caps forecast entries, agenda entries, and UTF-8 string sizes. Partial or invalid transfers never replace the RAM cache.
 
 ---
 

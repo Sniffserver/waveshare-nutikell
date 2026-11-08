@@ -966,10 +966,7 @@ impl WatchFace {
         Ok(())
     }
 
-    fn draw_context_row<D: DrawTarget<Color = Rgb565>>(
-        &self,
-        d: &mut D,
-    ) -> Result<(), D::Error> {
+    fn draw_context_row<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D) -> Result<(), D::Error> {
         if self.context_row.is_empty() {
             return Ok(());
         }

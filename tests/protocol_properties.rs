@@ -4,6 +4,8 @@
 //! normal host CI job. The same invariants can be promoted to cargo-fuzz
 //! targets later without changing the production decoder API.
 
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use waveshare_watch_rs::outdoor::packet::{
     PositionError, PositionPacket, FLAG_ACCURACY_VALID, FLAG_ALTITUDE_VALID, FLAG_COORDS_VALID,
     FLAG_COURSE_VALID, FLAG_SPEED_VALID, POSITION_PACKET_LEN,
@@ -12,13 +14,11 @@ use waveshare_watch_rs::peripherals::companion_sync::{
     format_context_row, parse_snapshot_json, CompanionSyncError, SnapshotAssembler,
     MAX_SNAPSHOT_JSON_BYTES, SNAPSHOT_AUTH_TAG_BYTES, SNAPSHOT_FRAME_HEADER_BYTES,
 };
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 
 const SYNC_HMAC_DOMAIN: &[u8] = b"sbie-watch.sync.v1\0";
 
 fn snapshot_json() -> &'static [u8] {
-    br#"{"schema":1,"generated_at_unix":1000,"weather":{"location":"Tallinn","observed_at_unix":990,"temperature_tenths_c":124,"condition":"partly_cloudy","high_tenths_c":160,"low_tenths_c":80,"precipitation_probability_percent":35,"hourly":[]},"agenda":{"events":[{"id":"event-1","title":"Standup \u2601","start_unix":1100,"end_unix":1200,"location":"Office","all_day":false}]}}"#
+    br#"{"schema":1,"generated_at_unix":1000,"weather":{"location":"Tallinn","observed_at_unix":990,"temperature_tenths_c":124,"condition":"partly_cloudy","high_tenths_c":160,"low_tenths_c":80,"precipitation_probability_percent":35,"hourly":[]},"agenda":{"events":[{"id":"event-1","title":"Stand\u2601up","start_unix":1100,"end_unix":1200,"location":"Office","all_day":false}]}}"#
 }
 
 fn packet() -> PositionPacket {
@@ -87,8 +87,10 @@ fn authentication_is_key_and_sequence_independent() {
 #[test]
 fn snapshot_parser_checks_schema_and_formats_context_row() {
     let snapshot = parse_snapshot_json(snapshot_json()).unwrap();
-    assert_eq!(snapshot.agenda.events[0].title.as_str(), "Standup ☁");
-    assert_eq!(format_context_row(Some(&snapshot), 1000).as_str(), "12C Partly | Standup");
+    assert_eq!(snapshot.agenda.events[0].title.as_str(), "Stand☁up");
+    let context_row = format_context_row(Some(&snapshot), 1000);
+    assert_eq!(context_row.as_str(), "12C Partly | Stand?u");
+    assert!(context_row.is_ascii());
     assert_eq!(format_context_row(None, 1000).as_str(), "Offline");
 
     let mut stale = snapshot;

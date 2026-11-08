@@ -15,10 +15,7 @@
 use embedded_io::Write;
 
 #[cfg(target_arch = "xtensa")]
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    signal::Signal,
-};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 #[cfg(target_arch = "xtensa")]
 use static_cell::StaticCell;
 #[cfg(target_arch = "xtensa")]
@@ -30,7 +27,9 @@ use crate::outdoor::{BleStatus, OutdoorState};
 #[cfg(target_arch = "xtensa")]
 use crate::outdoor::packet::PositionPacket;
 #[cfg(target_arch = "xtensa")]
-use crate::peripherals::companion_sync::{SnapshotAssembler, SyncSnapshot};
+use crate::peripherals::companion_sync::{
+    SnapshotAssembler, SyncSnapshot, SNAPSHOT_IDLE_TIMEOUT_SECS,
+};
 #[cfg(target_arch = "xtensa")]
 use crate::peripherals::nvs::DeviceAuthKey;
 
@@ -121,7 +120,11 @@ pub fn stop_advertising<W: Write>(hci: &mut W) -> Result<(), W::Error> {
 }
 
 #[cfg(target_arch = "xtensa")]
-#[gatt_server]
+#[gatt_server(
+    connections_max = 1,
+    mutex_type = embassy_sync::blocking_mutex::raw::NoopRawMutex,
+    attribute_table_size = 32
+)]
 struct OutdoorGattServer {
     outdoor: OutdoorGattService,
 }
@@ -136,12 +139,7 @@ struct OutdoorGattService {
         value = [0; 50]
     )]
     position: [u8; 50],
-    #[characteristic(
-        uuid = "7A7E0004-5B8A-4C9C-9A4C-6B5E5F001001",
-        read,
-        notify,
-        value = 0
-    )]
+    #[characteristic(uuid = "7A7E0004-5B8A-4C9C-9A4C-6B5E5F001001", read, notify, value = 0)]
     status: u8,
     #[characteristic(
         uuid = "7A7E0005-5B8A-4C9C-9A4C-6B5E5F001001",
@@ -159,8 +157,8 @@ pub async fn companion_sync_task(
     auth_key: DeviceAuthKey,
 ) -> ! {
     const SERVICE_UUID_LE: [[u8; 16]; 1] = [[
-        0x01, 0x10, 0x00, 0x5f, 0x5e, 0x6b, 0x4c, 0x9a, 0x9c, 0x4c, 0x8a, 0x5b, 0x01, 0x00,
-        0x7e, 0x7a,
+        0x01, 0x10, 0x00, 0x5f, 0x5e, 0x6b, 0x4c, 0x9a, 0x9c, 0x4c, 0x8a, 0x5b, 0x01, 0x00, 0x7e,
+        0x7a,
     ]];
     const CONNECTIONS: usize = 1;
     const CHANNELS: usize = 2;
@@ -187,6 +185,7 @@ pub async fn companion_sync_task(
     };
     let peripheral_task = async move {
         let mut assembler = SnapshotAssembler::new();
+        let mut last_snapshot_fragment = None;
         let mut status = BleStatus::new();
         let mut outdoor = OutdoorState::new();
         let position = server.outdoor.position;
@@ -224,18 +223,31 @@ pub async fn companion_sync_task(
             };
 
             loop {
-                match connection.next().await {
-                    GattConnectionEvent::Disconnected { .. } => {
+                let event = embassy_futures::select::select(
+                    connection.next(),
+                    embassy_time::Timer::after_secs(5),
+                )
+                .await;
+                match event {
+                    embassy_futures::select::Either::First(GattConnectionEvent::Disconnected {
+                        ..
+                    }) => {
                         assembler.reset();
+                        last_snapshot_fragment = None;
                         break;
                     }
-                    GattConnectionEvent::Gatt { event } => {
+                    embassy_futures::select::Either::First(GattConnectionEvent::Gatt { event }) => {
                         if let GattEvent::Write(write) = &event {
                             if write.handle() == snapshot.handle {
-                                if let Ok(Some(value)) =
-                                    assembler.push_fragment(write.data(), auth_key.as_bytes())
-                                {
-                                    SNAPSHOT_RESULT.signal(value);
+                                match assembler.push_fragment(write.data(), auth_key.as_bytes()) {
+                                    Ok(Some(value)) => {
+                                        last_snapshot_fragment = None;
+                                        SNAPSHOT_RESULT.signal(value);
+                                    }
+                                    Ok(None) => {
+                                        last_snapshot_fragment = Some(embassy_time::Instant::now())
+                                    }
+                                    Err(_) => last_snapshot_fragment = None,
                                 }
                             } else if write.handle() == position.handle
                                 && dispatch_position_write(
@@ -255,6 +267,15 @@ pub async fn companion_sync_task(
                         }
                         if let Ok(reply) = event.accept() {
                             reply.send().await;
+                        }
+                    }
+                    embassy_futures::select::Either::Second(_) => {
+                        if last_snapshot_fragment.is_some_and(|last| {
+                            embassy_time::Instant::now().duration_since(last).as_secs()
+                                >= SNAPSHOT_IDLE_TIMEOUT_SECS
+                        }) {
+                            assembler.reset();
+                            last_snapshot_fragment = None;
                         }
                     }
                     _ => {}
