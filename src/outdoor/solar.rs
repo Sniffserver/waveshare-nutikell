@@ -92,7 +92,7 @@ pub fn calculate_solar(
     // Geometric mean longitude of the Sun
     let l0 = wrap_360(280.46646 + t * (36000.77 + 0.0003032 * t));
     // Sun mean anomaly
-    let m_sun = wrap_360(357.52911 + t * (35999.05 - 0.0001537 * t));
+    let m_sun = wrap_360(357.529_1 + t * (35999.05 - 0.0001537 * t));
     // Earth orbit eccentricity
     let e = 0.016708634 - t * (0.000042037 + 0.0000001267 * t);
 

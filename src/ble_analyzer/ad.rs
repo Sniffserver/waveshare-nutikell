@@ -85,12 +85,10 @@ pub fn extract_ad_info(structures: &[AdStructure]) -> AdvertisementInfo {
                 }
             }
             // Complete local name (takes precedence)
-            0x09 => {
-                if let Ok(s) = core::str::from_utf8(&structure.data) {
-                    let mut name = String::<MAX_NAME_LEN>::new();
-                    let _ = name.push_str(s);
-                    result.name = Some(name);
-                }
+            0x09 if let Ok(s) = core::str::from_utf8(&structure.data) => {
+                let mut name = String::<MAX_NAME_LEN>::new();
+                let _ = name.push_str(s);
+                result.name = Some(name);
             }
             // 16-bit Service UUIDs (incomplete or complete)
             0x02 | 0x03 => {
@@ -102,11 +100,9 @@ pub fn extract_ad_info(structures: &[AdStructure]) -> AdvertisementInfo {
                 }
             }
             // Manufacturer Specific Data
-            0xFF => {
-                if structure.data.len() >= 2 {
-                    result.company_id =
-                        Some(u16::from_le_bytes([structure.data[0], structure.data[1]]));
-                }
+            0xFF if structure.data.len() >= 2 => {
+                result.company_id =
+                    Some(u16::from_le_bytes([structure.data[0], structure.data[1]]));
             }
             _ => {}
         }
