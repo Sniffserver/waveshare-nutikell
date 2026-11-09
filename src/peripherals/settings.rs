@@ -74,25 +74,7 @@ impl SettingsFlash for FlashStorage {
     }
 }
 
-// ── CRC32 (no-alloc, no external crate) ────────────────────────────────────
-
-fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
-    for &byte in data {
-        crc ^= (byte as u32) << 24;
-        for _ in 0..8 {
-            if crc & 0x8000_0000 != 0 {
-                crc = (crc << 1) ^ 0x04C1_1DB7;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc
-}
-
-fn crc32(data: &[u8]) -> u32 {
-    crc32_update(0xFFFF_FFFF, data) ^ 0xFFFF_FFFF
-}
+use crate::peripherals::crc::crc32;
 
 // ── Settings blob ───────────────────────────────────────────────────────────
 

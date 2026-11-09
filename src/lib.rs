@@ -55,6 +55,7 @@ pub mod apps {
 pub mod peripherals {
     pub mod active_work;
     pub mod companion_sync;
+    pub mod crc;
     pub mod flash_layout;
     pub mod ntp;
     pub mod nvs;

@@ -78,20 +78,7 @@ pub trait ActiveWorkFlash {
     fn erase(&mut self, from: u32, to: u32) -> Result<(), ()>;
 }
 
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &byte in data {
-        crc ^= (byte as u32) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 {
-                (crc << 1) ^ 0x04C1_1DB7
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc ^ 0xFFFF_FFFF
-}
+use crate::peripherals::crc::crc32;
 
 fn v3_slot_offset(slot: usize) -> u32 {
     OFFSET + (slot * V3_RECORD_LEN) as u32

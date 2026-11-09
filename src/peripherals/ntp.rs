@@ -55,9 +55,21 @@ pub fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
 }
 
-/// NTP sync — returns a parsed DateTime on success, Err(()) on failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NtpError {
+    SocketBind,
+    SendFailed,
+    Timeout,
+    RecvFailed,
+    ShortResponse,
+    InvalidReply,
+    EpochConversion,
+    UnrepresentableYear,
+}
+
+/// NTP sync — returns a parsed DateTime on success, NtpError on failure.
 /// Runs fully off the main loop.
-pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTime, ()> {
+pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTime, NtpError> {
     let mut rx_meta = [PacketMetadata::EMPTY; 1];
     let mut rx_buf = [0u8; 256];
     let mut tx_meta = [PacketMetadata::EMPTY; 1];
@@ -65,7 +77,7 @@ pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTi
 
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
     // Port 0 -> kernel assigns a free ephemeral port automatically.
-    socket.bind(0).map_err(|_| ())?;
+    socket.bind(0).map_err(|_| NtpError::SocketBind)?;
 
     // NTP request packet (simplified: 48 bytes, first byte = 0x1B for client mode)
     let mut ntp_request = [0u8; 48];
@@ -100,7 +112,7 @@ pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTi
     socket
         .send_to(&ntp_request, (ntp_addr, 123))
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| NtpError::SendFailed)?;
 
     println!("[NTP] request sent");
 
@@ -122,14 +134,16 @@ pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTi
                     "[NTP] rejected invalid server reply li={} version={} mode={} stratum={}",
                     li, version, mode, stratum
                 );
-                return Err(());
+                return Err(NtpError::InvalidReply);
             }
             // Parse NTP timestamp (bytes 40-43 = seconds since 1900-01-01)
             let ntp_secs =
                 u32::from_be_bytes([response[40], response[41], response[42], response[43]]);
             // Convert epochs with checked arithmetic. Time-zone presentation is
             // a UI/settings concern; RTC is kept in UTC to avoid hard-coded DST.
-            let unix_secs = ntp_secs.checked_sub(2_208_988_800).ok_or(())?;
+            let unix_secs = ntp_secs
+                .checked_sub(2_208_988_800)
+                .ok_or(NtpError::EpochConversion)?;
             let time_of_day = unix_secs % 86400;
             let hours = (time_of_day / 3600) as u8;
             let minutes = ((time_of_day % 3600) / 60) as u8;
@@ -146,7 +160,7 @@ pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTi
 
             if !(2000..=2255).contains(&year) {
                 println!("[NTP] rejected RTC-unrepresentable year {}", year);
-                return Err(());
+                return Err(NtpError::UnrepresentableYear);
             }
             Ok(DateTime::new(
                 (year - 2000) as u8,
@@ -159,15 +173,15 @@ pub async fn ntp_sync_inner(stack: embassy_net::Stack<'static>) -> Result<DateTi
         }
         Ok(Ok((_len, _addr))) => {
             println!("[NTP] short response");
-            Err(())
+            Err(NtpError::ShortResponse)
         }
         Ok(Err(_)) => {
             println!("[NTP] UDP receive failed");
-            Err(())
+            Err(NtpError::RecvFailed)
         }
         Err(_) => {
             println!("[NTP] receive timeout");
-            Err(())
+            Err(NtpError::Timeout)
         }
     }
 }

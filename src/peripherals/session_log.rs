@@ -89,22 +89,7 @@ fn classify_header(header: &[u8; HEADER_SIZE]) -> Result<LogHeaderState, Session
     }
 }
 
-// ── CRC32 (same algorithm as settings.rs, copy-free) ────────────────────────
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        crc ^= (byte as u32) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 {
-                (crc << 1) ^ 0x04C1_1DB7
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc ^ 0xFFFF_FFFF
-}
+use crate::peripherals::crc::crc32;
 
 // ── Record type ─────────────────────────────────────────────────────────────
 

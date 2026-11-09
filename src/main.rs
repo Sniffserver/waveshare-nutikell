@@ -282,8 +282,8 @@ async fn ntp_task(stack: embassy_net::Stack<'static>) {
             );
             NTP_RESULT.signal(Some(dt));
         }
-        Err(()) => {
-            println!("[NTP-TASK] sync failed");
+        Err(err) => {
+            println!("[NTP-TASK] sync failed: {:?}", err);
             NTP_RESULT.signal(None);
         }
     }

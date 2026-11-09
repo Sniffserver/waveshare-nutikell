@@ -319,17 +319,15 @@ impl WatchFace {
     pub fn is_gyro_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= GYRO_CX - GYRO_R - 15
-            && xi <= GYRO_CX + GYRO_R + 15
-            && yi >= GYRO_CY - GYRO_R - 15
-            && yi <= GYRO_CY + GYRO_R + 15
+        (GYRO_CX - GYRO_R - 15..=GYRO_CX + GYRO_R + 15).contains(&xi)
+            && (GYRO_CY - GYRO_R - 15..=GYRO_CY + GYRO_R + 15).contains(&yi)
     }
 
     /// Hit-test for the WiFi toggle switch (generous hit box for fingers: X 20..150, Y 271..322).
     pub fn is_wifi_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= 20 && xi <= 150 && yi >= 271 && yi <= 322
+        (20..=150).contains(&xi) && (271..=322).contains(&yi)
     }
 
     /// Hit-test for the brightness slider. Returns Some(brightness 0..255)
@@ -337,10 +335,8 @@ impl WatchFace {
     pub fn brightness_from_tap(x: u16, y: u16) -> Option<u8> {
         let xi = x as i32;
         let yi = y as i32;
-        if yi >= BRI_SLIDER_Y - 12
-            && yi <= BRI_SLIDER_Y + BRI_SLIDER_H + 12
-            && xi >= BRI_SLIDER_X - 10
-            && xi <= BRI_SLIDER_X + BRI_SLIDER_W + 10
+        if (BRI_SLIDER_Y - 12..=BRI_SLIDER_Y + BRI_SLIDER_H + 12).contains(&yi)
+            && (BRI_SLIDER_X - 10..=BRI_SLIDER_X + BRI_SLIDER_W + 10).contains(&xi)
         {
             let clamped = (xi - BRI_SLIDER_X).clamp(0, BRI_SLIDER_W) as u32;
             // Map 0..BRI_SLIDER_W → 0x10..0xFF (never fully off via slider)
@@ -566,24 +562,22 @@ impl WatchFace {
     pub fn is_ble_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= 20 && xi <= 150 && yi >= 220 && yi <= 270
+        (20..=150).contains(&xi) && (220..=270).contains(&yi)
     }
 
     /// Hit-test for the CPU frequency button (generous hit box for fingers: X 20..150, Y 323..365).
     pub fn is_cpu_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= 20 && xi <= 150 && yi >= 323 && yi <= 365
+        (20..=150).contains(&xi) && (323..=365).contains(&yi)
     }
 
     /// Hit-test for the Apps button.
     pub fn is_apps_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= APPS_BTN_X - 8
-            && xi <= APPS_BTN_X + APPS_BTN_W + 8
-            && yi >= APPS_BTN_Y - 8
-            && yi <= APPS_BTN_Y + APPS_BTN_H + 8
+        (APPS_BTN_X - 8..=APPS_BTN_X + APPS_BTN_W + 8).contains(&xi)
+            && (APPS_BTN_Y - 8..=APPS_BTN_Y + APPS_BTN_H + 8).contains(&yi)
     }
 
     /// Cycle CPU frequency: 80 → 160 → 240 → 80.

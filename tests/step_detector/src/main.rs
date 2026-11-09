@@ -19,7 +19,13 @@ mod wifi_driver;
 #[path = "../../../src/peripherals/flash_layout.rs"]
 mod flash_layout;
 
+#[path = "../../../src/peripherals/crc.rs"]
+mod crc;
+
 mod peripherals {
+    pub mod crc {
+        pub use crate::crc::*;
+    }
     pub mod flash_layout {
         pub use crate::flash_layout::*;
     }
