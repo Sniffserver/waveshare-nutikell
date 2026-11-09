@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Watchface - renders to any DrawTarget (framebuffer or display)
 
 use embedded_graphics::mono_font::ascii::FONT_10X20;

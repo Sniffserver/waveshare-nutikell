@@ -56,6 +56,7 @@ pub mod peripherals {
     pub mod active_work;
     pub mod companion_sync;
     pub mod flash_layout;
+    pub mod nvs;
     pub mod session_log;
     pub mod settings;
     pub mod touch {

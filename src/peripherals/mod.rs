@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 pub mod active_work;
 pub mod audio;
 pub mod ble;

@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 // Outdoor App: Pedometer, Artificial Horizon (Level), and Hike Live telemetry.
 
 use alloc::format;

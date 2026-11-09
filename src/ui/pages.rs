@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables, unused_imports)]
 // Multi-page system with swipe transitions
 // Pages: Clock | Sensors | System Info
 

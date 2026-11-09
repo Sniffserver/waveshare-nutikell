@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 // Tetris - full screen, gyro + touch controls
 // 12x16 grid filling the screen, tap=rotate, touch drag=move, swipe down=drop
 // Gyroscope tilt left/right moves piece each tick

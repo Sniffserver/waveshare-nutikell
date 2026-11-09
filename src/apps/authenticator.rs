@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // 2FA / TOTP Authenticator App (Wristkey-RS)
 // Implements RFC 6238 (TOTP) and RFC 4226 (HOTP) in pure no_std Rust.
 // Features:

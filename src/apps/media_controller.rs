@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! BLE Media Controller with SoundCloud "Add to Playlist" integration.
 //!
 //! Provides interactive playback controls (Play, Pause, Prev, Next, Volume),

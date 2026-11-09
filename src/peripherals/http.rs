@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Minimal HTTP GET/POST client using embassy-net TCP
 // No external crate needed - just raw TCP + HTTP/1.1
 
