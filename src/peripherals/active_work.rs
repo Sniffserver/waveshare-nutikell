@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! CRC-protected A/B recovery records for an in-progress work session.
 //!
 //! A replacement is written to an erased peer record and read back before it
@@ -936,12 +935,9 @@ pub fn save_active_checkpoint_to<F: ActiveWorkFlash>(
     flash: &mut F,
     session: ActiveWorkSession,
 ) -> Result<(), ActiveWorkError> {
-    let active = load_active_session_compatible_from(flash)?
+    let _active = load_active_session_compatible_from(flash)?
         .filter(|active| active.session_id == session.session_id)
         .ok_or(ActiveWorkError::Corrupt)?;
-    if active.session_id != session.session_id {
-        return Err(ActiveWorkError::Corrupt);
-    }
     save_active_checkpoint_v4_to(flash, session)
 }
 
@@ -1009,6 +1005,7 @@ mod tests {
         Read(usize),
         Write(usize),
         WriteAt(u32),
+        #[allow(dead_code)]
         Erase(usize),
     }
 

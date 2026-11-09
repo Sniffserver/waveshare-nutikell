@@ -49,23 +49,24 @@ pub const fn reconnect_delay_secs(attempt: u8) -> u64 {
 
 /// Process a raw GATT write containing a PositionPacket.
 /// Validates sequence monotonicity and updates both BleStatus and OutdoorState.
+/// Returns the authenticated and validated PositionPacket on success.
 pub fn handle_position_packet(
     data: &[u8],
     auth_key: &[u8],
     status: &mut BleStatus,
     outdoor: &mut OutdoorState,
-) -> bool {
+) -> Option<PositionPacket> {
     let packet = match PositionPacket::decode_authenticated(data, auth_key) {
         Ok(p) => p,
         Err(_) => {
             status.packets_dropped = status.packets_dropped.saturating_add(1);
-            return false;
+            return None;
         }
     };
 
     if status.last_sequence != 0 && !is_newer_sequence(packet.sequence, status.last_sequence) {
         status.packets_dropped = status.packets_dropped.saturating_add(1);
-        return false;
+        return None;
     }
 
     match outdoor.handle_position_write(
@@ -75,11 +76,11 @@ pub fn handle_position_packet(
         Ok(()) => {
             status.last_sequence = packet.sequence;
             status.packets_received = status.packets_received.saturating_add(1);
-            true
+            Some(packet)
         }
         Err(_err) => {
             status.packets_dropped = status.packets_dropped.saturating_add(1);
-            false
+            None
         }
     }
 }
@@ -226,31 +227,31 @@ mod tests {
         // First packet: valid sequence
         let key = b"test-only-position-key";
         let bytes1 = pkt1.encode_authenticated(key).unwrap();
-        let ok1 = handle_position_packet(&bytes1, key, &mut status, &mut outdoor);
-        assert!(ok1);
+        let res1 = handle_position_packet(&bytes1, key, &mut status, &mut outdoor);
+        assert_eq!(res1, Some(pkt1));
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 0);
         assert_eq!(status.last_sequence, 10);
         assert_eq!(outdoor.latitude_deg, 59.437);
 
         // Duplicate sequence (10 <= 10): dropped
-        let ok_dup = handle_position_packet(&bytes1, key, &mut status, &mut outdoor);
-        assert!(!ok_dup);
+        let res_dup = handle_position_packet(&bytes1, key, &mut status, &mut outdoor);
+        assert_eq!(res_dup, None);
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 1);
 
         // Invalid packet (bad length): dropped
         let corrupt = [0u8; 12];
-        let ok_corrupt = handle_position_packet(&corrupt, key, &mut status, &mut outdoor);
-        assert!(!ok_corrupt);
+        let res_corrupt = handle_position_packet(&corrupt, key, &mut status, &mut outdoor);
+        assert_eq!(res_corrupt, None);
         assert_eq!(status.packets_dropped, 2);
 
         // Monotonic sequence (11 > 10): accepted
         let mut pkt2 = pkt1;
         pkt2.sequence = 11;
         let bytes2 = pkt2.encode_authenticated(key).unwrap();
-        let ok2 = handle_position_packet(&bytes2, key, &mut status, &mut outdoor);
-        assert!(ok2);
+        let res2 = handle_position_packet(&bytes2, key, &mut status, &mut outdoor);
+        assert_eq!(res2, Some(pkt2));
         assert_eq!(status.packets_received, 2);
         assert_eq!(status.last_sequence, 11);
     }
@@ -280,7 +281,8 @@ mod tests {
             key,
             &mut status,
             &mut outdoor
-        ));
+        )
+        .is_some());
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 0);
         assert_eq!(outdoor.latitude_deg, 59.437);
@@ -292,12 +294,13 @@ mod tests {
         stale_pkt.sequence = 40;
         stale_pkt.latitude_e7 = 600000000;
         let stale_bytes = stale_pkt.encode_authenticated(key).unwrap();
-        assert!(!handle_position_packet(
+        assert!(handle_position_packet(
             &stale_bytes,
             key,
             &mut status,
             &mut outdoor
-        ));
+        )
+        .is_none());
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 1);
         assert_eq!(status.last_sequence, 50);
@@ -307,12 +310,13 @@ mod tests {
         // 2. Malformed packet with bad HMAC: rejected, state unchanged
         let mut bad_mac_bytes = valid_bytes;
         bad_mac_bytes[0] ^= 0xFF;
-        assert!(!handle_position_packet(
+        assert!(handle_position_packet(
             &bad_mac_bytes,
             key,
             &mut status,
             &mut outdoor
-        ));
+        )
+        .is_none());
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 2);
         assert_eq!(status.last_sequence, 50);

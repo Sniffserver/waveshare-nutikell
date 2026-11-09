@@ -2123,8 +2123,15 @@ async fn main(_spawner: Spawner) {
             let minute = watchface.current_minute();
             if minute != aod_last_minute {
                 fb.clear_color(Rgb565::BLACK);
-                let _ = watchface.render_aod(&mut fb);
-                report_display(fb.flush(&mut display));
+                if let Ok(region) = watchface.render_aod(&mut fb) {
+                    report_display(fb.flush_region(
+                        &mut display,
+                        region.x,
+                        region.y,
+                        region.w,
+                        region.h,
+                    ));
+                }
                 aod_last_minute = minute;
             }
         } else if screen_state >= 2 && (page_dirty || now >= next_watchface_flush) {

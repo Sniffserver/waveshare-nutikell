@@ -46,7 +46,7 @@ pub fn dispatch_position_write(
     auth_key: &[u8],
     status: &mut BleStatus,
     outdoor: &mut OutdoorState,
-) -> bool {
+) -> Option<PositionPacket> {
     handle_position_packet(value, auth_key, status, outdoor)
 }
 
@@ -249,17 +249,12 @@ pub async fn companion_sync_task(
                                     }
                                     Err(_) => last_snapshot_fragment = None,
                                 }
-                            } else if write.handle() == position.handle
-                                && dispatch_position_write(
+                            } else if write.handle() == position.handle {
+                                if let Some(packet) = dispatch_position_write(
                                     write.data(),
                                     auth_key.as_bytes(),
                                     &mut status,
                                     &mut outdoor,
-                                )
-                            {
-                                if let Ok(packet) = PositionPacket::decode_authenticated(
-                                    write.data(),
-                                    auth_key.as_bytes(),
                                 ) {
                                     POSITION_RESULT.signal(packet);
                                 }

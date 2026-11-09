@@ -657,7 +657,10 @@ impl WatchFace {
     ///   * Tiny battery percentage in the corner.
     ///   * Vertical position is shifted by `(minutes % 8) - 4` pixels to avoid pixel
     ///     burn-in over months of always-on use, mimicking what Apple Watch does.
-    pub fn render_aod<D: DrawTarget<Color = Rgb565>>(&mut self, d: &mut D) -> Result<(), D::Error> {
+    pub fn render_aod<D: DrawTarget<Color = Rgb565>>(
+        &mut self,
+        d: &mut D,
+    ) -> Result<FlushRegion, D::Error> {
         let w = board::LCD_WIDTH as i32;
         let h = board::LCD_HEIGHT as i32;
 
@@ -704,7 +707,18 @@ impl WatchFace {
         self.time_changed = false;
         self.battery_changed = false;
         self.gyro_changed = false;
-        Ok(())
+        Ok(Self::aod_bounding_box())
+    }
+
+    /// Fixed bounding box covering all possible AOD content (digits + battery)
+    /// across the entire ±8 px burn-in wander pattern.
+    pub fn aod_bounding_box() -> FlushRegion {
+        // HH:MM: width=286, height=96. cx=205±8 => x in [54, 70], right edge in [340, 356].
+        // cy=(502/2 - 32)±8 = 219±8 => y in [211, 227], bottom of digits in [307, 323].
+        // Battery text at cy+110 (FONT_10X20): y in [321, 337], bottom in [341, 357].
+        // Enclosing box with safety margin:
+        // x: 50, y: 206, w: 310, h: 156.
+        FlushRegion::new(50, 206, 310, 156)
     }
 
     pub fn render<D: DrawTarget<Color = Rgb565>>(

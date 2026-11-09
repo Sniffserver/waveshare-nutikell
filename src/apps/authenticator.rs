@@ -309,13 +309,13 @@ impl TotpAccount {
         )
     }
 
-    /// Formats code with 3-3 grouping (e.g., "482 190")
+    /// Formats code with appropriate digit length (e.g. 6 digits: "482 190", 7 digits: "1234567", 8 digits: "12345678")
     pub fn format_code(&self, unix_secs: u64) -> String {
         let code = self.compute_code(unix_secs);
-        if self.digits == 6 {
-            format!("{:03} {:03}", code / 1000, code % 1000)
-        } else {
-            format!("{:08}", code)
+        match self.digits {
+            6 => format!("{:03} {:03}", code / 1000, code % 1000),
+            7 => format!("{:07}", code),
+            _ => format!("{:08}", code),
         }
     }
 
@@ -834,6 +834,34 @@ mod tests {
             Err(TotpAccountError::InvalidPeriod),
         );
         assert_eq!(totp(b"secret", 123, 0, 6), totp(b"secret", 123, 1, 6));
+    }
+
+    #[test]
+    fn format_code_respects_digit_count() {
+        let secret = b"12345678901234567890";
+        let acc6 = TotpAccount {
+            issuer: String::from("Test"),
+            label: String::from("User"),
+            secret: secret.to_vec(),
+            digits: 6,
+            period: 30,
+        };
+        let acc7 = TotpAccount {
+            digits: 7,
+            ..acc6.clone()
+        };
+        let acc8 = TotpAccount {
+            digits: 8,
+            ..acc6.clone()
+        };
+
+        // At timestamp 59:
+        // 6 digits: 287082 => "287 082"
+        // 7 digits: 9287082 => "9287082" (len 7)
+        // 8 digits: 94287082 => "94287082" (len 8)
+        assert_eq!(acc6.format_code(59), "287 082");
+        assert_eq!(acc7.format_code(59).len(), 7);
+        assert_eq!(acc8.format_code(59).len(), 8);
     }
 
     #[test]
