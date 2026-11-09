@@ -54,8 +54,8 @@ impl<I: I2c> Es8311<I> {
         // Reg 0x04: dac_osr
         self.write_reg(0x04, 0x10)?;
 
-        // Reg 0x05: adc_div | dac_div
-        self.write_reg(0x05, ((1 - 1) << 4) | (1 - 1))?;
+        // Reg 0x05: adc_div | dac_div (adc_div=1 -> 0, dac_div=1 -> 0)
+        self.write_reg(0x05, 0x00)?;
 
         // Reg 0x06: BCLK divider
         let mut reg06 = self.read_reg(0x06).unwrap_or(0) & 0xE0;

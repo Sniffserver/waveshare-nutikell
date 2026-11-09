@@ -276,13 +276,7 @@ mod tests {
             accuracy_cm: 200,
         };
         let valid_bytes = valid_pkt.encode_authenticated(key).unwrap();
-        assert!(handle_position_packet(
-            &valid_bytes,
-            key,
-            &mut status,
-            &mut outdoor
-        )
-        .is_some());
+        assert!(handle_position_packet(&valid_bytes, key, &mut status, &mut outdoor).is_some());
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 0);
         assert_eq!(outdoor.latitude_deg, 59.437);
@@ -294,13 +288,7 @@ mod tests {
         stale_pkt.sequence = 40;
         stale_pkt.latitude_e7 = 600000000;
         let stale_bytes = stale_pkt.encode_authenticated(key).unwrap();
-        assert!(handle_position_packet(
-            &stale_bytes,
-            key,
-            &mut status,
-            &mut outdoor
-        )
-        .is_none());
+        assert!(handle_position_packet(&stale_bytes, key, &mut status, &mut outdoor).is_none());
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 1);
         assert_eq!(status.last_sequence, 50);
@@ -310,13 +298,7 @@ mod tests {
         // 2. Malformed packet with bad HMAC: rejected, state unchanged
         let mut bad_mac_bytes = valid_bytes;
         bad_mac_bytes[0] ^= 0xFF;
-        assert!(handle_position_packet(
-            &bad_mac_bytes,
-            key,
-            &mut status,
-            &mut outdoor
-        )
-        .is_none());
+        assert!(handle_position_packet(&bad_mac_bytes, key, &mut status, &mut outdoor).is_none());
         assert_eq!(status.packets_received, 1);
         assert_eq!(status.packets_dropped, 2);
         assert_eq!(status.last_sequence, 50);

@@ -27,6 +27,8 @@ pub struct SettingsApp {
     pub stored_ssid: [u8; 32],
     pub stored_ssid_len: usize,
     pub watch_settings: WatchSettings,
+    pub log_clear_confirm: bool,
+    pub log_cleared: bool,
     active_field: SettingsField,
     editing: bool,
     connect_requested: bool,
@@ -43,6 +45,8 @@ impl SettingsApp {
             stored_ssid: [0; 32],
             stored_ssid_len: 0,
             watch_settings: WatchSettings::default(),
+            log_clear_confirm: false,
+            log_cleared: false,
             active_field: SettingsField::Ssid,
             editing: false,
             connect_requested: false,
@@ -166,6 +170,23 @@ impl SettingsApp {
             self.watch_settings.clock_24h = !self.watch_settings.clock_24h;
             self.persist_settings();
             return true;
+        }
+
+        // Clear Work Log button: y in 420..465, x in 40..370
+        if !self.keyboard.is_active() && y >= 420 && y <= 465 && x >= 40 && x <= 370 {
+            if self.log_clear_confirm {
+                self.log_clear_confirm = false;
+                if crate::peripherals::session_log::erase_session_log().is_ok() {
+                    self.log_cleared = true;
+                }
+            } else {
+                self.log_clear_confirm = true;
+                self.log_cleared = false;
+            }
+            return true;
+        } else if !self.keyboard.is_active() && self.log_clear_confirm {
+            // Tapping anywhere else cancels confirmation
+            self.log_clear_confirm = false;
         }
 
         false
@@ -414,10 +435,38 @@ impl SettingsApp {
         )
         .draw(d);
 
+        // --- Clear Work Log button ---
+        let (log_btn_bg, log_btn_stroke, log_btn_text) = if self.log_cleared {
+            (Rgb565::new(0, 14, 2), Rgb565::GREEN, "WORK LOG CLEARED ✓")
+        } else if self.log_clear_confirm {
+            (Rgb565::new(28, 4, 0), Rgb565::RED, "CONFIRM: CLEAR LOG?")
+        } else {
+            (Rgb565::new(12, 2, 2), Rgb565::RED, "CLEAR WORK LOG")
+        };
+        let _ = RoundedRectangle::with_equal_corners(
+            Rectangle::new(EgPoint::new(40, 420), Size::new(330, 44)),
+            Size::new(8, 8),
+        )
+        .into_styled(PrimitiveStyle::with_fill(log_btn_bg))
+        .draw(d);
+        let _ = RoundedRectangle::with_equal_corners(
+            Rectangle::new(EgPoint::new(40, 420), Size::new(330, 44)),
+            Size::new(8, 8),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(log_btn_stroke, 1))
+        .draw(d);
+        let _ = Text::with_alignment(
+            log_btn_text,
+            EgPoint::new(205, 447),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+            Alignment::Center,
+        )
+        .draw(d);
+
         if self.settings_save_failed {
             let _ = Text::with_alignment(
                 "SETTINGS NOT SAVED",
-                EgPoint::new(205, 438),
+                EgPoint::new(205, 480),
                 MonoTextStyle::new(&FONT_10X20, Rgb565::RED),
                 Alignment::Center,
             )
@@ -478,14 +527,39 @@ mod tests {
 
         // When save has not failed:
         app.render(&mut display);
-        assert_eq!(display.red_pixels_drawn, 0);
+        let baseline_red = display.red_pixels_drawn;
 
         // When save failed:
         app.settings_save_failed = true;
         let mut fail_display = MockDisplay::new();
         app.render(&mut fail_display);
-        // "SETTINGS NOT SAVED" is drawn in red:
-        assert!(fail_display.red_pixels_drawn > 0);
+        // "SETTINGS NOT SAVED" adds additional red pixels:
+        assert!(fail_display.red_pixels_drawn > baseline_red);
+    }
+
+    #[test]
+    fn clear_work_log_two_step_confirmation() {
+        let mut app = SettingsApp::new();
+        assert!(!app.log_clear_confirm);
+        assert!(!app.log_cleared);
+
+        // First tap: requests confirmation
+        assert!(app.handle_tap(205, 440));
+        assert!(app.log_clear_confirm);
+        assert!(!app.log_cleared);
+
+        // Tap elsewhere: cancels confirmation
+        assert!(!app.handle_tap(205, 50));
+        assert!(!app.log_clear_confirm);
+
+        // First tap again:
+        assert!(app.handle_tap(205, 440));
+        assert!(app.log_clear_confirm);
+
+        // Second tap on the same button: confirms and clears
+        assert!(app.handle_tap(205, 440));
+        assert!(!app.log_clear_confirm);
+        assert!(app.log_cleared);
     }
 
     #[test]

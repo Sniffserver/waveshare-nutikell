@@ -1,4 +1,4 @@
-# Workspace map — 65 file(s)
+# Workspace map — 48 file(s)
 
 A map, not a substitute for reading. Paths are workspace-relative. Use read_file (with
 start_line/end_line) or search_files on these paths instead of re-listing directories.
@@ -27,6 +27,7 @@ companion/ios/
   LocationProvider.swift
   OutdoorCompanionApp.swift
   PositionPacket.swift
+  SnapshotProvider.swift
 src/
   board.rs
   lib.rs
@@ -44,26 +45,6 @@ src/drivers/
   framebuffer.rs
   mod.rs
   qspi_bus.rs
-src/peripherals/
-  active_work.rs
-  audio.rs
-  ble.rs
-  captive.rs
-  companion_sync.rs
-  cpu_clock.rs
-  flash_layout.rs
-  http.rs
-  imu.rs
-  mod.rs
-  nvs.rs
-  power_stats.rs
-  power.rs
-  rtc.rs
-  sdcard.rs
-  session_log.rs
-  settings.rs
-  touch.rs
-  wifi.rs
 src/ui/
   launcher.rs
   mod.rs
@@ -76,6 +57,7 @@ src/ui/
 tests/
   display_window.rs
   protocol_properties.rs
+  work_tracker_storage.rs
 tests/step_detector/
   Cargo.toml
   rust-toolchain.toml
@@ -84,5 +66,6 @@ tests/step_detector/.cargo/
 tests/step_detector/src/
   main.rs
 (4 doc file(s) omitted)
-src/apps/ — 13 more file(s) (use list_files to enumerate)
+src/apps/ — 14 more file(s) (use list_files to enumerate)
 src/outdoor/ — 10 more file(s) (use list_files to enumerate)
+src/peripherals/ — 19 more file(s) (use list_files to enumerate)

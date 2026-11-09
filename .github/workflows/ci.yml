@@ -53,6 +53,14 @@ jobs:
           version: 1.88.0
           buildtargets: esp32s3
 
+      - name: Run Target Clippy
+        run: >-
+          cargo --config .cargo/esp32-ci.toml clippy -Zbuild-std=core,alloc
+          --target xtensa-esp32s3-none-elf --features firmware --locked --
+          -D clippy::correctness
+          -D clippy::suspicious
+          -D clippy::perf
+
       - name: Build firmware
         run: cargo --config .cargo/esp32-ci.toml build --release --target xtensa-esp32s3-none-elf --features firmware --locked
 

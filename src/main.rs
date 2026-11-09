@@ -84,7 +84,7 @@ use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
-use esp_hal::timer::timg::TimerGroup;
+use esp_hal::timer::timg::{MwdtStage, TimerGroup};
 use esp_println::println;
 use static_cell::StaticCell;
 
@@ -119,6 +119,9 @@ use crate::peripherals::session_log::{
     contains_session_id, session_log_health, summarize_day, LogSeverity, SessionLogError,
 };
 fn refresh_work_tracker_daily_summary(tracker: &mut WorkTracker) {
+    let health = session_log_health();
+    tracker.set_log_health(health);
+    tracker.set_start_allowed(health.free_records > 0 && health.severity() != LogSeverity::Error);
     match summarize_day(tracker.date_ymd) {
         Ok(summary) => tracker.set_daily_summary(summary),
         Err(error) => {
@@ -506,8 +509,11 @@ async fn main(_spawner: Spawner) {
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
     log_memory("init");
 
-    // Embassy timer
+    // Embassy timer and Task Watchdog (TWDT)
     let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let mut wdt0 = timg0.wdt;
+    wdt0.set_timeout(MwdtStage::Stage0, esp_hal::time::Duration::from_secs(45));
+    wdt0.enable();
     let software_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, software_interrupt.software_interrupt0);
 
@@ -788,6 +794,10 @@ async fn main(_spawner: Spawner) {
     // at end-of-scope and silently disable DMA — do NOT rename it back.
     static I2S_TX_HANDLE: StaticCell<esp_hal::i2s::master::I2sTx<'static, esp_hal::Blocking>> =
         StaticCell::new();
+    // `i2s_tx` is a `&'static mut I2sTx` obtained from the StaticCell.
+    // Pass it to the audio task when needed.  It is intentionally unused
+    // until MP3 decoding is wired; the `#[allow]` prevents a spurious warning.
+    #[allow(unused_variables)]
     let i2s_tx = I2S_TX_HANDLE.init(
         i2s_periph
             .i2s_tx
@@ -796,11 +806,6 @@ async fn main(_spawner: Spawner) {
             .with_dout(peripherals.GPIO40)
             .build(i2s_tx_desc),
     );
-    // `i2s_tx` is a `&'static mut I2sTx` obtained from the StaticCell.
-    // Pass it to the audio task when needed.  It is intentionally unused
-    // until MP3 decoding is wired; the `#[allow]` prevents a spurious warning.
-    #[allow(unused_variables)]
-    let i2s_tx = i2s_tx;
 
     // Pre-generate beep sound (800Hz, 50ms, stereo 16-bit @ 16kHz = 3200 bytes)
     static BEEP_BUF: StaticCell<[u8; 4000]> = StaticCell::new();
@@ -1298,6 +1303,9 @@ async fn main(_spawner: Spawner) {
     let _ = imu.power_down();
     let mut imu_mode = ImuPowerMode::Off;
     loop {
+        // Pet the Task Watchdog on every iteration of the main loop.
+        wdt0.feed();
+
         // Pick a tick budget based on current state. This is the MAX time we'll
         // sleep without any external wake source.
         let touch_held = touch_int.is_low();
@@ -1318,11 +1326,11 @@ async fn main(_spawner: Spawner) {
             Duration::from_millis(16) // ~60 Hz
         } else if screen_state == 0 {
             // Screen completely off: if hike is running, sample accel at 20 Hz (50 ms)
-            // for step detection. Otherwise only wake every 30 s for housekeeping.
+            // for step detection. Otherwise only wake every 20 s for housekeeping and WDT.
             if hike_running {
                 Duration::from_millis(50)
             } else {
-                Duration::from_secs(30)
+                Duration::from_secs(20)
             }
         } else if screen_state == 1 {
             // AOD mode: if hike is running, sample accel at 20 Hz (50 ms).

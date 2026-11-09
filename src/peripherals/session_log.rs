@@ -670,6 +670,11 @@ pub fn erase_session_log() -> Result<(), SessionLogError> {
         .map_err(|_| SessionLogError::Io)
 }
 
+#[cfg(not(target_arch = "xtensa"))]
+pub fn erase_session_log() -> Result<(), SessionLogError> {
+    Ok(())
+}
+
 /// Explicit, destructive repair operation for a sector previously reported as
 /// `CorruptHeader`. It is intentionally never called by append/recovery paths.
 #[cfg(target_arch = "xtensa")]
