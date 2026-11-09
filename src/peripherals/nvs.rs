@@ -165,7 +165,7 @@ pub struct DecodedRecord {
 }
 
 fn decode_slot(slot: &[u8]) -> Option<DecodedRecord> {
-    if slot.len() < SLOT_SIZE as usize || &slot[0..4] != &MAGIC {
+    if slot.len() < SLOT_SIZE as usize || slot[0..4] != MAGIC {
         return None;
     }
 

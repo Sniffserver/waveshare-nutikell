@@ -542,7 +542,6 @@ impl OutdoorApp {
     }
 
     fn render_level<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D, state: &OutdoorState) {
-        let label_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
         let value_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 
         Self::draw_status_header(d, state, "HORIZON", Rgb565::CYAN);

@@ -68,6 +68,7 @@ impl MediaSource {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaybackState {
     Stopped,
@@ -76,6 +77,7 @@ pub enum PlaybackState {
 }
 
 /// Commands transmitted over BLE to the phone companion app
+#[allow(dead_code)]
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaCommand {

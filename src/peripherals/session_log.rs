@@ -411,6 +411,7 @@ pub fn summarize_day(date_ymd: (u16, u8, u8)) -> Result<DailySessionSummary, Ses
     summarize_day_from(&mut FlashStorage::new(), date_ymd)
 }
 
+#[cfg(test)]
 fn has_session_id(records: &[SessionRecord], session_id: u64) -> bool {
     records.iter().any(|record| record.session_id == session_id)
 }
@@ -875,16 +876,19 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn with_read_failure(mut self) -> Self {
             self.fail_read = true;
             self
         }
 
+        #[allow(dead_code)]
         fn with_write_failure(mut self) -> Self {
             self.fail_write = true;
             self
         }
 
+        #[allow(dead_code)]
         fn with_write_fail_at(mut self, n: usize) -> Self {
             self.write_fail_at = Some(n);
             self

@@ -67,8 +67,11 @@ const APPS_BTN_W: i32 = 140;
 const APPS_BTN_H: i32 = 32;
 
 /// Number of frames in the watchface-to-AOD data-dissolve transition.
+#[allow(dead_code)]
 pub const SLEEP_DISSOLVE_FRAMES: u8 = 9;
+#[allow(dead_code)]
 const SLEEP_GATHER_FRAMES: u8 = 2;
+#[allow(dead_code)]
 const SLEEP_DISSOLVE_TILE: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
@@ -239,6 +242,7 @@ impl WatchFace {
 
     /// Turns the visible watchface into a brief gathering and data-dissolve field.
     /// The normal watchface is redrawn on wake, so this needs no second framebuffer.
+    #[allow(dead_code)]
     pub fn render_sleep_dissolve(&mut self, framebuffer: &mut Framebuffer, frame: u8) {
         let width = board::LCD_WIDTH as usize;
         let height = board::LCD_HEIGHT as usize;
@@ -558,6 +562,7 @@ impl WatchFace {
     }
 
     /// Hit-test for the BLE toggle switch (generous hit box for fingers: X 20..150, Y 220..270).
+    #[allow(dead_code)]
     pub fn is_ble_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
@@ -641,6 +646,7 @@ impl WatchFace {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn needs_render(&self) -> bool {
         self.full_redraw
             || self.time_changed
@@ -1127,6 +1133,7 @@ fn fmt_bat_short<'a>(buf: &'a mut [u8; 4], pct: u8) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("?%")
 }
 
+#[allow(dead_code)]
 fn fmt_mv<'a>(buf: &'a mut [u8; 12], mv: u16) -> &'a str {
     let mut p = 0;
     if mv >= 1000 {

@@ -24,9 +24,12 @@ use embedded_graphics::text::{Alignment, Text};
 use crate::board;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 
+#[allow(dead_code)]
 const W: i32 = board::LCD_WIDTH as i32;
+#[allow(dead_code)]
 const H: i32 = board::LCD_HEIGHT as i32;
 
+#[allow(dead_code)]
 pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     d: &mut D,
     stats: &PowerStats,
@@ -266,6 +269,7 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
 }
 
 /// Hit-test for the reboot button on the power page.
+#[allow(dead_code)]
 pub fn is_reboot_zone(x: u16, y: u16) -> bool {
     let cx = W / 2;
     let rbt_x = cx - 50;
@@ -277,10 +281,12 @@ pub fn is_reboot_zone(x: u16, y: u16) -> bool {
 
 // Dummy helper so we can inline a yellow MonoTextStyle above without borrowing
 // the one defined at the top of the function.
+#[allow(dead_code)]
 fn yellow_inline() -> MonoTextStyle<'static, Rgb565> {
     MonoTextStyle::new(&FONT_8X13, Rgb565::YELLOW)
 }
 
+#[allow(dead_code)]
 fn fmt_u16(buf: &mut [u8], pos: &mut usize, mut v: u16) {
     if v == 0 {
         buf[*pos] = b'0';
@@ -301,6 +307,7 @@ fn fmt_u16(buf: &mut [u8], pos: &mut usize, mut v: u16) {
     }
 }
 
+#[allow(dead_code)]
 fn fmt_mhz<'a>(buf: &'a mut [u8; 16], mhz: u16, ma: u16) -> &'a str {
     let mut p = 0;
     fmt_u16(buf, &mut p, mhz);
@@ -316,6 +323,7 @@ fn fmt_mhz<'a>(buf: &'a mut [u8; 16], mhz: u16, ma: u16) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }
 
+#[allow(dead_code)]
 fn fmt_total<'a>(buf: &'a mut [u8; 16], ma: u16) -> &'a str {
     let mut p = 0;
     fmt_u16(buf, &mut p, ma);
@@ -326,6 +334,7 @@ fn fmt_total<'a>(buf: &'a mut [u8; 16], ma: u16) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }
 
+#[allow(dead_code)]
 fn fmt_runtime_full<'a>(buf: &'a mut [u8; 20], hours: u16) -> &'a str {
     let mut p = 0;
     if hours >= 999 {
@@ -343,6 +352,7 @@ fn fmt_runtime_full<'a>(buf: &'a mut [u8; 20], hours: u16) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("?h")
 }
 
+#[allow(dead_code)]
 fn fmt_remaining<'a>(buf: &'a mut [u8; 20], hours: u16, pct: u8) -> &'a str {
     let mut p = 0;
     if hours >= 999 {
@@ -365,6 +375,7 @@ fn fmt_remaining<'a>(buf: &'a mut [u8; 20], hours: u16, pct: u8) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("?h")
 }
 
+#[allow(dead_code)]
 fn fmt_batt<'a>(buf: &'a mut [u8; 20], mv: u16, pct: u8, chg: bool) -> &'a str {
     let mut p = 0;
     fmt_u16(buf, &mut p, pct as u16);

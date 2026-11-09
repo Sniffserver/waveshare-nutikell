@@ -131,6 +131,7 @@ pub fn hmac_sha1(key: &[u8], msg: &[u8]) -> [u8; 20] {
 }
 
 /// Decodes an RFC 4648 Base32 string into raw bytes
+#[allow(dead_code)]
 pub fn base32_decode(s: &str) -> Vec<u8> {
     let mut bits: u32 = 0;
     let mut val: u32 = 0;
@@ -222,6 +223,7 @@ pub fn datetime_to_unix_secs(year: u16, month: u8, day: u8, hour: u8, min: u8, s
     (total_days as u64) * 86400 + (hour as u64) * 3600 + (min as u64) * 60 + (sec as u64)
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TotpAccountError {
     EmptySecret,
@@ -233,9 +235,13 @@ pub enum TotpAccountError {
     AccountLimitReached,
 }
 
+#[allow(dead_code)]
 pub const MAX_TOTP_ACCOUNTS: usize = 16;
+#[allow(dead_code)]
 pub const MAX_TOTP_ISSUER_LEN: usize = 48;
+#[allow(dead_code)]
 pub const MAX_TOTP_LABEL_LEN: usize = 96;
+#[allow(dead_code)]
 pub const MAX_TOTP_SECRET_LEN: usize = 64;
 
 // =========================================================================
@@ -252,6 +258,7 @@ pub struct TotpAccount {
 }
 
 impl TotpAccount {
+    #[allow(dead_code)]
     pub fn new(issuer: &str, label: &str, base32_secret: &str) -> Self {
         Self {
             issuer: String::from(issuer),
@@ -264,6 +271,7 @@ impl TotpAccount {
 
     /// Construct an account imported from a record or companion payload.
     /// Reject invalid timing parameters before they reach rendering/codegen.
+    #[allow(dead_code)]
     pub fn try_from_secret(
         issuer: String,
         label: String,
@@ -375,6 +383,7 @@ impl AuthenticatorApp {
     /// Validated ingress for imported accounts. Existing account storage is
     /// retained for compatibility, but untrusted import paths cannot grow it
     /// past this fixed product limit.
+    #[allow(dead_code)]
     pub fn try_add_account(&mut self, account: TotpAccount) -> Result<(), TotpAccountError> {
         if self.accounts.len() >= MAX_TOTP_ACCOUNTS {
             return Err(TotpAccountError::AccountLimitReached);
@@ -405,6 +414,7 @@ impl AuthenticatorApp {
     }
 
     /// Reset and securely wipe all in-memory accounts
+    #[allow(dead_code)]
     pub fn clear_accounts(&mut self) {
         for acc in &mut self.accounts {
             acc.secret.fill(0);

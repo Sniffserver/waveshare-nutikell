@@ -5,14 +5,14 @@ use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::board;
-use crate::drivers::co5300::DisplayError;
 
 const W: u16 = board::LCD_WIDTH;
+#[allow(dead_code)]
 const H: u16 = board::LCD_HEIGHT;
+#[allow(dead_code)]
 const ANIM_STEPS: u16 = 8; // Number of animation frames
 
 #[derive(Clone, Copy, PartialEq)]
@@ -23,6 +23,7 @@ pub enum Page {
     Power = 3,
 }
 
+#[allow(dead_code)]
 impl Page {
     pub fn count() -> usize {
         4
@@ -62,6 +63,7 @@ impl Page {
 }
 
 /// Draw the sensors page content.
+#[allow(dead_code)]
 pub fn draw_sensors_page<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     ax: i16,
@@ -145,10 +147,11 @@ pub fn draw_sensors_page<D: DrawTarget<Color = Rgb565>>(
 }
 
 /// Draw the system info page.
+#[allow(dead_code)]
 pub fn draw_system_page<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     batt_mv: u16,
-    batt_pct: u8,
+    _batt_pct: u8,
     charging: bool,
 ) -> Result<(), D::Error> {
     let cx = W as i32 / 2;
@@ -204,6 +207,7 @@ pub fn draw_system_page<D: DrawTarget<Color = Rgb565>>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn fmt_axis(buf: &mut [u8; 16], label: u8, val: i16) {
     buf[0] = label;
     buf[1] = b':';
@@ -220,6 +224,7 @@ fn fmt_axis(buf: &mut [u8; 16], label: u8, val: i16) {
     buf[7] = b'0' + (v % 10) as u8;
 }
 
+#[allow(dead_code)]
 fn fmt_temp<'a>(buf: &'a mut [u8; 10], temp_c10: i16) -> &'a str {
     let mut p = 0;
     if temp_c10 < 0 {
@@ -240,6 +245,7 @@ fn fmt_temp<'a>(buf: &'a mut [u8; 10], temp_c10: i16) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("??C")
 }
 
+#[allow(dead_code)]
 fn fmt_mv<'a>(buf: &'a mut [u8; 12], mv: u16) -> &'a str {
     let mut p = 0;
     if mv >= 1000 {

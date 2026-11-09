@@ -38,6 +38,7 @@ pub enum AppResult {
 
 /// Common trait for all apps/games
 pub trait App {
+    #[allow(dead_code)]
     fn name(&self) -> &str;
     fn setup(&mut self);
     fn update(&mut self, input: &AppInput) -> AppResult;
@@ -49,6 +50,7 @@ pub trait App {
 pub enum AppState {
     Watchface,
     Launcher,
+    #[allow(dead_code)]
     Mp3Player,
     Settings,
     Outdoor,
