@@ -87,9 +87,10 @@ use esp_println::println;
 use static_cell::StaticCell;
 
 use crate::apps::wifi_setup::{SetupPhase, WifiSetupApp, AP_SSID};
-use crate::apps::work_tracker::{TrackerState, WorkSession, WorkTracker};
+use crate::apps::work_tracker::{TrackerState, WorkSession};
 use crate::apps::work_tracker_storage::{
-    checkpoint_work_session, finish_work_session, start_work_session, WorkSessionStoreError,
+    checkpoint_work_session, finish_work_session, refresh_work_tracker_daily_summary,
+    start_work_session, WorkSessionStoreError,
 };
 use crate::apps::{App, AppInput, AppResult, AppState};
 use crate::drivers::co5300::Co5300Display;
@@ -105,20 +106,8 @@ use crate::peripherals::nvs::{read_credentials, write_credentials, StoredCredent
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::rtc::Pcf85063aRtc;
 use crate::peripherals::session_log::{
-    contains_session_id, session_log_health, summarize_day, LogSeverity, SessionLogError,
+    contains_session_id, session_log_health, LogSeverity, SessionLogError,
 };
-fn refresh_work_tracker_daily_summary(tracker: &mut WorkTracker) {
-    let health = session_log_health();
-    tracker.set_log_health(health);
-    tracker.set_start_allowed(health.free_records > 0 && health.severity() != LogSeverity::Error);
-    match summarize_day(tracker.date_ymd) {
-        Ok(summary) => tracker.set_daily_summary(summary),
-        Err(error) => {
-            tracker.set_storage_error(true);
-            println!("[WORKLOG] daily summary read failed: {:?}", error);
-        }
-    }
-}
 
 use crate::peripherals::settings::load_settings;
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection, TouchPoint};
@@ -1488,6 +1477,13 @@ async fn main(_spawner: Spawner) {
                 } else if app_input.tap {
                     if let Some(tp) = app_touch {
                         router.settings_app.handle_tap(tp.x, tp.y);
+                        if router.settings_app.take_log_cleared_event() {
+                            refresh_work_tracker_daily_summary(&mut router.work_tracker);
+                            if active_recovery_blocked {
+                                router.work_tracker.set_start_allowed(false);
+                            }
+                            page_dirty = true;
+                        }
                         if let Some(updated) = router.settings_app.take_settings_update() {
                             watch_settings = updated;
                             page_dirty = true;

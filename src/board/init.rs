@@ -74,15 +74,16 @@ pub fn init_sd_card<'d>(
             struct DummyTime;
             impl embedded_sdmmc::TimeSource for DummyTime {
                 fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-                    embedded_sdmmc::Timestamp::from_calendar(2026, 4, 6, 12, 0, 0)
-                        .unwrap_or(embedded_sdmmc::Timestamp {
+                    embedded_sdmmc::Timestamp::from_calendar(2026, 4, 6, 12, 0, 0).unwrap_or(
+                        embedded_sdmmc::Timestamp {
                             year_since_1970: 56,
                             zero_indexed_month: 3,
                             zero_indexed_day: 5,
                             hours: 12,
                             minutes: 0,
                             seconds: 0,
-                        })
+                        },
+                    )
                 }
             }
 

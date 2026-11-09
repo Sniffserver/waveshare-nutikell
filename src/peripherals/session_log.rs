@@ -438,15 +438,13 @@ fn duplicate_counts(records: &[SessionRecord]) -> (u16, u16) {
 
 /// Scan the on-flash log without mutating it. Corrupt records are retained as
 /// evidence of an interrupted write and never treated as completed work.
-#[cfg(target_arch = "xtensa")]
-pub fn session_log_health() -> SessionLogHealth {
-    let mut storage = FlashStorage::new();
+pub fn session_log_health_from<F: SessionLogFlash>(storage: &mut F) -> SessionLogHealth {
     let mut health = SessionLogHealth::default();
     let mut seen_ids = [0u64; MAX_SESSION_RECORDS];
     let mut seen_len = 0usize;
     let mut last_occupied_valid = None;
     let mut magic = [0u8; 4];
-    if ReadNorFlash::read(&mut storage, LOG_OFFSET, &mut magic).is_err() {
+    if storage.read(LOG_OFFSET, &mut magic).is_err() {
         health.header_state = LogHeaderState::Corrupt;
         return health;
     }
@@ -462,12 +460,9 @@ pub fn session_log_health() -> SessionLogHealth {
     health.header_state = LogHeaderState::Valid;
     for slot in 0..MAX_SESSION_RECORDS {
         let mut raw = [0u8; RECORD_SIZE];
-        if ReadNorFlash::read(
-            &mut storage,
-            LOG_OFFSET + SessionRecord::record_offset(slot),
-            &mut raw,
-        )
-        .is_err()
+        if storage
+            .read(LOG_OFFSET + SessionRecord::record_offset(slot), &mut raw)
+            .is_err()
         {
             health.corrupt_records = health.corrupt_records.saturating_add(1);
             last_occupied_valid = Some(false);
@@ -510,6 +505,12 @@ pub fn session_log_health() -> SessionLogHealth {
         health.tail_state = TailState::Invalid;
     }
     health
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn session_log_health() -> SessionLogHealth {
+    let mut storage = FlashStorage::new();
+    session_log_health_from(&mut storage)
 }
 
 /// Append one session record to the flash log.

@@ -2,8 +2,8 @@ use std::vec;
 use std::vec::Vec;
 use waveshare_watch_rs::apps::work_tracker::{TrackerState, WorkSession, WorkTracker};
 use waveshare_watch_rs::apps::work_tracker_storage::{
-    checkpoint_work_session_to, finish_work_session_to, start_work_session_to,
-    WorkSessionStoreError,
+    checkpoint_work_session_to, finish_work_session_to, refresh_work_tracker_daily_summary_from,
+    start_work_session_to, WorkSessionStoreError,
 };
 use waveshare_watch_rs::apps::{App, AppInput, AppResult};
 use waveshare_watch_rs::peripherals::active_work::{
@@ -428,4 +428,37 @@ fn tracker_actions_wait_for_a_classified_tap() {
     };
     assert!(matches!(tracker.update(&tap), AppResult::Continue));
     assert_eq!(tracker.state, TrackerState::Working);
+}
+
+#[test]
+fn refresh_daily_summary_after_log_clear_restores_start_allowed_and_clears_today_earnings() {
+    let mut flash = FakeFlash::new();
+    let mut tracker = WorkTracker::new();
+    tracker.date_ymd = (2026, 11, 8);
+
+    // Append a completed session for today
+    let session = sample_session();
+    finish_work_session_to(&mut flash, 1, session).unwrap();
+
+    // Refresh: daily summary should reflect the session
+    refresh_work_tracker_daily_summary_from(&mut tracker, &mut flash);
+    assert_eq!(tracker.today_total_secs, 3_600);
+    assert_eq!(tracker.today_earnings_cents, 5_000);
+    assert_eq!(tracker.completed_sessions_today, 1);
+    assert!(tracker.start_allowed);
+    assert!(!tracker.storage_error);
+
+    // Simulate sector erase of WORK_LOG as performed by Settings "CLEAR WORK LOG"
+    flash.bytes[WORK_LOG.start as usize..WORK_LOG.end() as usize].fill(0xFF);
+
+    // Re-synchronize tracker with flash
+    refresh_work_tracker_daily_summary_from(&mut tracker, &mut flash);
+
+    // Tracker should now be clean and ready for new sessions
+    assert_eq!(tracker.today_total_secs, 0);
+    assert_eq!(tracker.today_earnings_cents, 0);
+    assert_eq!(tracker.completed_sessions_today, 0);
+    assert!(tracker.start_allowed);
+    assert!(!tracker.storage_error);
+    assert_eq!(tracker.corrupt_log_records, 0);
 }

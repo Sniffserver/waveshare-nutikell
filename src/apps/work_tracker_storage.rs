@@ -1,11 +1,12 @@
-use crate::apps::work_tracker::WorkSession;
+use crate::apps::work_tracker::{WorkSession, WorkTracker};
 use crate::peripherals::active_work::{
     calendar_to_unix, clear_active_session_v4_from, load_active_session_compatible_from,
     save_active_checkpoint_to, save_active_session_compatible_to, ActiveWorkError, ActiveWorkFlash,
     ActiveWorkSession,
 };
 use crate::peripherals::session_log::{
-    append_session_to, next_session_id_from, SessionLogError, SessionLogFlash, SessionRecord,
+    append_session_to, next_session_id_from, session_log_health_from, summarize_day_from,
+    LogSeverity, SessionLogError, SessionLogFlash, SessionRecord,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,4 +147,30 @@ pub fn checkpoint_work_session(
         paused,
         now_unix,
     )
+}
+
+/// Refresh the WorkTracker's daily summary and health status from flash.
+/// Updates start_allowed and clears storage_error if summarize_day succeeds.
+pub fn refresh_work_tracker_daily_summary_from<F: SessionLogFlash>(
+    tracker: &mut WorkTracker,
+    flash: &mut F,
+) {
+    let health = session_log_health_from(flash);
+    tracker.set_log_health(health);
+    tracker.set_start_allowed(health.free_records > 0 && health.severity() != LogSeverity::Error);
+    match summarize_day_from(flash, tracker.date_ymd) {
+        Ok(summary) => {
+            tracker.set_daily_summary(summary);
+            tracker.set_storage_error(false);
+        }
+        Err(_) => {
+            tracker.set_storage_error(true);
+        }
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+pub fn refresh_work_tracker_daily_summary(tracker: &mut WorkTracker) {
+    use esp_storage::FlashStorage;
+    refresh_work_tracker_daily_summary_from(tracker, &mut FlashStorage::new());
 }

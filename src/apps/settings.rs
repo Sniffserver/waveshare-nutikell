@@ -29,6 +29,7 @@ pub struct SettingsApp {
     pub watch_settings: WatchSettings,
     pub log_clear_confirm: bool,
     pub log_cleared: bool,
+    pub log_cleared_event: bool,
     active_field: SettingsField,
     editing: bool,
     connect_requested: bool,
@@ -47,6 +48,7 @@ impl SettingsApp {
             watch_settings: WatchSettings::default(),
             log_clear_confirm: false,
             log_cleared: false,
+            log_cleared_event: false,
             active_field: SettingsField::Ssid,
             editing: false,
             connect_requested: false,
@@ -178,6 +180,7 @@ impl SettingsApp {
                 self.log_clear_confirm = false;
                 if crate::peripherals::session_log::erase_session_log().is_ok() {
                     self.log_cleared = true;
+                    self.log_cleared_event = true;
                 }
             } else {
                 self.log_clear_confirm = true;
@@ -190,6 +193,12 @@ impl SettingsApp {
         }
 
         false
+    }
+
+    pub fn take_log_cleared_event(&mut self) -> bool {
+        let event = self.log_cleared_event;
+        self.log_cleared_event = false;
+        event
     }
 
     pub fn take_connect_request(&mut self) -> Option<WifiConfig> {
@@ -560,6 +569,8 @@ mod tests {
         assert!(app.handle_tap(205, 440));
         assert!(!app.log_clear_confirm);
         assert!(app.log_cleared);
+        assert!(app.take_log_cleared_event());
+        assert!(!app.take_log_cleared_event());
     }
 
     #[test]
