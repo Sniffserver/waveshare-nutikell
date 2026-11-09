@@ -1,6 +1,9 @@
 // Board pin definitions for Waveshare ESP32-S3-Touch-AMOLED-2.06
 // Reference: pin_config.h from Waveshare Arduino examples
 
+#[cfg(feature = "firmware")]
+pub mod init;
+
 // === QSPI Display (CO5300) ===
 pub const LCD_SDIO0: u8 = 4;
 pub const LCD_SDIO1: u8 = 5;

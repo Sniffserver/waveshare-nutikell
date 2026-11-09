@@ -7,6 +7,7 @@ pub mod cpu_clock;
 pub mod flash_layout;
 pub mod http;
 pub mod imu;
+pub mod ntp;
 pub mod nvs;
 pub mod power;
 pub mod power_stats;

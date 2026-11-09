@@ -7,14 +7,23 @@ use embedded_hal::i2c::I2c;
 const PCF85063A_ADDR: u8 = 0x51;
 
 // Registers
+#[allow(dead_code)]
 const REG_CTRL1: u8 = 0x00;
+#[allow(dead_code)]
 const REG_CTRL2: u8 = 0x01;
+#[allow(dead_code)]
 const REG_SECONDS: u8 = 0x04;
+#[allow(dead_code)]
 const REG_MINUTES: u8 = 0x05;
+#[allow(dead_code)]
 const REG_HOURS: u8 = 0x06;
+#[allow(dead_code)]
 const REG_DAYS: u8 = 0x07;
+#[allow(dead_code)]
 const REG_WEEKDAYS: u8 = 0x08;
+#[allow(dead_code)]
 const REG_MONTHS: u8 = 0x09;
+#[allow(dead_code)]
 const REG_YEARS: u8 = 0x0A;
 
 #[derive(Debug, Clone, Copy)]
