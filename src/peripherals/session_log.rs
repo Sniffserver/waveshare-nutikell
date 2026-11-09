@@ -59,6 +59,7 @@ pub enum SessionLogError {
     DuplicateIdMismatch,
 }
 /// Bounded flash adapter for append and host fault-injection tests.
+#[allow(clippy::result_unit_err)]
 pub trait SessionLogFlash {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()>;
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()>;

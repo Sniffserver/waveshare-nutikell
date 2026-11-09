@@ -172,11 +172,15 @@ pub async fn companion_sync_task(
     let host = stack.build();
     let mut peripheral = host.peripheral;
     let mut runner = host.runner;
-    let server = OutdoorGattServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+    let Ok(server) = OutdoorGattServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: "Rust Watch",
         appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
-    }))
-    .expect("valid GATT service configuration");
+    })) else {
+        esp_println::println!("[BLE] Failed to initialize OutdoorGattServer");
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+        }
+    };
 
     let runner_task = async move {
         loop {

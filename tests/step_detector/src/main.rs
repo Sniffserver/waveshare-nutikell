@@ -1,5 +1,6 @@
 // Comprehensive host-side test suite for sbie-watch 5-layer architecture.
 // Uses embedded-hal-mock to test real I2C driver logic on host x86_64 without hardware.
+#![allow(dead_code, unused_imports)]
 
 extern crate alloc;
 

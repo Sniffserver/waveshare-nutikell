@@ -45,6 +45,7 @@ pub fn align_to_even_region(
 }
 
 impl DisplayWindow {
+    #[allow(clippy::too_many_arguments)]
     pub fn checked(
         x: u16,
         y: u16,

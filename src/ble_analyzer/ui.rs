@@ -302,8 +302,12 @@ where
         return Ok(());
     }
 
-    let first_ts = history.samples.first().unwrap().timestamp_ms;
-    let last_ts = history.samples.last().unwrap().timestamp_ms;
+    let (Some(first), Some(last)) = (history.samples.first(), history.samples.last()) else {
+        draw_text(display, "Collecting samples...", x + 100, y + 55, MUTED)?;
+        return Ok(());
+    };
+    let first_ts = first.timestamp_ms;
+    let last_ts = last.timestamp_ms;
     let span_ms = (last_ts.saturating_sub(first_ts)).max(1);
 
     let min_rssi = -100i16;

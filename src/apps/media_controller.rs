@@ -162,22 +162,16 @@ pub struct MediaController {
 impl MediaController {
     pub fn new() -> Self {
         let mut tracks = FixedVec::new();
-        let _ = tracks.push(
-            TrackInfo::try_new("Strobe (Club Edit)", "deadmau5", "mau5trap Chill", 355)
-                .expect("built-in track fits"),
-        );
-        let _ = tracks.push(
-            TrackInfo::try_new("Sunset Lover", "Petit Biscuit", "SoundCloud Wave", 237)
-                .expect("built-in track fits"),
-        );
-        let _ = tracks.push(
-            TrackInfo::try_new("Resonance", "HOME", "Synthwave Essentials", 212)
-                .expect("built-in track fits"),
-        );
-        let _ = tracks.push(
-            TrackInfo::try_new("Midnight City", "M83", "Hurry Up, We Are Dreaming", 243)
-                .expect("built-in track fits"),
-        );
+        for (title, artist, album, duration) in [
+            ("Strobe (Club Edit)", "deadmau5", "mau5trap Chill", 355),
+            ("Sunset Lover", "Petit Biscuit", "SoundCloud Wave", 237),
+            ("Resonance", "HOME", "Synthwave Essentials", 212),
+            ("Midnight City", "M83", "Hurry Up, We Are Dreaming", 243),
+        ] {
+            if let Ok(track) = TrackInfo::try_new(title, artist, album, duration) {
+                let _ = tracks.push(track);
+            }
+        }
 
         Self {
             source: MediaSource::SoundCloud,
@@ -307,7 +301,7 @@ impl MediaController {
             let track_title = self
                 .active_track()
                 .map(|t| t.title.clone())
-                .unwrap_or_else(|| FixedString::try_from("Current Track").unwrap());
+                .unwrap_or_else(|| FixedString::try_from("Current Track").unwrap_or_default());
 
             if let Some(t) = self.active_track_mut() {
                 t.in_playlist = true;

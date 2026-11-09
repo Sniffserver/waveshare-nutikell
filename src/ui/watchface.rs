@@ -254,7 +254,7 @@ impl WatchFace {
         for tile_y in (0..height).step_by(SLEEP_DISSOLVE_TILE) {
             for tile_x in (0..width).step_by(SLEEP_DISSOLVE_TILE) {
                 let seed = (tile_x as u32)
-                    .wrapping_mul(0x45D9_F3B)
+                    .wrapping_mul(0x045D_9F3B)
                     .wrapping_add((tile_y as u32).wrapping_mul(0x119D_E1F3));
                 let noise = ((seed ^ (seed >> 16) ^ (seed >> 7)) & 0xFF) as u8;
                 let sample = {

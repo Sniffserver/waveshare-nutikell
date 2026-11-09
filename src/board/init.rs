@@ -56,15 +56,15 @@ pub fn init_sd_card<'d>(
     let sd_spi_config = SpiConfig::default()
         .with_frequency(Rate::from_mhz(4))
         .with_mode(SpiMode::_0);
-    let sd_spi = Spi::new(spi3, sd_spi_config)
-        .expect("SPI3 failed")
-        .with_sck(clk)
-        .with_mosi(mosi)
-        .with_miso(miso);
+    let Ok(sd_spi) = Spi::new(spi3, sd_spi_config) else {
+        println!("[SD] SPI3 init failed");
+        return false;
+    };
+    let sd_spi = sd_spi.with_sck(clk).with_mosi(mosi).with_miso(miso);
     let sd_cs = Output::new(cs, Level::High, OutputConfig::default());
 
     use embedded_hal_bus::spi::ExclusiveDevice;
-    let sd_spi_dev = ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
+    let Ok(sd_spi_dev) = ExclusiveDevice::new_no_delay(sd_spi, sd_cs);
     let sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
     let mut sd_ok = false;
     match sd_card.num_bytes() {
@@ -74,7 +74,15 @@ pub fn init_sd_card<'d>(
             struct DummyTime;
             impl embedded_sdmmc::TimeSource for DummyTime {
                 fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-                    embedded_sdmmc::Timestamp::from_calendar(2026, 4, 6, 12, 0, 0).unwrap()
+                    embedded_sdmmc::Timestamp::from_calendar(2026, 4, 6, 12, 0, 0)
+                        .unwrap_or(embedded_sdmmc::Timestamp {
+                            year_since_1970: 56,
+                            zero_indexed_month: 3,
+                            zero_indexed_day: 5,
+                            hours: 12,
+                            minutes: 0,
+                            seconds: 0,
+                        })
                 }
             }
 

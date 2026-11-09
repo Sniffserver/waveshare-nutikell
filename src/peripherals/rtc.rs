@@ -37,6 +37,11 @@ pub struct DateTime {
     pub year: u8, // 0-99 (2000-2099)
 }
 
+#[inline]
+fn is_leap_year(year: u32) -> bool {
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+}
+
 impl DateTime {
     pub fn new(year: u8, month: u8, day: u8, hours: u8, minutes: u8, seconds: u8) -> Self {
         Self {
@@ -81,7 +86,7 @@ impl DateTime {
                 4 | 6 | 9 | 11 => 30,
                 2 => {
                     let y = 2000 + self.year as u32;
-                    if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                    if is_leap_year(y) {
                         29
                     } else {
                         28
@@ -111,7 +116,7 @@ impl DateTime {
                     4 | 6 | 9 | 11 => 30,
                     2 => {
                         let y = 2000 + year as u32;
-                        if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                        if is_leap_year(y) {
                             29
                         } else {
                             28

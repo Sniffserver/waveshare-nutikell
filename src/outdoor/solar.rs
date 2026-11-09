@@ -64,6 +64,7 @@ fn wrap_1440(mut min: f32) -> f32 {
 }
 
 /// Calculate solar azimuth, elevation, and sunrise/sunset from Gregorian date, time, and coordinates.
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_solar(
     year: u16,
     month: u8,
@@ -162,7 +163,7 @@ pub fn calculate_solar(
     let denom_rise = libm::cosf(lat_rad) * libm::cosf(dec_rad);
     let (sunrise_utc_min, sunset_utc_min) = if denom_rise.abs() > 1e-6 {
         let cos_h0 = (cos_90_833 - libm::sinf(lat_rad) * libm::sinf(dec_rad)) / denom_rise;
-        if cos_h0 > 1.0 || cos_h0 < -1.0 {
+        if !(-1.0..=1.0).contains(&cos_h0) {
             // Polar night or midnight sun
             (None, None)
         } else {

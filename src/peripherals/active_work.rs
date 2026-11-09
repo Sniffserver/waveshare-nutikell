@@ -71,6 +71,7 @@ pub enum ActiveWorkError {
 
 /// Host-testable minimal flash interface. Callers must constrain ranges to the
 /// checked-in flash layout; this module only uses `ACTIVE_WORK`.
+#[allow(clippy::result_unit_err)]
 pub trait ActiveWorkFlash {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ()>;
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ()>;
@@ -746,22 +747,18 @@ fn save_active_session_v4_inner<F: ActiveWorkFlash>(
             .ok_or(ActiveWorkError::Corrupt)?,
         None => 1,
     };
-    let target_index = if committed[0].is_some() && committed[1].is_some() {
-        if committed[0].unwrap().sequence < committed[1].unwrap().sequence {
-            0
-        } else {
-            1
+    let target_index = match (committed[0], committed[1]) {
+        (Some(c0), Some(c1)) => {
+            if c0.sequence < c1.sequence {
+                0
+            } else {
+                1
+            }
         }
-    } else if matches!(classes[0], V4RecordClass::Empty | V4RecordClass::Retired) {
-        0
-    } else if matches!(classes[1], V4RecordClass::Empty | V4RecordClass::Retired) {
-        1
-    } else if committed[0].is_some() {
-        1
-    } else if committed[1].is_some() {
-        0
-    } else {
-        0
+        _ if matches!(classes[0], V4RecordClass::Empty | V4RecordClass::Retired) => 0,
+        _ if matches!(classes[1], V4RecordClass::Empty | V4RecordClass::Retired) => 1,
+        _ if committed[0].is_some() => 1,
+        _ => 0,
     };
     let target = V4Slot::ALL[target_index];
     let old = target.peer();
